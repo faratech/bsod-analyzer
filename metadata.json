@@ -1,0 +1,6 @@
+{
+  "name": "BSOD Minidump Analyzer",
+  "description": "An application that uses AI to analyze Windows minidump (.dmp) files, extracting them from ZIP archives if needed, to provide a summary, probable cause, and troubleshooting recommendations for system crashes.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
