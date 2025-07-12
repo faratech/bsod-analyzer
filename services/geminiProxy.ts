@@ -148,7 +148,8 @@ const generateInitialAnalysis = async (fileName: string, prompt: string): Promis
             config: {
                 responseMimeType: "application/json",
                 responseSchema: reportSchema,
-            },
+            }
+            // Note: Grounding cannot be used with JSON response format
         });
 
         let jsonText = response.text;
@@ -285,7 +286,11 @@ export const runAdvancedAnalysis = async (tool: string, dumpFile: DumpFile): Pro
             config: {
                 // Lower temperature for more deterministic, "console-like" output
                 temperature: 0.1,
-            }
+            },
+            // Enable grounding for accurate Windows debugging information
+            tools: [{
+                googleSearch: {}
+            }]
         });
         return response.text;
     } catch (error) {

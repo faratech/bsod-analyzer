@@ -53,11 +53,20 @@ app.post('/api/gemini/generateContent', async (req, res) => {
       }
     });
     
-    const geminiModel = genAI.getGenerativeModel({ 
+    // Configure model with tools for grounding
+    const modelConfig = {
       model: modelName,
       generationConfig: sdkGenerationConfig,
-      safetySettings 
-    });
+      safetySettings
+    };
+    
+    // Add grounding tools configuration
+    const tools = req.body.tools || [];
+    if (tools.length > 0) {
+      modelConfig.tools = tools;
+    }
+    
+    const geminiModel = genAI.getGenerativeModel(modelConfig);
     
     const result = await geminiModel.generateContent(contents);
     const response = await result.response;
