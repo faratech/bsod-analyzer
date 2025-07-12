@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
-import { runAdvancedAnalysis } from '../services/geminiService';
+import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
 import ReactMarkdown from 'react-markdown';

@@ -1,11 +1,54 @@
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+// Proxy to match the original geminiService.ts exactly but route through backend
 import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 
-const API_KEY = process.env.API_KEY;
-if (!API_KEY) {
-    throw new Error("API_KEY environment variable not set");
+// Define types to match original imports
+enum Type {
+    STRING = 'string',
+    NUMBER = 'number', 
+    INTEGER = 'integer',
+    BOOLEAN = 'boolean',
+    ARRAY = 'array',
+    OBJECT = 'object'
 }
-const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+interface GenerateContentResponse {
+    text: string;
+}
+
+// Proxy class that mimics GoogleGenAI
+class GoogleGenAI {
+    private apiKey: string;
+    public models: {
+        generateContent: (params: any) => Promise<GenerateContentResponse>;
+    };
+
+    constructor(config: { apiKey: string }) {
+        this.apiKey = config.apiKey;
+        this.models = {
+            generateContent: async (params: any) => {
+                const response = await fetch('/api/gemini/generateContent', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API request failed: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                return {
+                    text: data.text || ''
+                };
+            }
+        };
+    }
+}
+
+// Create proxy instance
+const ai = new GoogleGenAI({ apiKey: 'proxy' });
 
 const reportSchema = {
     type: Type.OBJECT,
@@ -108,7 +151,18 @@ const generateInitialAnalysis = async (fileName: string, prompt: string): Promis
             },
         });
 
-        const jsonText = response.text;
+        let jsonText = response.text;
+        
+        // Clean up the response if it's wrapped in markdown code blocks
+        if (jsonText.startsWith('```json')) {
+            jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (jsonText.startsWith('```')) {
+            jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+        
+        // Trim any whitespace
+        jsonText = jsonText.trim();
+        
         const parsedJson = JSON.parse(jsonText);
         return parsedJson as AnalysisReportData;
     } catch (error) {

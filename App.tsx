@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { DumpFile, FileStatus } from './types';
-import { analyzeDumpFiles } from './services/geminiService';
+import { analyzeDumpFiles } from './services/geminiProxy';
 import FileUploader from './components/FileUploader';
 import AnalysisReportCard from './components/AnalysisReportCard';
 import { AnalyzeIcon, UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon, AnimatedLogoIcon } from './components/Icons';
