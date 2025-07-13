@@ -12,9 +12,8 @@
     "start": "NODE_ENV=production node server.js"
   },
   "dependencies": {
-    "@ctrl/react-adsense": "^1.8.0",
     "@google/generative-ai": "latest",
-    "compression": "^1.8.0",
+    "compression": "latest",
     "concurrently": "latest",
     "cors": "latest",
     "dotenv": "latest",
@@ -22,16 +21,16 @@
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "latest",
-    "react-router-dom": "^7.6.3",
+    "react-router-dom": "latest",
     "remark-gfm": "latest"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.1.11",
+    "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.11",
-    "terser": "^5.43.1",
+    "autoprefixer": "latest",
+    "postcss": "latest",
+    "tailwindcss": "latest",
+    "terser": "latest",
     "typescript": "latest",
     "vite": "latest"
   }

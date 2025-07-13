@@ -31,7 +31,7 @@ const Footer: React.FC = () => {
                         <div className="footer-links">
                             <Link to="/donate" className="footer-link">Donate</Link>
                             <a href="https://github.com/faratech/bsod-analyzer" target="_blank" rel="noopener noreferrer" className="footer-link">GitHub</a>
-                            <a href="https://windowsforum.com/contact" target="_blank" rel="noopener noreferrer" className="footer-link">Contact</a>
+                            <a href="https://windowsforum.com/misc/contact" target="_blank" rel="noopener noreferrer" className="footer-link">Contact</a>
                         </div>
                     </div>
                     

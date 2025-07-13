@@ -68,7 +68,7 @@ const Home: React.FC = () => {
             "@type": "ContactPoint",
             "contactType": "Technical Support",
             "email": "admin@windowsforum.com",
-            "url": "https://windowsforum.com/contact"
+            "url": "https://windowsforum.com/misc/contact"
         }
     };
 
