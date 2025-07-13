@@ -19,7 +19,6 @@
     "express": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "react-helmet-async": "^2.0.5",
     "react-markdown": "latest",
     "react-router-dom": "^7.6.3",
     "remark-gfm": "latest"

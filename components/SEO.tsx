@@ -1,5 +1,4 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
 
 interface SEOProps {
     title?: string;
@@ -21,8 +20,9 @@ const SEO: React.FC<SEOProps> = ({
     const siteUrl = 'https://bsod.windowsforum.com';
     const fullTitle = title.includes('BSOD AI Analyzer') ? title : `${title} | BSOD AI Analyzer`;
     
+    // React 19 automatically hoists these meta tags to the <head>
     return (
-        <Helmet>
+        <>
             {/* Basic Meta Tags */}
             <title>{fullTitle}</title>
             <meta name="description" content={description} />
@@ -58,7 +58,7 @@ const SEO: React.FC<SEOProps> = ({
             <meta name="apple-mobile-web-app-status-bar-style" content="black" />
             <meta name="format-detection" content="telephone=no" />
             <meta name="theme-color" content="#0a0a0a" />
-        </Helmet>
+        </>
     );
 };
 
