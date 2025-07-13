@@ -7,7 +7,8 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm install && \
+# Using legacy-peer-deps to handle React 19 compatibility
+RUN npm install --legacy-peer-deps && \
     npm cache clean --force
 
 # Copy source files
@@ -32,7 +33,8 @@ RUN addgroup -g 1001 -S nodejs && \
 COPY package*.json ./
 
 # Install only production dependencies
-RUN npm install --omit=dev && \
+# Using legacy-peer-deps to handle React 19 compatibility
+RUN npm install --omit=dev --legacy-peer-deps && \
     npm cache clean --force
 
 # Copy built assets from builder stage
@@ -42,6 +44,8 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --chown=nodejs:nodejs server.js ./
 COPY --chown=nodejs:nodejs services ./services
 COPY --chown=nodejs:nodejs components ./components
+COPY --chown=nodejs:nodejs pages ./pages
+COPY --chown=nodejs:nodejs public ./public
 COPY --chown=nodejs:nodejs *.tsx ./
 COPY --chown=nodejs:nodejs *.ts ./
 COPY --chown=nodejs:nodejs *.css ./
