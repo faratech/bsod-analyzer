@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
+
 import JSZip from 'jszip';
 
 const DUMP_TYPE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
@@ -30,6 +31,7 @@ export const useFileProcessor = () => {
 
             if (file.name.toLowerCase().endsWith('.zip')) {
                 try {
+                    const JSZip = (await import('jszip')).default;
                     const zip = await JSZip.loadAsync(file);
                     for (const relativePath in zip.files) {
                         if (relativePath.toLowerCase().endsWith('.dmp')) {
