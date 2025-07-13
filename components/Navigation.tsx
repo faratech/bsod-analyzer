@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { AnimatedLogoIcon } from './Icons';
 
 const Navigation: React.FC = () => {
     const location = useLocation();
@@ -41,7 +40,14 @@ const Navigation: React.FC = () => {
                 <div className="header-content">
                     <Link to="/" className="logo" aria-label="BSOD AI Analyzer Home" onClick={closeMobileMenu}>
                         <div className="logo-icon">
-                            <AnimatedLogoIcon />
+                            <img 
+                                src="/logo-header.webp" 
+                                srcSet="/logo-header.webp 1x, /logo-header@2x.webp 2x"
+                                alt="BSOD AI Analyzer Logo"
+                                width="48"
+                                height="48"
+                                loading="eager"
+                            />
                         </div>
                         <div>
                             <div className="logo-text">BSOD AI Analyzer</div>

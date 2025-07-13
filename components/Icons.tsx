@@ -5,20 +5,6 @@ interface IconProps {
   className?: string;
 }
 
-export const AnimatedLogoIcon: React.FC = () => (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path className="logo-path" d="M12 2L12 6" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-        <path className="logo-path" d="M12 18L12 22" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.1s'}}/>
-        <path className="logo-path" d="M22 12L18 12" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.2s'}}/>
-        <path className="logo-path" d="M6 12L2 12" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.3s'}}/>
-        <path className="logo-path" d="M19.0711 4.92896L16.2426 7.75739" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.4s'}}/>
-        <path className="logo-path" d="M7.75732 16.2427L4.92889 19.0711" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.5s'}}/>
-        <path className="logo-path" d="M19.0711 19.0711L16.2426 16.2427" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.6s'}}/>
-        <path className="logo-path" d="M7.75732 7.75739L4.92889 4.92896" stroke="white" strokeWidth="1.5" strokeLinecap="round" style={{animationDelay: '0.7s'}}/>
-        <rect x="8" y="8" width="8" height="8" rx="1" stroke="white" strokeWidth="1.5" className="logo-glow"/>
-    </svg>
-);
-
 
 export const AnalyzeIcon: React.FC<IconProps> = ({ className = "w-5 h-5" }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

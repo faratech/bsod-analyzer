@@ -4,14 +4,21 @@ import { analyzeDumpFiles } from './services/geminiProxy';
 import FileUploader from './components/FileUploader';
 import AnalysisReportCard from './components/AnalysisReportCard';
 import BinaryRain from './components/BinaryRain';
-import { AnalyzeIcon, UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon, AnimatedLogoIcon } from './components/Icons';
+import { AnalyzeIcon, UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from './components/Icons';
 
 declare const JSZip: any;
 
 const Logo = () => (
     <div className="logo">
         <div className="logo-icon">
-             <AnimatedLogoIcon />
+            <img 
+                src="/logo-header.webp" 
+                srcSet="/logo-header.webp 1x, /logo-header@2x.webp 2x"
+                alt="BSOD AI Analyzer Logo"
+                width="48"
+                height="48"
+                loading="eager"
+            />
         </div>
         <div>
             <div className="logo-text">BSOD AI Analyzer</div>

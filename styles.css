@@ -206,6 +206,12 @@ p {
   color: var(--brand-primary);
 }
 
+.logo-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .logo-text {
   font-size: 1.25rem;
   font-weight: 700;
@@ -807,9 +813,6 @@ body.mobile-menu-open {
   opacity: 0; /* Start hidden */
 }
 
-.logo-icon .logo-glow {
-  animation: glow 3s infinite ease-in-out 1s;
-}
 
 .feature-icon .icon-pulse {
   animation: icon-pulse 2.5s infinite ease-in-out 1s;
@@ -1458,10 +1461,6 @@ body.mobile-menu-open {
   to { stroke-dashoffset: 0; }
 }
 
-@keyframes glow {
-  0%, 100% { opacity: 0.8; }
-  50% { opacity: 1; }
-}
 
 @keyframes draw-feature-stroke {
   to { stroke-dashoffset: 0; }
