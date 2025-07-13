@@ -1,7 +1,81 @@
 import React from 'react';
 import SEO from '../components/SEO';
+import StructuredData from '../components/StructuredData';
 
 const About: React.FC = () => {
+    // Article Structured Data
+    const articleData = {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "About BSOD AI Analyzer - Advanced Windows Crash Analysis",
+        "description": "Learn how BSOD AI Analyzer uses cutting-edge AI to diagnose Windows crashes",
+        "image": "https://bsod.windowsforum.com/og-image.png",
+        "datePublished": "2024-01-01T00:00:00+00:00",
+        "dateModified": "2024-01-15T00:00:00+00:00",
+        "author": {
+            "@type": "Organization",
+            "name": "WindowsForum",
+            "url": "https://windowsforum.com"
+        },
+        "publisher": {
+            "@type": "Organization",
+            "name": "Fara Technologies LLC",
+            "logo": {
+                "@type": "ImageObject",
+                "url": "https://windowsforum.com/logo.png"
+            }
+        },
+        "mainEntityOfPage": {
+            "@type": "WebPage",
+            "@id": "https://bsod.windowsforum.com/about"
+        }
+    };
+
+    // Service Structured Data
+    const serviceData = {
+        "@context": "https://schema.org",
+        "@type": "Service",
+        "serviceType": "Windows Crash Dump Analysis",
+        "provider": {
+            "@type": "Organization",
+            "name": "WindowsForum"
+        },
+        "areaServed": {
+            "@type": "Place",
+            "name": "Worldwide"
+        },
+        "hasOfferCatalog": {
+            "@type": "OfferCatalog",
+            "name": "BSOD Analysis Services",
+            "itemListElement": [
+                {
+                    "@type": "Offer",
+                    "itemOffered": {
+                        "@type": "Service",
+                        "name": "Minidump Analysis",
+                        "description": "AI-powered analysis of Windows minidump files"
+                    }
+                },
+                {
+                    "@type": "Offer",
+                    "itemOffered": {
+                        "@type": "Service",
+                        "name": "Kernel Dump Analysis",
+                        "description": "Deep analysis of kernel memory dumps"
+                    }
+                },
+                {
+                    "@type": "Offer",
+                    "itemOffered": {
+                        "@type": "Service",
+                        "name": "Complete Dump Analysis",
+                        "description": "Comprehensive analysis of complete memory dumps"
+                    }
+                }
+            ]
+        }
+    };
+
     return (
         <>
             <SEO 
@@ -10,6 +84,8 @@ const About: React.FC = () => {
                 keywords="about BSOD analyzer, how BSOD analysis works, AI crash analysis, Windows debugging technology"
                 canonicalUrl="https://bsod.windowsforum.com/about"
             />
+            <StructuredData data={articleData} />
+            <StructuredData data={serviceData} />
         <main className="page-content">
             <div className="container">
                 <div className="content-wrapper">

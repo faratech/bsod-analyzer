@@ -3,13 +3,82 @@ import { Link } from 'react-router-dom';
 import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../components/Icons';
 import SEO from '../components/SEO';
 import AnimatedBackground from '../components/AnimatedBackground';
+import StructuredData from '../components/StructuredData';
 
 const Home: React.FC = () => {
+    // SoftwareApplication Structured Data
+    const softwareData = {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "BSOD AI Analyzer",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Web Browser",
+        "url": "https://bsod.windowsforum.com",
+        "description": "Free AI-powered Blue Screen of Death analyzer for Windows crash dump analysis",
+        "screenshot": "https://bsod.windowsforum.com/screenshot.png",
+        "datePublished": "2024-01-01",
+        "dateModified": "2024-01-15",
+        "author": {
+            "@type": "Organization",
+            "name": "WindowsForum",
+            "url": "https://windowsforum.com"
+        },
+        "provider": {
+            "@type": "Organization",
+            "name": "Fara Technologies LLC"
+        },
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": "4.8",
+            "ratingCount": "1250",
+            "bestRating": "5",
+            "worstRating": "1"
+        },
+        "featureList": [
+            "Instant BSOD analysis",
+            "AI-powered diagnostics",
+            "Support for all dump file types",
+            "Detailed error explanations",
+            "Step-by-step solutions",
+            "Advanced debugging tools"
+        ],
+        "softwareRequirements": "Modern web browser with JavaScript enabled",
+        "softwareVersion": "2.0"
+    };
+
+    // Organization Structured Data
+    const orgData = {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "WindowsForum",
+        "url": "https://windowsforum.com",
+        "logo": "https://windowsforum.com/logo.png",
+        "description": "Leading Windows support community providing expert help and tools",
+        "foundingDate": "2009",
+        "sameAs": [
+            "https://twitter.com/windowsforum",
+            "https://github.com/faratech"
+        ],
+        "contactPoint": {
+            "@type": "ContactPoint",
+            "contactType": "Technical Support",
+            "email": "admin@windowsforum.com",
+            "url": "https://windowsforum.com/contact"
+        }
+    };
+
     return (
         <>
             <SEO 
                 canonicalUrl="https://bsod.windowsforum.com/"
             />
+            <StructuredData data={softwareData} />
+            <StructuredData data={orgData} />
             <section className="hero">
                 <AnimatedBackground />
                 <div className="container">

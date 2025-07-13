@@ -1,7 +1,109 @@
 import React from 'react';
 import SEO from '../components/SEO';
+import StructuredData from '../components/StructuredData';
 
 const Documentation: React.FC = () => {
+    // FAQ Structured Data
+    const faqData = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": "What is a Windows memory dump file?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "A memory dump (also called a crash dump) is a snapshot of your computer's memory at the exact moment a Blue Screen of Death occurs. Windows creates these files to help diagnose what caused the system to crash. They contain information about running processes, loaded drivers, and system state."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What are the different types of dump files?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "There are three main types: 1) Minidump (64KB-2MB) contains minimal information but is quick to generate. 2) Kernel Memory Dump (1/3 of RAM size) contains all kernel-mode memory. 3) Complete Memory Dump (size equals total RAM) contains the entire contents of physical memory."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Where can I find Windows dump files?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Minidumps are typically located in C:\\Windows\\Minidump\\. Kernel and Complete dumps are usually saved as C:\\Windows\\MEMORY.DMP. You can check your dump file settings in System Properties > Advanced > Startup and Recovery."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How do I analyze a BSOD dump file?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Simply upload your .dmp file to BSOD AI Analyzer. Our AI will automatically extract error codes, identify problematic drivers, analyze the call stack, and provide step-by-step solutions to fix the issue."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What does IRQL_NOT_LESS_OR_EQUAL mean?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "IRQL_NOT_LESS_OR_EQUAL (0x0000000A) indicates a driver attempted to access memory at an invalid IRQL level. This is often caused by faulty drivers, hardware issues, or incompatible software. Common fixes include updating drivers, checking RAM, and removing recently installed software."
+                }
+            }
+        ]
+    };
+
+    // HowTo Structured Data
+    const howToData = {
+        "@context": "https://schema.org",
+        "@type": "HowTo",
+        "name": "How to Analyze Windows BSOD Dump Files",
+        "description": "Step-by-step guide to analyzing Windows crash dump files using BSOD AI Analyzer",
+        "image": "https://bsod.windowsforum.com/og-image.png",
+        "totalTime": "PT2M",
+        "estimatedCost": {
+            "@type": "MonetaryAmount",
+            "currency": "USD",
+            "value": "0"
+        },
+        "supply": [
+            {
+                "@type": "HowToSupply",
+                "name": "Windows dump file (.dmp)"
+            }
+        ],
+        "tool": [
+            {
+                "@type": "HowToTool",
+                "name": "BSOD AI Analyzer"
+            }
+        ],
+        "step": [
+            {
+                "@type": "HowToStep",
+                "name": "Locate your dump file",
+                "text": "Navigate to C:\\Windows\\Minidump\\ or C:\\Windows\\MEMORY.DMP to find your crash dump files.",
+                "image": "https://bsod.windowsforum.com/step1.png"
+            },
+            {
+                "@type": "HowToStep",
+                "name": "Upload the dump file",
+                "text": "Go to the BSOD AI Analyzer page and drag-drop your .dmp file or click to browse and select it.",
+                "image": "https://bsod.windowsforum.com/step2.png"
+            },
+            {
+                "@type": "HowToStep",
+                "name": "Click Analyze",
+                "text": "Click the 'Analyze' button to start the AI-powered analysis of your crash dump.",
+                "image": "https://bsod.windowsforum.com/step3.png"
+            },
+            {
+                "@type": "HowToStep",
+                "name": "Review results",
+                "text": "Review the analysis report showing the crash cause, problematic drivers, and recommended solutions.",
+                "image": "https://bsod.windowsforum.com/step4.png"
+            }
+        ]
+    };
+
     return (
         <>
             <SEO 
@@ -10,6 +112,8 @@ const Documentation: React.FC = () => {
                 keywords="BSOD documentation, crash dump guide, minidump tutorial, kernel dump analysis, Windows error codes, debugging guide"
                 canonicalUrl="https://bsod.windowsforum.com/documentation"
             />
+            <StructuredData data={faqData} />
+            <StructuredData data={howToData} />
         <main className="page-content">
             <div className="container">
                 <div className="content-wrapper">
