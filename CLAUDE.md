@@ -74,3 +74,10 @@ This is a full-stack BSOD (Blue Screen of Death) analyzer that uses Google's Gem
 - All Gemini API calls go through the backend proxy
 - Production uses Google Secret Manager for key storage
 - Files are processed client-side before being sent to the API (no file uploads to server)
+
+### Monetization
+
+- **Google AdSense**: Integrated with publisher ID ca-pub-7455498979488414
+- **Ad Placements**: Strategic placements in Documentation and Home pages
+- **Ad Components**: Reusable AdSense component with pre-configured slots
+- **User Experience**: Ads are clearly labeled and styled to match the site theme

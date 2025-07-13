@@ -4,6 +4,7 @@ import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../co
 import SEO from '../components/SEO';
 import AnimatedBackground from '../components/AnimatedBackground';
 import StructuredData from '../components/StructuredData';
+import { InContentAd } from '../components/AdSense';
 
 const Home: React.FC = () => {
     // SoftwareApplication Structured Data
@@ -137,6 +138,8 @@ const Home: React.FC = () => {
                     </div>
                 </div>
             </section>
+
+            <InContentAd />
 
             <section className="info-section">
                 <div className="container">

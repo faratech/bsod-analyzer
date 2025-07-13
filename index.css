@@ -1414,6 +1414,55 @@ select:disabled {
   height: 300px;
 }
 
+/* AdSense Styles */
+.adsense-container {
+  position: relative;
+  margin: 2rem 0;
+  padding: 1rem;
+  background-color: var(--bg-secondary);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-primary);
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.adsense-container::before {
+  content: 'Advertisement';
+  position: absolute;
+  top: -0.5rem;
+  left: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  background-color: var(--bg-secondary);
+  padding: 0 0.5rem;
+  z-index: 1;
+}
+
+.header-ad {
+  margin: 1rem 0;
+  max-height: 90px;
+}
+
+.footer-ad {
+  margin: 2rem 0 1rem;
+  max-height: 100px;
+}
+
+.in-content-ad {
+  margin: 3rem auto;
+  max-width: 728px;
+}
+
+/* Hide ads on small screens for better UX */
+@media (max-width: 768px) {
+  .adsense-container {
+    max-width: 100%;
+    overflow: hidden;
+  }
+}
+
 /* Subtle animations */
 @keyframes fadeIn {
   from {
