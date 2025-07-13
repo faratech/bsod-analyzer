@@ -899,6 +899,12 @@ body.mobile-menu-open {
   z-index: 0;
 }
 
+.hero-animation-canvas {
+  z-index: 2;
+  opacity: 0.8;
+  mix-blend-mode: screen;
+}
+
 .hero-grid {
   position: absolute;
   top: -50%; left: -50%;

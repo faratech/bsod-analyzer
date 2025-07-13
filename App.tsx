@@ -3,7 +3,7 @@ import { DumpFile, FileStatus } from './types';
 import { analyzeDumpFiles } from './services/geminiProxy';
 import FileUploader from './components/FileUploader';
 import AnalysisReportCard from './components/AnalysisReportCard';
-import BinaryRain from './components/BinaryRain';
+import HeroAnimation from './components/HeroAnimation';
 import { AnalyzeIcon, UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from './components/Icons';
 
 declare const JSZip: any;
@@ -175,7 +175,7 @@ const App: React.FC = () => {
                 <section className="hero">
                     <div className="hero-background">
                         <div className="hero-grid"></div>
-                        <BinaryRain />
+                        <HeroAnimation />
                     </div>
                     <div className="container">
                         <div className="hero-content fade-in">
