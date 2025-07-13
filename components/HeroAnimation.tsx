@@ -10,6 +10,10 @@ interface Particle {
     char: string;
     color: string;
     type: 'binary' | 'hex' | 'error';
+    targetChar?: string;
+    charChangeProgress?: number;
+    rotationSpeed?: number;
+    rotation?: number;
 }
 
 interface GlitchLine {
@@ -24,7 +28,15 @@ const HeroAnimation: React.FC = () => {
     const mouseRef = useRef({ x: 0, y: 0 });
     const particlesRef = useRef<Particle[]>([]);
     const glitchLinesRef = useRef<GlitchLine[]>([]);
-    const matrixColumnsRef = useRef<{ x: number; y: number; speed: number; chars: string[] }[]>([]);
+    const matrixColumnsRef = useRef<{ 
+        x: number; 
+        y: number; 
+        speed: number; 
+        chars: string[]; 
+        charRotations?: number[];
+        sorting?: boolean;
+        sortProgress?: number;
+    }[]>([]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -64,6 +76,7 @@ const HeroAnimation: React.FC = () => {
 
             // Initialize floating particles
             for (let i = 0; i < 50; i++) {
+                const char = ['0', '1', 'A', 'F', '7', 'E'][Math.floor(Math.random() * 6)];
                 particlesRef.current.push({
                     x: Math.random() * canvas.width,
                     y: Math.random() * canvas.height,
@@ -71,9 +84,13 @@ const HeroAnimation: React.FC = () => {
                     vy: (Math.random() - 0.5) * 0.5,
                     size: Math.random() * 3 + 1,
                     opacity: Math.random() * 0.5 + 0.2,
-                    char: ['0', '1', 'A', 'F', '7', 'E'][Math.floor(Math.random() * 6)],
+                    char: char,
                     color: Math.random() > 0.8 ? '#ef4444' : '#3b82f6',
-                    type: Math.random() > 0.9 ? 'error' : Math.random() > 0.5 ? 'binary' : 'hex'
+                    type: Math.random() > 0.9 ? 'error' : Math.random() > 0.5 ? 'binary' : 'hex',
+                    targetChar: char,
+                    charChangeProgress: 0,
+                    rotationSpeed: (Math.random() - 0.5) * 0.02,
+                    rotation: 0
                 });
             }
 
@@ -108,33 +125,77 @@ const HeroAnimation: React.FC = () => {
             ctx.fillStyle = 'rgba(10, 10, 10, 0.08)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Draw matrix rain
+            // Draw matrix rain with dynamic effects
             ctx.font = '14px JetBrains Mono, monospace';
             matrixColumnsRef.current.forEach((column, index) => {
+                // Randomly trigger sorting effect
+                if (!column.sorting && Math.random() > 0.998) {
+                    column.sorting = true;
+                    column.sortProgress = 0;
+                }
+
+                // Update sorting progress
+                if (column.sorting) {
+                    column.sortProgress = (column.sortProgress || 0) + 0.02;
+                    if (column.sortProgress >= 1) {
+                        column.sorting = false;
+                        // Sort chars: put binary first, then hex
+                        column.chars.sort((a, b) => {
+                            if (a === '0' || a === '1') return -1;
+                            if (b === '0' || b === '1') return 1;
+                            return 0;
+                        });
+                    }
+                }
+
                 column.chars.forEach((char, charIndex) => {
                     const y = column.y + charIndex * 20;
+                    
+                    // Character rotation during sort
+                    let xOffset = 0;
+                    let charRotation = 0;
+                    if (column.sorting) {
+                        const sortPhase = column.sortProgress || 0;
+                        xOffset = Math.sin(sortPhase * Math.PI * 2 + charIndex * 0.5) * 10;
+                        charRotation = Math.sin(sortPhase * Math.PI * 4 + charIndex) * 0.3;
+                    }
+
                     if (y > 0 && y < canvas.height) {
                         // Calculate opacity based on position
                         const fadeStart = canvas.height * 0.7;
                         const opacity = y > fadeStart ? 
                             1 - (y - fadeStart) / (canvas.height - fadeStart) : 1;
                         
+                        // Randomly change character
+                        if (Math.random() > 0.995) {
+                            column.chars[charIndex] = Math.random() > 0.5 ? 
+                                '01'[Math.floor(Math.random() * 2)] : 
+                                '0123456789ABCDEF'[Math.floor(Math.random() * 16)];
+                        }
+                        
                         // Color based on position and type
                         const isError = char === 'E' || char === 'F';
-                        const hue = isError ? 0 : 210;
+                        const isBinary = char === '0' || char === '1';
+                        const hue = isError ? 0 : isBinary ? 120 : 210;
                         const lightness = 50 + (charIndex / column.chars.length) * 30;
                         
+                        ctx.save();
+                        ctx.translate(column.x + xOffset, y);
+                        ctx.rotate(charRotation);
+                        
                         ctx.fillStyle = `hsla(${hue}, 80%, ${lightness}%, ${opacity * 0.8})`;
-                        ctx.fillText(char, column.x, y);
+                        ctx.fillText(char, 0, 0);
                         
                         // Glow effect for bottom chars
                         if (charIndex === column.chars.length - 1) {
                             ctx.shadowBlur = 20;
-                            ctx.shadowColor = isError ? '#ef4444' : '#3b82f6';
-                            ctx.fillStyle = isError ? '#ff6b6b' : '#60a5fa';
-                            ctx.fillText(char, column.x, y);
+                            ctx.shadowColor = isError ? '#ef4444' : isBinary ? '#10b981' : '#3b82f6';
+                            ctx.fillStyle = isError ? '#ff6b6b' : isBinary ? '#34d399' : '#60a5fa';
+                            ctx.fillText(char, 0, 0);
                             ctx.shadowBlur = 0;
                         }
+                        
+                        ctx.restore();
                     }
                 });
 
@@ -165,6 +226,27 @@ const HeroAnimation: React.FC = () => {
                     particle.vy += (dy / distance) * force * 0.5;
                 }
 
+                // Randomly trigger character change
+                if (Math.random() > 0.995) {
+                    const chars = particle.type === 'binary' ? ['0', '1'] : 
+                                 particle.type === 'error' ? ['E', 'F', '!'] :
+                                 ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'];
+                    particle.targetChar = chars[Math.floor(Math.random() * chars.length)];
+                    particle.charChangeProgress = 0;
+                }
+
+                // Animate character change
+                if (particle.targetChar && particle.targetChar !== particle.char) {
+                    particle.charChangeProgress = (particle.charChangeProgress || 0) + 0.05;
+                    if (particle.charChangeProgress >= 1) {
+                        particle.char = particle.targetChar;
+                        particle.charChangeProgress = 0;
+                    }
+                }
+
+                // Update rotation
+                particle.rotation = (particle.rotation || 0) + (particle.rotationSpeed || 0);
+
                 // Update position
                 particle.x += particle.vx;
                 particle.y += particle.vy;
@@ -181,17 +263,43 @@ const HeroAnimation: React.FC = () => {
 
                 // Draw particle
                 ctx.save();
+                ctx.translate(particle.x, particle.y);
+                
+                // Apply rotation and scale during character change
+                if (particle.charChangeProgress && particle.charChangeProgress > 0) {
+                    const scale = 1 + Math.sin(particle.charChangeProgress * Math.PI) * 0.3;
+                    ctx.scale(scale, scale);
+                    ctx.rotate(particle.charChangeProgress * Math.PI * 2);
+                } else {
+                    ctx.rotate(particle.rotation || 0);
+                }
+                
                 ctx.font = `${12 + particle.size * 2}px JetBrains Mono, monospace`;
-                ctx.fillStyle = particle.color;
-                ctx.globalAlpha = particle.opacity;
+                
+                // Color transition during change
+                if (particle.charChangeProgress && particle.charChangeProgress > 0) {
+                    const t = particle.charChangeProgress;
+                    ctx.fillStyle = `hsla(${120 * t + 210 * (1 - t)}, 80%, 60%, ${particle.opacity})`;
+                } else {
+                    ctx.fillStyle = particle.color;
+                    ctx.globalAlpha = particle.opacity;
+                }
                 
                 // Add glow for error particles
-                if (particle.type === 'error') {
-                    ctx.shadowBlur = 10;
+                if (particle.type === 'error' || (particle.charChangeProgress && particle.charChangeProgress > 0)) {
+                    ctx.shadowBlur = 10 + (particle.charChangeProgress || 0) * 10;
                     ctx.shadowColor = particle.color;
                 }
                 
-                ctx.fillText(particle.char, particle.x, particle.y);
+                // Draw character with potential scramble effect during change
+                let displayChar = particle.char;
+                if (particle.charChangeProgress && particle.charChangeProgress > 0 && particle.charChangeProgress < 0.5) {
+                    // Show random characters during transition
+                    const scrambleChars = '01234567890ABCDEF!@#$%^&*';
+                    displayChar = scrambleChars[Math.floor(Math.random() * scrambleChars.length)];
+                }
+                
+                ctx.fillText(displayChar, 0, 0);
                 ctx.restore();
             });
 
