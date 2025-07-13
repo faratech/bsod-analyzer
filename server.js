@@ -91,8 +91,41 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// Serve React app for all other routes
+// Handle ?amp=1 parameter for testing AMP pages
 app.get('*', (req, res) => {
+  const { amp } = req.query;
+  const pathname = req.path;
+  
+  // If ?amp=1 is present, redirect to AMP version
+  if (amp === '1') {
+    let ampPath;
+    if (pathname === '/') {
+      ampPath = '/amp/index.html';
+    } else if (pathname === '/about') {
+      ampPath = '/amp/about.html';
+    } else if (pathname === '/documentation') {
+      ampPath = '/amp/documentation.html';
+    } else if (pathname === '/donate') {
+      ampPath = '/amp/donate.html';
+    } else {
+      // Default to home AMP page for unknown routes
+      ampPath = '/amp/index.html';
+    }
+    
+    return res.redirect(302, ampPath);
+  }
+  
+  // Serve static AMP files directly
+  if (pathname.startsWith('/amp/')) {
+    const ampFile = path.join(__dirname, pathname);
+    return res.sendFile(ampFile, (err) => {
+      if (err) {
+        res.status(404).send('AMP page not found');
+      }
+    });
+  }
+  
+  // Serve React app for all other routes
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
