@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import compression from 'compression';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -11,6 +12,18 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Middleware
+app.use(compression({
+  level: 6, // Compression level 1-9 (6 is good balance)
+  threshold: 1024, // Only compress responses above 1KB
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression filter
+    return compression.filter(req, res);
+  }
+}));
 app.use(express.json({ limit: '50mb' }));
 
 // Security middleware - block access to sensitive paths
@@ -54,7 +67,30 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(path.join(__dirname, 'dist')));
+// Static file serving with efficient caching
+app.use(express.static(path.join(__dirname, 'dist'), {
+  maxAge: '1y', // Cache static assets for 1 year
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    // Different cache strategies for different file types
+    if (filePath.endsWith('.html')) {
+      // HTML files - short cache to allow updates
+      res.setHeader('Cache-Control', 'public, max-age=300'); // 5 minutes
+    } else if (filePath.match(/\.(js|css|woff2|woff|ttf|png|jpg|jpeg|webp|svg|ico)$/)) {
+      // Static assets - long cache with fingerprinting
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year
+    } else if (filePath.endsWith('.json')) {
+      // JSON files - medium cache
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+    }
+    
+    // Security headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+  }
+}));
 
 // Initialize Gemini AI with server-side API key
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);

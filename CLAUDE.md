@@ -75,9 +75,26 @@ This is a full-stack BSOD (Blue Screen of Death) analyzer that uses Google's Gem
 - Production uses Google Secret Manager for key storage
 - Files are processed client-side before being sent to the API (no file uploads to server)
 
+### AMP (Accelerated Mobile Pages)
+
+- **AMP Pages**: Complete static AMP versions of all main pages in `/amp/` directory
+- **Bidirectional Linking**: Main pages link to AMP versions via `rel="amphtml"` tags
+- **Google Discovery**: AMP pages discoverable via sitemap and canonical relationships
+- **Testing**: Access AMP versions using `?amp=1` parameter (e.g., `/?amp=1`)
+- **Build Integration**: Vite plugin automatically copies AMP files to dist during build
+- **Server Routing**: Express server handles AMP file serving and ?amp=1 redirects
+
+### Security Architecture
+
+- **Path Blocking**: Multiple layers prevent access to sensitive directories (`/public/`, `/src/`, etc.)
+- **File Protection**: Source files (.ts, .tsx, .env, configs) blocked via server middleware
+- **Security Headers**: Anti-clickjacking, XSS protection, content type sniffing prevention
+- **robots.txt**: Comprehensive blocking of development files and directories
+- **.htaccess**: Apache-specific protection rules for static file hosting
+
 ### Monetization
 
-- **Google AdSense**: Integrated with publisher ID ca-pub-7455498979488414
-- **Ad Placements**: Strategic placements in Documentation and Home pages
-- **Ad Components**: Reusable AdSense component with pre-configured slots
-- **User Experience**: Ads are clearly labeled and styled to match the site theme
+- **Google AdSense**: Auto ads integration with publisher ID ca-pub-7455498979488414
+- **AMP AdSense**: Specialized AMP ad components with strategic placement
+- **Ad Components**: React AdSense components via @ctrl/react-adsense package
+- **Revenue Optimization**: Both manual and automatic ad placement strategies

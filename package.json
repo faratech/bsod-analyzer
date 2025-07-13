@@ -14,6 +14,7 @@
   "dependencies": {
     "@ctrl/react-adsense": "^1.8.0",
     "@google/generative-ai": "latest",
+    "compression": "^1.8.0",
     "concurrently": "latest",
     "cors": "latest",
     "dotenv": "latest",
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "latest",
+    "terser": "^5.43.1",
     "typescript": "latest",
     "vite": "latest"
   }

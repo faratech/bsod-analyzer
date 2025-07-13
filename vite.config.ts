@@ -14,6 +14,28 @@ export default defineConfig(({ mode }) => {
           '@': path.resolve(__dirname, '.'),
         }
       },
+      build: {
+        // Enable minification and compression
+        minify: 'terser',
+        terserOptions: {
+          compress: {
+            drop_console: true, // Remove console.log in production
+            drop_debugger: true
+          }
+        },
+        // Asset optimization
+        assetsInlineLimit: 4096, // Inline assets smaller than 4kb
+        cssCodeSplit: true, // Split CSS into separate chunks
+        rollupOptions: {
+          output: {
+            // Manual chunk splitting for better caching
+            manualChunks: {
+              'react-vendor': ['react', 'react-dom'],
+              'ui-vendor': ['react-markdown', 'remark-gfm']
+            }
+          }
+        }
+      },
       plugins: [
         {
           name: 'copy-amp-files',
