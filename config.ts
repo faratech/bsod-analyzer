@@ -9,7 +9,7 @@ export const config = {
     
     // Analytics Settings
     analytics: {
-        enabled: true,
+        enabled: true,  // Analytics remains enabled
         gtmId: 'GTM-PPFZ8NV2',
         gaId: 'G-0HVHB49RDP'
     },
