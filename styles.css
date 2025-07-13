@@ -198,6 +198,11 @@ p {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  transition: transform 0.3s ease;
+}
+
+.logo:hover .logo-icon img {
+  transform: rotate(360deg);
 }
 
 .logo-text {
@@ -1778,10 +1783,12 @@ body.mobile-menu-open {
     background-color: rgba(10, 10, 10, 0.95);
   }
   
-  /* Reduce animation complexity */
-  * {
-    animation-duration: 0.1s !important;
-    transition-duration: 0.1s !important;
+  /* Reduce only heavy animation complexity - preserve essential UI animations */
+  .btn,
+  .nav-link,
+  .feature-card,
+  .upload-area {
+    transition-duration: 0.2s;
   }
   
   /* Mobile featured badge adjustments */
