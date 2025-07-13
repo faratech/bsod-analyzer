@@ -691,6 +691,7 @@ body.mobile-menu-open {
 }
 
 .mobile-nav.open {
+  display: block;
   opacity: 1;
   visibility: visible;
 }
