@@ -1,112 +1,107 @@
-import React, { useEffect } from 'react';
+import React from 'react';
+import { Adsense } from '@ctrl/react-adsense';
 import { ADSENSE_CONFIG, getAdSlot } from '../config/adsense';
 
-declare global {
-  interface Window {
-    adsbygoogle: any[];
-  }
-}
-
-interface AdSenseProps {
-  client: string;
-  slot: string;
-  format?: 'auto' | 'fluid' | 'rectangle' | 'vertical' | 'horizontal';
-  responsive?: boolean;
-  fullWidthResponsive?: boolean;
+interface AdProps {
   className?: string;
   style?: React.CSSProperties;
-  layout?: string;
-  layoutKey?: string;
 }
 
-const AdSense: React.FC<AdSenseProps> = ({
-  client,
-  slot,
-  format = 'auto',
-  responsive = true,
-  fullWidthResponsive = true,
-  className = '',
-  style = {},
-  layout,
-  layoutKey,
-}) => {
-  useEffect(() => {
-    try {
-      (window.adsbygoogle = window.adsbygoogle || []).push({});
-    } catch (err) {
-      console.error('AdSense error:', err);
-    }
-  }, []);
-
-  return (
-    <div className={`ad-container ${className}`}>
-      <ins
-        className="adsbygoogle"
-        style={{
-          display: 'block',
-          ...style,
-        }}
-        data-ad-client={client}
-        data-ad-slot={slot}
-        data-ad-format={format}
-        data-full-width-responsive={fullWidthResponsive ? 'true' : 'false'}
-        {...(responsive && { 'data-ad-responsive': 'true' })}
-        {...(layout && { 'data-ad-layout': layout })}
-        {...(layoutKey && { 'data-ad-layout-key': layoutKey })}
-      />
-    </div>
-  );
-};
-
-// Specific ad type components for easier usage
-export const DisplayAd: React.FC<Partial<AdSenseProps>> = (props) => (
-  <AdSense
-    client={ADSENSE_CONFIG.client}
-    slot={props.slot || getAdSlot('headerDisplay')}
-    format="auto"
-    responsive={true}
-    {...props}
-  />
+// Display Ad - Responsive format
+export const DisplayAd: React.FC<AdProps> = ({ className = '', style = {} }) => (
+  <div className={`ad-container ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={getAdSlot('headerDisplay')}
+      style={{ display: 'block', ...style }}
+      format="auto"
+      responsive="true"
+      data-full-width-responsive="true"
+    />
+  </div>
 );
 
-export const InFeedAd: React.FC<Partial<AdSenseProps>> = (props) => (
-  <AdSense
-    client={ADSENSE_CONFIG.client}
-    slot={props.slot || getAdSlot('inFeed')}
-    format="fluid"
-    layout="in-article"
-    {...props}
-  />
+// In-Feed Ad - Fluid in-article format
+export const InFeedAd: React.FC<AdProps> = ({ className = '', style = {} }) => (
+  <div className={`ad-container ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={getAdSlot('inFeed')}
+      style={{ display: 'block', textAlign: 'center', ...style }}
+      layout="in-article"
+      format="fluid"
+    />
+  </div>
 );
 
-export const InArticleAd: React.FC<Partial<AdSenseProps>> = (props) => (
-  <AdSense
-    client={ADSENSE_CONFIG.client}
-    slot={props.slot || getAdSlot('inArticle')}
-    format="fluid"
-    layout="in-article"
-    style={{ textAlign: 'center' }}
-    {...props}
-  />
+// In-Article Ad - Fluid in-article format
+export const InArticleAd: React.FC<AdProps> = ({ className = '', style = {} }) => (
+  <div className={`ad-container ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={getAdSlot('inArticle')}
+      style={{ display: 'block', textAlign: 'center', ...style }}
+      layout="in-article"
+      format="fluid"
+    />
+  </div>
 );
 
-export const MultiplexAd: React.FC<Partial<AdSenseProps>> = (props) => (
-  <AdSense
-    client={ADSENSE_CONFIG.client}
-    slot={props.slot || getAdSlot('multiplex')}
-    format="autorelaxed"
-    {...props}
-  />
+// Multiplex Ad - Content recommendations
+export const MultiplexAd: React.FC<AdProps> = ({ className = '', style = {} }) => (
+  <div className={`ad-container ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={getAdSlot('multiplex')}
+      style={{ display: 'block', ...style }}
+      format="autorelaxed"
+    />
+  </div>
 );
 
-export const StickyAd: React.FC<Partial<AdSenseProps>> = (props) => (
-  <AdSense
-    client={ADSENSE_CONFIG.client}
-    slot={props.slot || getAdSlot('mobileSticky')}
-    format="auto"
-    className="sticky-ad"
-    {...props}
-  />
+// Sticky Ad - For mobile sticky placement
+export const StickyAd: React.FC<AdProps> = ({ className = '', style = {} }) => (
+  <div className={`ad-container sticky-ad ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={getAdSlot('mobileSticky')}
+      style={{ display: 'block', ...style }}
+      format="auto"
+      responsive="true"
+      data-full-width-responsive="true"
+    />
+  </div>
+);
+
+// Generic AdSense component for custom implementations
+export const AdSense: React.FC<{
+  slot: string;
+  format?: string;
+  layout?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  responsive?: string;
+  fullWidthResponsive?: string;
+}> = ({ 
+  slot, 
+  format = 'auto', 
+  layout, 
+  className = '', 
+  style = {}, 
+  responsive,
+  fullWidthResponsive 
+}) => (
+  <div className={`ad-container ${className}`}>
+    <Adsense
+      client={ADSENSE_CONFIG.client}
+      slot={slot}
+      style={{ display: 'block', ...style }}
+      format={format}
+      layout={layout}
+      responsive={responsive}
+      data-full-width-responsive={fullWidthResponsive}
+    />
+  </div>
 );
 
 export default AdSense;
