@@ -168,21 +168,21 @@ const App: React.FC = () => {
                     <div className="hero-background">
                         <div className="hero-grid"></div>
                         <div className="floating-binary">
-                            <div className="binary-string" style={{top: '10%', left: '5%', animationDelay: '0s'}}>01100010011100110110111101100100</div>
-                            <div className="binary-string" style={{top: '20%', right: '10%', animationDelay: '2s'}}>11000000000000011100100001110010</div>
-                            <div className="binary-string" style={{top: '30%', left: '15%', animationDelay: '4s'}}>00110000001101010011010000110001</div>
-                            <div className="binary-string" style={{top: '40%', right: '5%', animationDelay: '1s'}}>10101010101010101010101010101010</div>
-                            <div className="binary-string" style={{top: '50%', left: '10%', animationDelay: '3s'}}>11110000111100001111000011110000</div>
-                            <div className="binary-string" style={{top: '60%', right: '15%', animationDelay: '5s'}}>01010101010101010101010101010101</div>
-                            <div className="binary-string" style={{top: '70%', left: '20%', animationDelay: '1.5s'}}>11001100110011001100110011001100</div>
-                            <div className="binary-string" style={{top: '80%', right: '20%', animationDelay: '3.5s'}}>00111100001111000011110000111100</div>
-                            <div className="binary-string" style={{top: '15%', left: '50%', animationDelay: '2.5s'}}>10011001100110011001100110011001</div>
-                            <div className="binary-string" style={{top: '25%', right: '40%', animationDelay: '4.5s'}}>01100110011001100110011001100110</div>
-                            <div className="binary-string" style={{top: '35%', left: '60%', animationDelay: '0.5s'}}>11100111001110011100111001110011</div>
-                            <div className="binary-string" style={{top: '45%', right: '30%', animationDelay: '6s'}}>00010001000100010001000100010001</div>
-                            <div className="binary-string" style={{top: '55%', left: '40%', animationDelay: '1.2s'}}>10001000100010001000100010001000</div>
-                            <div className="binary-string" style={{top: '65%', right: '50%', animationDelay: '3.2s'}}>01110111011101110111011101110111</div>
-                            <div className="binary-string" style={{top: '75%', left: '70%', animationDelay: '5.2s'}}>11011101110111011101110111011101</div>
+                            <div className="binary-string binary-float" style={{top: '10%', left: '5%', animationDelay: '0s'}}>01100010011100110110111101100100</div>
+                            <div className="binary-string binary-blur" style={{top: '20%', right: '10%', animationDelay: '2s'}}>11000000000000011100100001110010</div>
+                            <div className="binary-string binary-glow" style={{top: '30%', left: '15%', animationDelay: '4s'}}>00110000001101010011010000110001</div>
+                            <div className="binary-string binary-float" style={{top: '40%', right: '5%', animationDelay: '1s'}}>10101010101010101010101010101010</div>
+                            <div className="binary-string binary-distort" style={{top: '50%', left: '10%', animationDelay: '3s'}}>11110000111100001111000011110000</div>
+                            <div className="binary-string binary-blur" style={{top: '60%', right: '15%', animationDelay: '5s'}}>01010101010101010101010101010101</div>
+                            <div className="binary-string binary-glitch" style={{top: '70%', left: '20%', animationDelay: '1.5s'}}>11001100110011001100110011001100</div>
+                            <div className="binary-string binary-float" style={{top: '80%', right: '20%', animationDelay: '3.5s'}}>00111100001111000011110000111100</div>
+                            <div className="binary-string binary-glow" style={{top: '15%', left: '50%', animationDelay: '2.5s'}}>10011001100110011001100110011001</div>
+                            <div className="binary-string binary-distort" style={{top: '25%', right: '40%', animationDelay: '4.5s'}}>01100110011001100110011001100110</div>
+                            <div className="binary-string binary-blur" style={{top: '35%', left: '60%', animationDelay: '0.5s'}}>11100111001110011100111001110011</div>
+                            <div className="binary-string binary-glitch" style={{top: '45%', right: '30%', animationDelay: '6s'}}>00010001000100010001000100010001</div>
+                            <div className="binary-string binary-float" style={{top: '55%', left: '40%', animationDelay: '1.2s'}}>10001000100010001000100010001000</div>
+                            <div className="binary-string binary-glow" style={{top: '65%', right: '50%', animationDelay: '3.2s'}}>01110111011101110111011101110111</div>
+                            <div className="binary-string binary-distort" style={{top: '75%', left: '70%', animationDelay: '5.2s'}}>11011101110111011101110111011101</div>
                         </div>
                     </div>
                     <div className="container">

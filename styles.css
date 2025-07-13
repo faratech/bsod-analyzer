@@ -927,7 +927,7 @@ body.mobile-menu-open {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
   overflow: hidden;
-  z-index: -1;
+  z-index: 1;
   pointer-events: none;
   transition: filter 0.8s ease;
 }
@@ -945,42 +945,53 @@ body.mobile-menu-open {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.6rem;
   color: var(--brand-primary);
-  opacity: 0.03;
+  opacity: 0.1;
   animation: floatBinary 25s ease-in-out infinite;
   white-space: nowrap;
   letter-spacing: 1px;
   user-select: none;
   filter: blur(0.5px);
   transition: all 0.3s ease;
+  will-change: transform, opacity, filter;
 }
 
-.binary-string:nth-child(odd) {
+.binary-blur {
   color: var(--brand-accent);
-  opacity: 0.02;
+  opacity: 0.08;
   animation-duration: 30s;
   animation-direction: reverse;
   filter: blur(0.8px);
   animation-name: floatBinaryBlur;
 }
 
-.binary-string:nth-child(3n) {
-  color: rgba(59, 130, 246, 0.2);
-  opacity: 0.04;
+.binary-glow {
+  color: rgba(59, 130, 246, 0.4);
+  opacity: 0.12;
   animation-duration: 20s;
   filter: blur(0.3px);
   animation-name: floatBinaryGlow;
 }
 
-.binary-string:nth-child(5n) {
+.binary-distort {
   animation-name: floatBinaryDistort;
   animation-duration: 35s;
   filter: blur(0.6px) brightness(1.2);
+  color: rgba(96, 165, 250, 0.6);
+  opacity: 0.1;
 }
 
-.binary-string:nth-child(7n) {
+.binary-glitch {
   animation-name: floatBinaryGlitch;
   animation-duration: 40s;
   filter: blur(0.4px) contrast(1.1);
+  color: rgba(147, 197, 253, 0.5);
+  opacity: 0.09;
+}
+
+.binary-float {
+  /* Uses default floatBinary animation */
+  color: var(--brand-primary);
+  opacity: 0.1;
 }
 
 .floating-errors {
@@ -1460,27 +1471,27 @@ body.mobile-menu-open {
 @keyframes floatBinary {
   0% { 
     transform: translate(0, 0) rotate(0deg);
-    opacity: 0.03;
+    opacity: 0.1;
     filter: blur(0.5px);
   }
   25% { 
     transform: translate(40px, -60px) rotate(3deg);
-    opacity: 0.05;
+    opacity: 0.15;
     filter: blur(0.3px);
   }
   50% { 
     transform: translate(-30px, 50px) rotate(-2deg);
-    opacity: 0.02;
+    opacity: 0.05;
     filter: blur(0.8px);
   }
   75% { 
     transform: translate(60px, 20px) rotate(2.5deg);
-    opacity: 0.04;
+    opacity: 0.12;
     filter: blur(0.4px);
   }
   100% { 
     transform: translate(0, 0) rotate(0deg);
-    opacity: 0.03;
+    opacity: 0.1;
     filter: blur(0.5px);
   }
 }
