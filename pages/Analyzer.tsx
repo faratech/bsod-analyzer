@@ -6,7 +6,7 @@ import AnalysisReportCard from '../components/AnalysisReportCard';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
 import { useAnalytics } from '../hooks/useAnalytics';
-import { DisplayAd, InArticleAd, StickyAd } from '../components/AdSense';
+import { DisplayAd, InArticleAd, StickyAd, VerticalAd, InFeedAd } from '../components/AdSense';
 
 declare const JSZip: any;
 
@@ -200,14 +200,37 @@ const Analyzer: React.FC = () => {
                         <h2 style={{ textAlign: 'center', marginBottom: '2rem' }}>Analysis Results</h2>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
                             {dumpFiles.map((dumpFile, index) => (
-                                <AnalysisReportCard
-                                    key={dumpFile.id}
-                                    dumpFile={dumpFile}
-                                    onUpdateAdvancedAnalysis={handleUpdateAdvancedAnalysis}
-                                    style={{ animationDelay: `${index * 100}ms` }}
-                                />
+                                <React.Fragment key={dumpFile.id}>
+                                    <AnalysisReportCard
+                                        dumpFile={dumpFile}
+                                        onUpdateAdvancedAnalysis={handleUpdateAdvancedAnalysis}
+                                        style={{ animationDelay: `${index * 100}ms` }}
+                                    />
+                                    {/* Add an in-feed ad after every 2 analysis results */}
+                                    {(index + 1) % 2 === 0 && index !== dumpFiles.length - 1 && (
+                                        <InFeedAd 
+                                            className="ad-inline"
+                                            style={{ margin: '1rem 0' }}
+                                        />
+                                    )}
+                                </React.Fragment>
                             ))}
                         </div>
+                        
+                        {/* Vertical ad on desktop, shown alongside results */}
+                        {dumpFiles.length > 0 && (
+                            <aside className="desktop-only" style={{
+                                position: 'absolute',
+                                right: '-320px',
+                                top: '60px',
+                                width: '300px'
+                            }}>
+                                <VerticalAd 
+                                    className="ad-sidebar"
+                                    style={{ position: 'sticky', top: '80px' }}
+                                />
+                            </aside>
+                        )}
                     </section>
                 )}
             </div>

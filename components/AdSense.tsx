@@ -186,6 +186,101 @@ export const StickyAd: React.FC<AdProps> = ({ className = '', style = {} }) => {
   );
 };
 
+// Square Responsive Ad
+export const SquareAd: React.FC<AdProps> = ({ className = '', style = {} }) => {
+  useEffect(() => {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (err) {
+      console.error('Error pushing square ad:', err);
+    }
+  }, []);
+  
+  return (
+    <div className={`ad-container ${className}`}>
+      <ins
+        className="adsbygoogle"
+        style={{ display: 'block', ...style }}
+        data-ad-client={ADSENSE_CONFIG.client}
+        data-ad-slot={getAdSlot('squareResponsive')}
+        data-ad-format="auto"
+        data-full-width-responsive="true"
+      />
+    </div>
+  );
+};
+
+// Horizontal Responsive Ad
+export const HorizontalAd: React.FC<AdProps> = ({ className = '', style = {} }) => {
+  useEffect(() => {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (err) {
+      console.error('Error pushing horizontal ad:', err);
+    }
+  }, []);
+  
+  return (
+    <div className={`ad-container ${className}`}>
+      <ins
+        className="adsbygoogle"
+        style={{ display: 'block', ...style }}
+        data-ad-client={ADSENSE_CONFIG.client}
+        data-ad-slot={getAdSlot('horizontalResponsive')}
+        data-ad-format="auto"
+        data-full-width-responsive="true"
+      />
+    </div>
+  );
+};
+
+// Vertical Responsive Ad
+export const VerticalAd: React.FC<AdProps> = ({ className = '', style = {} }) => {
+  useEffect(() => {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (err) {
+      console.error('Error pushing vertical ad:', err);
+    }
+  }, []);
+  
+  return (
+    <div className={`ad-container ${className}`}>
+      <ins
+        className="adsbygoogle"
+        style={{ display: 'block', ...style }}
+        data-ad-client={ADSENSE_CONFIG.client}
+        data-ad-slot={getAdSlot('verticalResponsive')}
+        data-ad-format="auto"
+        data-full-width-responsive="true"
+      />
+    </div>
+  );
+};
+
+// Vertical Multiplex Ad - For content recommendations
+export const VerticalMultiplexAd: React.FC<AdProps> = ({ className = '', style = {} }) => {
+  useEffect(() => {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (err) {
+      console.error('Error pushing vertical multiplex ad:', err);
+    }
+  }, []);
+  
+  return (
+    <div className={`ad-container ${className}`}>
+      <ins
+        className="adsbygoogle"
+        style={{ display: 'block', ...style }}
+        data-ad-client={ADSENSE_CONFIG.client}
+        data-ad-slot={getAdSlot('verticalMultiplex')}
+        data-ad-format="autorelaxed"
+      />
+    </div>
+  );
+};
+
 // Generic AdSense component for custom implementations
 export const AdSense: React.FC<{
   slot: string;

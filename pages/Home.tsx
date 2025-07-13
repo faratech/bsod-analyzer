@@ -4,7 +4,7 @@ import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../co
 import SEO from '../components/SEO';
 import AnimatedBackground from '../components/AnimatedBackground';
 import StructuredData from '../components/StructuredData';
-import { DisplayAd, InFeedAd } from '../components/AdSense';
+import { DisplayAd, InFeedAd, HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
 
 const Home: React.FC = () => {
     // SoftwareApplication Structured Data
@@ -145,10 +145,10 @@ const Home: React.FC = () => {
                 </div>
             </section>
 
-            {/* In-feed ad between features and info sections */}
-            <InFeedAd 
+            {/* Horizontal ad between features and info sections */}
+            <HorizontalAd 
                 className="ad-inline"
-                style={{ maxWidth: '1280px', margin: '2rem auto' }}
+                style={{ maxWidth: '1280px', margin: '3rem auto' }}
             />
 
             <section className="info-section">
@@ -188,6 +188,15 @@ const Home: React.FC = () => {
                 </div>
             </section>
 
+            {/* Square ad before CTA */}
+            <div className="container" style={{ marginTop: '3rem', marginBottom: '3rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <SquareAd 
+                        className="ad-square"
+                        style={{ maxWidth: '336px' }}
+                    />
+                </div>
+            </div>
 
             <section className="cta-section">
                 <div className="container">
@@ -198,6 +207,19 @@ const Home: React.FC = () => {
                             Analyze Your Dump File
                         </Link>
                     </div>
+                </div>
+            </section>
+            
+            {/* Vertical Multiplex ad for content recommendations */}
+            <section style={{ marginTop: '3rem' }}>
+                <div className="container">
+                    <h3 style={{ textAlign: 'center', marginBottom: '2rem', fontSize: '1.5rem', color: 'var(--text-secondary)' }}>
+                        Recommended Resources
+                    </h3>
+                    <VerticalMultiplexAd 
+                        className="ad-multiplex"
+                        style={{ maxWidth: '1280px', margin: '0 auto' }}
+                    />
                 </div>
             </section>
         </>

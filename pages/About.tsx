@@ -1,7 +1,7 @@
 import React from 'react';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
-import { MultiplexAd, DisplayAd } from '../components/AdSense';
+import { MultiplexAd, DisplayAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
 
 const About: React.FC = () => {
     // Article Structured Data
@@ -105,6 +105,12 @@ const About: React.FC = () => {
                             insights that anyone can understand and implement.
                         </p>
                     </section>
+                    
+                    {/* Horizontal ad after first section */}
+                    <HorizontalAd 
+                        className="ad-inline"
+                        style={{ margin: '3rem 0' }}
+                    />
 
                     <section className="content-section">
                         <h2>How Our AI Works</h2>
@@ -131,6 +137,12 @@ const About: React.FC = () => {
                             </li>
                         </ol>
                     </section>
+                    
+                    {/* In-article ad */}
+                    <InArticleAd 
+                        className="ad-inline"
+                        style={{ margin: '3rem 0' }}
+                    />
 
                     <section className="content-section">
                         <h2>Privacy & Security</h2>
@@ -145,6 +157,14 @@ const About: React.FC = () => {
                             <li>No personal information is collected or retained</li>
                         </ul>
                     </section>
+                    
+                    {/* Square ad */}
+                    <div style={{ display: 'flex', justifyContent: 'center', margin: '3rem 0' }}>
+                        <SquareAd 
+                            className="ad-square"
+                            style={{ maxWidth: '336px' }}
+                        />
+                    </div>
 
                     <section className="content-section">
                         <h2>The Team</h2>
@@ -189,6 +209,12 @@ const About: React.FC = () => {
                             <li>API access for enterprise customers</li>
                         </ul>
                     </section>
+                    
+                    {/* Display ad before recommendations */}
+                    <DisplayAd 
+                        className="ad-footer"
+                        style={{ margin: '3rem 0' }}
+                    />
 
                     {/* Multiplex ad for content recommendations */}
                     <section style={{ marginTop: '3rem' }}>
