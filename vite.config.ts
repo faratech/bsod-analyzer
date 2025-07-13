@@ -1,6 +1,7 @@
 import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
-import { copyFile, mkdir } from 'fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'fs/promises';
+import { config } from './config.js';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
@@ -37,6 +38,25 @@ export default defineConfig(({ mode }) => {
         }
       },
       plugins: [
+        {
+          name: 'inject-config',
+          transformIndexHtml(html) {
+            // Replace config placeholders with actual values
+            return html
+              .replace(
+                'window.__ADS_ENABLED__ = true;',
+                `window.__ADS_ENABLED__ = ${config.ads.enabled};`
+              )
+              .replace(
+                'window.__ANALYTICS_ENABLED__ = true;',
+                `window.__ANALYTICS_ENABLED__ = ${config.analytics.enabled};`
+              )
+              .replace(
+                "window.__GA_ID__ = 'G-0HVHB49RDP';",
+                `window.__GA_ID__ = '${config.analytics.gaId}';`
+              );
+          }
+        },
         {
           name: 'copy-amp-files',
           writeBundle: async () => {

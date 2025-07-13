@@ -238,18 +238,40 @@
     }
     </style>
     
-    <!-- Google Analytics -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-0HVHB49RDP"></script>
+    <!-- Google Analytics - Conditional Loading -->
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-0HVHB49RDP');
+    // These will be replaced by config values during build
+    window.__ANALYTICS_ENABLED__ = true;
+    window.__GA_ID__ = 'G-0HVHB49RDP';
+    
+    if (window.__ANALYTICS_ENABLED__ && window.__GA_ID__) {
+        var gaScript = document.createElement('script');
+        gaScript.async = true;
+        gaScript.src = 'https://www.googletagmanager.com/gtag/js?id=' + window.__GA_ID__;
+        document.head.appendChild(gaScript);
+        
+        gaScript.onload = function() {
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', window.__GA_ID__);
+        };
+    }
     </script>
     
-    <!-- Google AdSense -->
-    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7455498979488414"
-     crossorigin="anonymous"></script>
+    <!-- Google AdSense - Conditional Loading -->
+    <script>
+    // This will be replaced by the config value during build
+    window.__ADS_ENABLED__ = true;
+    
+    if (window.__ADS_ENABLED__) {
+        var adsScript = document.createElement('script');
+        adsScript.async = true;
+        adsScript.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7455498979488414';
+        adsScript.crossOrigin = 'anonymous';
+        document.head.appendChild(adsScript);
+    }
+    </script>
     
     <!-- Structured Data -->
     <script type="application/ld+json">
