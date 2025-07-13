@@ -12,6 +12,48 @@ const PORT = process.env.PORT || 8080;
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
+
+// Security middleware - block access to sensitive paths
+app.use((req, res, next) => {
+  const blockedPaths = [
+    '/public',
+    '/src',
+    '/components', 
+    '/pages',
+    '/services',
+    '/hooks',
+    '/types',
+    '/node_modules',
+    '/.git',
+    '/.env'
+  ];
+  
+  const blockedExtensions = [
+    '.ts',
+    '.tsx', 
+    '.js.map',
+    '.css.map',
+    '.log',
+    'package.json',
+    'package-lock.json',
+    'tsconfig.json',
+    'vite.config.ts',
+    '.env'
+  ];
+  
+  // Block access to sensitive directories
+  if (blockedPaths.some(path => req.path.startsWith(path))) {
+    return res.status(403).send('Access Denied');
+  }
+  
+  // Block access to sensitive file types
+  if (blockedExtensions.some(ext => req.path.endsWith(ext))) {
+    return res.status(403).send('Access Denied');
+  }
+  
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Initialize Gemini AI with server-side API key
