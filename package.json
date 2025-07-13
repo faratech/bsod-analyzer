@@ -20,6 +20,7 @@
     "cors": "latest",
     "dotenv": "latest",
     "express": "latest",
+    "jszip": "latest",
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "latest",
