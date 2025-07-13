@@ -4,6 +4,7 @@ import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../co
 import SEO from '../components/SEO';
 import AnimatedBackground from '../components/AnimatedBackground';
 import StructuredData from '../components/StructuredData';
+import { DisplayAd, InFeedAd } from '../components/AdSense';
 
 const Home: React.FC = () => {
     // SoftwareApplication Structured Data
@@ -101,6 +102,13 @@ const Home: React.FC = () => {
                 </div>
             </section>
 
+            {/* Ad after hero section - high visibility */}
+            <DisplayAd 
+                slot="1234567890" 
+                className="ad-header"
+                style={{ minHeight: '90px' }}
+            />
+
             <section className="features">
                 <div className="container">
                     <div style={{ textAlign: 'center' }}>
@@ -137,6 +145,13 @@ const Home: React.FC = () => {
                     </div>
                 </div>
             </section>
+
+            {/* In-feed ad between features and info sections */}
+            <InFeedAd 
+                slot="2345678901" 
+                className="ad-inline"
+                style={{ maxWidth: '1280px', margin: '2rem auto' }}
+            />
 
             <section className="info-section">
                 <div className="container">

@@ -6,6 +6,7 @@ import AnalysisReportCard from '../components/AnalysisReportCard';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
 import { useAnalytics } from '../hooks/useAnalytics';
+import { DisplayAd, InArticleAd, StickyAd } from '../components/AdSense';
 
 declare const JSZip: any;
 
@@ -180,6 +181,13 @@ const Analyzer: React.FC = () => {
                 </div>
             </section>
             
+            {/* Ad after upload section */}
+            <DisplayAd 
+                slot="3456789012" 
+                className="ad-header"
+                style={{ minHeight: '90px' }}
+            />
+            
             <div className="container">
                 {error && (
                     <div className="card status-error fade-in" style={{ padding: '1.5rem', color: 'var(--text-primary)', marginTop: '2rem'}} role="alert">
@@ -205,6 +213,14 @@ const Analyzer: React.FC = () => {
                 )}
             </div>
         </main>
+        
+        {/* Sticky ad for mobile - only shows on mobile devices */}
+        <div className="mobile-only">
+            <StickyAd 
+                slot="4567890123" 
+                style={{ maxHeight: '90px' }}
+            />
+        </div>
         </>
     );
 };

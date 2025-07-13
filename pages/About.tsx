@@ -1,6 +1,7 @@
 import React from 'react';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
+import { MultiplexAd, DisplayAd } from '../components/AdSense';
 
 const About: React.FC = () => {
     // Article Structured Data
@@ -187,6 +188,17 @@ const About: React.FC = () => {
                             <li>Support for Linux kernel dumps</li>
                             <li>API access for enterprise customers</li>
                         </ul>
+                    </section>
+
+                    {/* Multiplex ad for content recommendations */}
+                    <section style={{ marginTop: '3rem' }}>
+                        <h3 style={{ textAlign: 'center', marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>
+                            Recommended Resources
+                        </h3>
+                        <MultiplexAd 
+                            slot="5678901234" 
+                            style={{ minHeight: '300px' }}
+                        />
                     </section>
                 </div>
             </div>

@@ -1515,6 +1515,78 @@ body.mobile-menu-open {
   }
 }
 
+/* AdSense Styles */
+.ad-container {
+  margin: 2rem 0;
+  min-height: 100px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.ad-container.ad-header {
+  margin: 1rem 0 2rem 0;
+  max-width: 728px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ad-container.ad-sidebar {
+  margin: 1rem 0;
+  max-width: 300px;
+}
+
+.ad-container.ad-inline {
+  margin: 1.5rem 0;
+}
+
+.sticky-ad {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  background: var(--bg-primary);
+  padding: 0.5rem;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.sticky-ad .adsbygoogle {
+  max-height: 100px;
+}
+
+/* Hide ads on very small screens for better UX */
+@media (max-width: 320px) {
+  .ad-container {
+    display: none;
+  }
+}
+
+/* Responsive ad sizing */
+@media (max-width: 768px) {
+  .ad-container.ad-header {
+    max-width: 100%;
+  }
+  
+  .sticky-ad {
+    max-height: 90px;
+  }
+}
+
+/* Mobile only helper */
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: block;
+  }
+}
+
 /* Responsive Design System */
 @media (max-width: 480px) {
   .container { 
