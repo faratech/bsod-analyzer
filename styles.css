@@ -1640,22 +1640,45 @@ body.mobile-menu-open {
   display: grid;
   grid-template-columns: 250px 1fr;
   gap: 3rem;
-  align-items: start;
+  align-items: flex-start;
   margin-top: 2rem;
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
+  position: relative;
 }
 
 .docs-nav {
+  position: -webkit-sticky;
   position: sticky;
-  top: 6rem;
+  top: 5rem;
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: 1rem;
   padding: 1.5rem;
-  max-height: calc(100vh - 8rem);
+  max-height: calc(100vh - 6rem);
   overflow-y: auto;
+  z-index: 10;
+  align-self: start;
+  height: fit-content;
+}
+
+/* Custom scrollbar for docs navigation */
+.docs-nav::-webkit-scrollbar {
+  width: 6px;
+}
+
+.docs-nav::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+.docs-nav::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 3px;
+}
+
+.docs-nav::-webkit-scrollbar-thumb:hover {
+  background: var(--border-secondary);
 }
 
 .docs-nav h3 {
