@@ -946,7 +946,6 @@ body.mobile-menu-open {
   font-size: 0.6rem;
   color: var(--brand-primary);
   opacity: 0.1;
-  animation: floatBinary 25s ease-in-out infinite;
   white-space: nowrap;
   letter-spacing: 1px;
   user-select: none;
@@ -958,38 +957,33 @@ body.mobile-menu-open {
 .binary-blur {
   color: var(--brand-accent);
   opacity: 0.08;
-  animation-duration: 30s;
-  animation-direction: reverse;
+  animation: floatBinaryBlur 30s ease-in-out infinite reverse;
   filter: blur(0.8px);
-  animation-name: floatBinaryBlur;
 }
 
 .binary-glow {
   color: rgba(59, 130, 246, 0.4);
   opacity: 0.12;
-  animation-duration: 20s;
+  animation: floatBinaryGlow 20s ease-in-out infinite;
   filter: blur(0.3px);
-  animation-name: floatBinaryGlow;
 }
 
 .binary-distort {
-  animation-name: floatBinaryDistort;
-  animation-duration: 35s;
+  animation: floatBinaryDistort 35s ease-in-out infinite;
   filter: blur(0.6px) brightness(1.2);
   color: rgba(96, 165, 250, 0.6);
   opacity: 0.1;
 }
 
 .binary-glitch {
-  animation-name: floatBinaryGlitch;
-  animation-duration: 40s;
+  animation: floatBinaryGlitch 40s ease-in-out infinite;
   filter: blur(0.4px) contrast(1.1);
   color: rgba(147, 197, 253, 0.5);
   opacity: 0.09;
 }
 
 .binary-float {
-  /* Uses default floatBinary animation */
+  animation: floatBinary 25s ease-in-out infinite;
   color: var(--brand-primary);
   opacity: 0.1;
 }
