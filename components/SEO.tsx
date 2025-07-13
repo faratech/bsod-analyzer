@@ -13,7 +13,7 @@ const SEO: React.FC<SEOProps> = ({
     title = 'BSOD AI Analyzer - Instant Windows Crash Dump Analysis',
     description = 'Free AI-powered Blue Screen of Death analyzer. Upload your Windows crash dump files (.dmp) and get instant diagnosis with actionable solutions. Analyze minidumps and kernel dumps in seconds.',
     keywords = 'BSOD analyzer, blue screen of death, Windows crash dump, minidump analysis, kernel dump, crash analysis, Windows debugging, dump file analyzer, BSOD fix, Windows error',
-    ogImage = 'https://bsod.windowsforum.com/og-image.png',
+    ogImage = 'https://bsod.windowsforum.com/og-image.webp',
     ogType = 'website',
     canonicalUrl
 }) => {
@@ -54,7 +54,7 @@ const SEO: React.FC<SEOProps> = ({
             {/* Additional SEO Tags */}
             <meta name="application-name" content="BSOD AI Analyzer" />
             <meta name="apple-mobile-web-app-title" content="BSOD Analyzer" />
-            <meta name="apple-mobile-web-app-capable" content="yes" />
+            <meta name="mobile-web-app-capable" content="yes" />
             <meta name="apple-mobile-web-app-status-bar-style" content="black" />
             <meta name="format-detection" content="telephone=no" />
             <meta name="theme-color" content="#0a0a0a" />
