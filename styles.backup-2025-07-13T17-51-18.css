@@ -139,6 +139,28 @@ p {
 }
 
 /* Form elements */
+.form-select {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+  width: 100%;
+  max-width: 300px;
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.form-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Header styles */
 .header {
@@ -311,7 +333,34 @@ p {
   border-color: var(--brand-primary);
 }
 
+.upload-area.dragover {
+  border-color: var(--brand-primary);
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
 /* Analysis results */
+.analysis-card {
+  padding: 1.5rem;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.75rem;
+}
+
+.analysis-card > * + * {
+  margin-top: 1rem;
+}
+
+.analysis-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.analysis-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
 
 /* Status indicators */
 .status-badge {
@@ -431,11 +480,23 @@ p {
 }
 
 /* Loading animations */
+.loading-spinner {
+  animation: spin 1s linear infinite;
+  border-radius: 50%;
+  height: 2rem;
+  width: 2rem;
+  border: 2px solid transparent;
+  border-top-color: var(--brand-primary);
+}
 
 @keyframes spin {
   to {
     transform: rotate(360deg);
   }
+}
+
+.pulse-animation {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes pulse {
@@ -448,12 +509,67 @@ p {
 }
 
 /* Mobile navigation */
+@media (max-width: 768px) {
+  .mobile-menu {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 4.5rem;
+    background-color: var(--bg-primary);
+    border-top: 1px solid var(--border-primary);
+    padding: 1rem;
+    z-index: 40;
+  }
+  
+  .mobile-menu > * + * {
+    margin-top: 0.5rem;
+  }
+  
+  .mobile-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.75rem 1rem;
+    color: var(--text-secondary);
+    border-radius: 0.5rem;
+    transition: all 0.2s ease;
+    text-decoration: none;
+  }
+  
+  .mobile-menu-item:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-secondary);
+  }
+}
 
 /* Utility classes for common patterns */
 .w-5 { width: 1.25rem; }
 .h-5 { height: 1.25rem; }
 .w-6 { width: 1.5rem; }
 .h-6 { height: 1.5rem; }
+.w-8 { width: 2rem; }
+.h-8 { height: 2rem; }
+.w-12 { width: 3rem; }
+.h-12 { height: 3rem; }
+
+.grid-auto-fit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+}
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.text-gradient {
+  background: linear-gradient(to right, var(--text-primary), var(--brand-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 
 /* ==========================================================================
    COMPREHENSIVE CSS MIGRATION - CRITICAL MISSING COMPONENTS
@@ -772,6 +888,11 @@ body.mobile-menu-open {
   padding: 1rem;
   border-radius: 0.75rem;
   border: 1px solid var(--border-primary);
+}
+
+.ad-container.banner {
+  max-width: 728px;
+  margin: 2rem auto;
 }
 
 .ad-container.responsive {
