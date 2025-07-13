@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../components/Icons';
 import SEO from '../components/SEO';
+import AnimatedBackground from '../components/AnimatedBackground';
 
 const Home: React.FC = () => {
     return (
@@ -10,9 +11,7 @@ const Home: React.FC = () => {
                 canonicalUrl="https://bsod.windowsforum.com/"
             />
             <section className="hero">
-                <div className="hero-background">
-                    <div className="hero-grid"></div>
-                </div>
+                <AnimatedBackground />
                 <div className="container">
                     <div className="hero-content fade-in">
                         <h1 className="hero-title">Decode Your Blue Screen of Death</h1>
@@ -21,8 +20,9 @@ const Home: React.FC = () => {
                             Get instant insights into what caused your system crash and how to fix it.
                         </p>
                         <div className="hero-actions">
-                            <Link to="/analyzer" className="btn btn-primary btn-large">
-                                Start Analysis
+                            <Link to="/analyzer" className="btn btn-primary btn-large glow-button">
+                                <span>Start Analysis</span>
+                                <span className="btn-sparkle">✨</span>
                             </Link>
                             <Link to="/documentation" className="btn btn-secondary btn-large">
                                 Learn More
