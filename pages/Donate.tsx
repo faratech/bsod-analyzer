@@ -137,11 +137,11 @@ const Donate: React.FC = () => {
                                 <div className="crypto-options">
                                     <div className="crypto-option">
                                         <strong>Bitcoin:</strong>
-                                        <code className="crypto-address">1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa</code>
+                                        <code className="crypto-address">3AEtTB5AtX6qduDK6VZEFsnDQ2RDsgD3tX</code>
                                     </div>
                                     <div className="crypto-option">
                                         <strong>Ethereum:</strong>
-                                        <code className="crypto-address">0x742d4e6B6C5B4e6F6C5B4e6F6C5B4e6F6C5B4e6F</code>
+                                        <code className="crypto-address">0xe46B41cE4F9382004f366B03678c6B1b6CEF7a26</code>
                                     </div>
                                 </div>
                             </div>
