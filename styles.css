@@ -622,8 +622,6 @@ body.mobile-menu-open {
 .logo-icon {
   width: 2.25rem;
   height: 2.25rem;
-  background: linear-gradient(135deg, var(--brand-primary), var(--brand-accent));
-  border-radius: 0.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
