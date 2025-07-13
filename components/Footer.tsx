@@ -38,7 +38,7 @@ const Footer: React.FC = () => {
                     <div className="footer-section">
                         <h4 className="footer-heading">Legal</h4>
                         <div className="footer-links">
-                            <a href="https://windowsforum.com/privacy-policy" className="footer-link">Privacy Policy</a>
+                            <a href="https://windowsforum.com/help/privacy-policy/" className="footer-link">Privacy Policy</a>
                             <a href="https://windowsforum.com/help/terms/" className="footer-link">Terms of Service</a>
                         </div>
                     </div>

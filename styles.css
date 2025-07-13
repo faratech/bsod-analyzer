@@ -225,11 +225,12 @@ p {
 /* Hero section */
 .hero {
   position: relative;
-  min-height: 100vh;
+  min-height: 90vh;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  background: radial-gradient(ellipse at center, var(--bg-secondary) 0%, var(--bg-primary) 100%);
 }
 
 .hero-content {
@@ -239,24 +240,26 @@ p {
   max-width: 64rem;
   margin: 0 auto;
   padding: 0 1.5rem;
+  animation: heroFadeIn 1s ease-out forwards;
 }
 
 .hero-title {
   font-weight: 800;
   margin-bottom: 1.5rem;
-  background: linear-gradient(to right, var(--text-primary), var(--brand-accent), var(--brand-primary));
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--brand-primary) 50%, var(--brand-accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  animation: titleGlow 3s ease-in-out infinite;
 }
 
 .hero-subtitle {
-  font-size: 1.25rem;
+  font-size: clamp(1rem, 2vw, 1.25rem);
   color: var(--text-secondary);
-  margin-bottom: 2rem;
+  margin-bottom: 3rem;
   line-height: 1.625;
-  max-width: 42rem;
+  max-width: 600px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -790,49 +793,66 @@ body.mobile-menu-open {
   background-color: var(--brand-secondary);
 }
 
-/* Enhanced Hero Section */
-.hero {
-  padding: clamp(3rem, 8vw, 6rem) 0;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
-  min-height: 90vh;
-  display: flex;
-  align-items: center;
-  background: radial-gradient(ellipse at center, var(--bg-secondary) 0%, var(--bg-primary) 100%);
-}
-
-.hero-content {
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  animation: heroFadeIn 1s ease-out forwards;
-}
-
-.hero-title {
-  font-size: clamp(2.5rem, 6vw, 4rem);
-  margin-bottom: 1.5rem;
-  background: linear-gradient(135deg, var(--text-primary) 0%, var(--brand-primary) 50%, var(--brand-accent) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: titleGlow 3s ease-in-out infinite;
-}
-
-.hero-subtitle {
-  font-size: clamp(1rem, 2vw, 1.25rem);
-  color: var(--text-secondary);
-  margin-bottom: 3rem;
-  max-width: 600px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
+/* Enhanced Hero Section - OVERRIDE styles in lower section */
 .hero-actions {
   display: flex;
   gap: 1rem;
   margin-top: 2rem;
   justify-content: center;
+}
+
+/* Additional CSS classes for enhanced functionality */
+.fade-in {
+  animation: fadeIn 0.5s ease-out forwards;
+  opacity: 0; /* Start hidden */
+}
+
+.logo-icon .logo-glow {
+  animation: glow 3s infinite ease-in-out 1s;
+}
+
+.feature-icon .icon-pulse {
+  animation: icon-pulse 2.5s infinite ease-in-out 1s;
+}
+
+/* Google Ads Styles */
+.ad-container {
+  margin: 2rem auto;
+  text-align: center;
+  min-height: 50px;
+  position: relative;
+}
+
+.ad-container.in-article {
+  margin: 3rem auto;
+  padding: 1rem 0;
+}
+
+.ad-container.multiplex {
+  background-color: var(--bg-secondary);
+  padding: 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-primary);
+}
+
+.ad-container.banner {
+  max-width: 728px;
+  margin: 2rem auto;
+}
+
+.ad-container.responsive {
+  width: 100%;
+  margin: 2rem 0;
+}
+
+/* Ad label */
+.ad-container::before {
+  content: 'Advertisement';
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-bottom: 0.5rem;
+  text-align: center;
 }
 
 .hero-nav {
@@ -887,6 +907,58 @@ body.mobile-menu-open {
     linear-gradient(to bottom, rgba(59, 130, 246, 0.08) 1px, transparent 1px);
   background-size: 40px 40px;
   animation: move-grid 20s linear infinite;
+}
+
+/* Advanced Hero Effects */
+.animated-bg {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.animated-bg-layer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+}
+
+.floating-errors {
+  position: relative;
+  width: 100%; height: 100%;
+}
+
+.error-code {
+  position: absolute;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875rem;
+  color: var(--brand-accent);
+  opacity: 0.15;
+  animation: float 20s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+.circuit-svg {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  opacity: 0.3;
+}
+
+.glitch-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  opacity: 0;
+  animation: glitch 10s ease-in-out infinite;
+  background: linear-gradient(
+    45deg,
+    transparent 30%,
+    rgba(59, 130, 246, 0.1) 30%,
+    rgba(59, 130, 246, 0.1) 70%,
+    transparent 70%
+  );
+  background-size: 10px 10px;
 }
 
 /* Enhanced Feature Cards */
@@ -1144,9 +1216,10 @@ body.mobile-menu-open {
 }
 
 .donate-cards {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 2rem;
   margin-bottom: 3rem;
+  width: 100%;
 }
 
 /* Donate Page Components */
@@ -1158,6 +1231,10 @@ body.mobile-menu-open {
   border: 1px solid var(--border-primary);
   border-radius: 0.75rem;
   transition: all 0.2s ease;
+  overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 
 .donate-card.featured {
@@ -1183,6 +1260,50 @@ body.mobile-menu-open {
   gap: 0.5rem;
   justify-content: center;
   margin: 1rem 0;
+  flex-wrap: wrap;
+}
+
+/* Donate page specific styling */
+.donate-page {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.donate-options {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* PayPal button container */
+.donate-card form {
+  width: 100%;
+  margin-top: 1rem;
+}
+
+.donate-card .btn-primary,
+.donate-card .btn-large {
+  width: 100%;
+  max-width: 100%;
+  word-wrap: break-word;
+  white-space: normal;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+/* Crypto addresses */
+.crypto-address {
+  word-break: break-all;
+  font-size: 0.8rem;
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  background-color: var(--bg-primary);
+  border-radius: 0.25rem;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 /* Animation Keyframes */
@@ -1232,9 +1353,55 @@ body.mobile-menu-open {
   100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 
+@keyframes float {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  25% { transform: translate(30px, -30px) rotate(2deg); }
+  50% { transform: translate(-20px, 20px) rotate(-1deg); }
+  75% { transform: translate(40px, 10px) rotate(1deg); }
+}
+
+@keyframes glitch {
+  0%, 90%, 100% { opacity: 0; }
+  92% { opacity: 0.8; transform: translateX(-2px); }
+  94% { opacity: 0.5; transform: translateX(2px); }
+  96% { opacity: 0.8; transform: translateX(-1px); }
+}
+
+@keyframes rain {
+  to { transform: translateY(calc(100vh + 100%)); }
+}
+
+@keyframes draw-logo {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes glow {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+@keyframes draw-feature-stroke {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes icon-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Responsive Design System */
 @media (max-width: 480px) {
-  .container { padding: 0 0.75rem; }
+  .container { 
+    padding: 0 0.75rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
   .header-content { height: 4rem; gap: 0.5rem; padding: 0 0.5rem; }
   .logo { gap: 0.5rem; flex-shrink: 1; min-width: 0; }
   .logo-icon { width: 1.75rem; height: 1.75rem; flex-shrink: 0; }
@@ -1258,13 +1425,45 @@ body.mobile-menu-open {
   .info-grid { grid-template-columns: 1fr; gap: 1.5rem; }
   .footer-content { grid-template-columns: 1fr; text-align: center; gap: 1.5rem; }
   .footer-links { justify-content: center; gap: 1.5rem; }
-  .donate-cards { grid-template-columns: 1fr; gap: 1.5rem; }
+  .donate-cards { 
+    grid-template-columns: 1fr; 
+    gap: 1.5rem;
+    width: 100%;
+    max-width: 100%;
+  }
   .donate-amounts { flex-wrap: wrap; gap: 0.375rem; }
   .btn-donate { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
+  
+  /* Mobile donate card adjustments */
+  .donate-card {
+    padding: 1.5rem 1rem;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+  }
+  
+  .donate-card .btn-primary,
+  .donate-card .btn-large {
+    font-size: 0.8rem;
+    padding: 0.625rem 0.75rem;
+    min-height: 44px;
+  }
+  
+  /* Crypto addresses on mobile */
+  .crypto-address {
+    word-break: break-all;
+    font-size: 0.7rem;
+    padding: 0.375rem;
+  }
 }
 
 @media (min-width: 481px) and (max-width: 768px) {
-  .container { padding: 0 1rem; }
+  .container { 
+    padding: 0 1rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
   .desktop-nav { display: none; }
   .mobile-menu-toggle { display: flex; }
   .mobile-nav { display: block; }
@@ -1273,7 +1472,13 @@ body.mobile-menu-open {
   .btn-large { width: auto; min-width: 200px; }
   .upload-area { padding: 2rem 1.5rem; }
   .features-grid { grid-template-columns: 1fr; gap: 2rem; }
-  .info-grid, .donate-cards { grid-template-columns: 1fr; gap: 2rem; }
+  .info-grid { grid-template-columns: 1fr; gap: 2rem; }
+  .donate-cards { 
+    grid-template-columns: 1fr; 
+    gap: 2rem;
+    width: 100%;
+    max-width: 100%;
+  }
   .footer-content { grid-template-columns: 1fr 1fr; text-align: left; gap: 2rem; }
 }
 

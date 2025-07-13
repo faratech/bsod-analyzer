@@ -241,7 +241,7 @@ const App: React.FC = () => {
                         </div>
                         <div className="footer-links">
                             <a href="https://windowsforum.com" target="_blank" rel="noopener noreferrer" className="footer-link">WindowsForum</a>
-                             <a href="https://windowsforum.com/privacy-policy" className="footer-link">Privacy Policy</a>
+                             <a href="https://windowsforum.com/help/privacy-policy/" className="footer-link">Privacy Policy</a>
                         </div>
                     </div>
                 </div>
