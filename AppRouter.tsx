@@ -19,6 +19,9 @@ const AppContent: React.FC = () => {
     useEffect(() => {
         // Track page views on route change
         trackPageView(location.pathname);
+        
+        // Scroll to top on route change
+        window.scrollTo(0, 0);
     }, [location.pathname, trackPageView]);
     
     return (

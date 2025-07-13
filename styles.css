@@ -923,6 +923,38 @@ body.mobile-menu-open {
   width: 100%; height: 100%;
 }
 
+.floating-binary {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.binary-string {
+  position: absolute;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--brand-primary);
+  opacity: 0.08;
+  animation: floatBinary 25s ease-in-out infinite;
+  white-space: nowrap;
+  letter-spacing: 1px;
+}
+
+.binary-string:nth-child(odd) {
+  color: var(--brand-accent);
+  opacity: 0.06;
+  animation-duration: 30s;
+  animation-direction: reverse;
+}
+
+.binary-string:nth-child(3n) {
+  color: rgba(59, 130, 246, 0.4);
+  opacity: 0.1;
+  animation-duration: 20s;
+}
+
 .floating-errors {
   position: relative;
   width: 100%; height: 100%;
@@ -1220,6 +1252,7 @@ body.mobile-menu-open {
   gap: 2rem;
   margin-bottom: 3rem;
   width: 100%;
+  padding-top: 1rem;
 }
 
 /* Donate Page Components */
@@ -1231,7 +1264,7 @@ body.mobile-menu-open {
   border: 1px solid var(--border-primary);
   border-radius: 0.75rem;
   transition: all 0.2s ease;
-  overflow: hidden;
+  overflow: visible;
   width: 100%;
   box-sizing: border-box;
   max-width: 100%;
@@ -1253,6 +1286,8 @@ body.mobile-menu-open {
   border-radius: 1rem;
   font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
+  z-index: 10;
 }
 
 .donate-amounts {
@@ -1394,6 +1429,29 @@ body.mobile-menu-open {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes floatBinary {
+  0% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.08;
+  }
+  25% { 
+    transform: translate(20px, -30px) rotate(2deg);
+    opacity: 0.12;
+  }
+  50% { 
+    transform: translate(-15px, 25px) rotate(-1deg);
+    opacity: 0.06;
+  }
+  75% { 
+    transform: translate(30px, 10px) rotate(1.5deg);
+    opacity: 0.1;
+  }
+  100% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.08;
+  }
+}
+
 /* Responsive Design System */
 @media (max-width: 480px) {
   .container { 
@@ -1440,6 +1498,27 @@ body.mobile-menu-open {
     width: 100%;
     max-width: 100%;
     margin: 0;
+  }
+  
+  /* Mobile binary optimization */
+  .binary-string {
+    font-size: 0.6rem;
+    opacity: 0.05;
+  }
+  
+  .binary-string:nth-child(odd) {
+    opacity: 0.04;
+  }
+  
+  .binary-string:nth-child(3n) {
+    opacity: 0.06;
+  }
+  
+  /* Mobile featured badge adjustments */
+  .featured-badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.75rem;
+    top: -0.6rem;
   }
   
   .donate-card .btn-primary,
