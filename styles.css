@@ -87,6 +87,8 @@ p {
   text-decoration: none;
   white-space: nowrap;
   user-select: none;
+  position: relative;
+  overflow: hidden;
 }
 
 .btn:disabled {
@@ -161,9 +163,12 @@ p {
 /* Navigation */
 .nav-link {
   color: var(--text-secondary);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.875rem;
   transition: color 0.2s ease;
   position: relative;
-  text-decoration: none;
+  overflow: hidden;
 }
 
 .nav-link:hover {
@@ -471,10 +476,6 @@ body.mobile-menu-open {
 }
 
 /* Enhanced Button System with Ripple Effects */
-.btn {
-  position: relative;
-  overflow: hidden;
-}
 
 .btn-primary::after {
   content: '';
@@ -585,24 +586,6 @@ body.mobile-menu-open {
   animation: navSlideIn 0.8s ease-out;
 }
 
-.nav-link {
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-weight: 500;
-  font-size: 0.875rem;
-  transition: color 0.2s ease;
-  position: relative;
-  overflow: hidden;
-}
-
-.nav-link:hover {
-  color: var(--text-primary);
-}
-
-.nav-link.active {
-  color: var(--brand-primary);
-}
-
 .nav-link.active::after {
   content: '';
   position: absolute;
@@ -683,11 +666,11 @@ body.mobile-menu-open {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background-color: var(--bg-primary);
-  z-index: 1000;
+  z-index: 9999;
   opacity: 0;
   visibility: hidden;
   transition: all 0.2s ease;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .mobile-nav.open {
@@ -1364,44 +1347,6 @@ body.mobile-menu-open {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Vendor prefixes for animations */
-@-webkit-keyframes binaryFall {
-  0% {
-    -webkit-transform: translateY(-100%);
-    transform: translateY(-100%);
-    opacity: 0;
-  }
-  10% {
-    opacity: 0.6;
-  }
-  90% {
-    opacity: 0.6;
-  }
-  100% {
-    -webkit-transform: translateY(calc(100vh + 100%));
-    transform: translateY(calc(100vh + 100%));
-    opacity: 0;
-  }
-}
-
-@-moz-keyframes binaryFall {
-  0% {
-    -moz-transform: translateY(-100%);
-    transform: translateY(-100%);
-    opacity: 0;
-  }
-  10% {
-    opacity: 0.6;
-  }
-  90% {
-    opacity: 0.6;
-  }
-  100% {
-    -moz-transform: translateY(calc(100vh + 100%));
-    transform: translateY(calc(100vh + 100%));
-    opacity: 0;
-  }
-}
 
 /* AdSense Styles */
 .ad-container {
@@ -1486,7 +1431,12 @@ body.mobile-menu-open {
   }
 }
 
-/* Responsive ad sizing */
+/* Mobile only helper */
+.mobile-only {
+  display: none;
+}
+
+/* Responsive ad sizing and mobile utilities */
 @media (max-width: 768px) {
   .ad-container.ad-header {
     max-width: 100%;
@@ -1495,14 +1445,7 @@ body.mobile-menu-open {
   .sticky-ad {
     max-height: 90px;
   }
-}
-
-/* Mobile only helper */
-.mobile-only {
-  display: none;
-}
-
-@media (max-width: 768px) {
+  
   .mobile-only {
     display: block;
   }
@@ -1514,7 +1457,7 @@ body.mobile-menu-open {
   overflow-x: hidden;
 }
 
-/* Documentation Layout */
+/* Documentation Layout - OPTIMIZATION: Extract to docs.css for better code splitting */
 .docs-layout {
   display: grid;
   grid-template-columns: 250px 1fr;
@@ -1815,19 +1758,30 @@ body.mobile-menu-open {
     margin: 0;
   }
   
-  /* Mobile binary optimization */
+  /* Mobile performance optimizations - disable heavy animations */
+  .binary-rain,
+  .hero-grid,
+  .hero-background,
+  .glitch-overlay,
+  .floating-errors {
+    display: none !important;
+  }
+  
   .binary-column {
-    font-size: 0.5rem;
-    animation-duration: 30s !important;
+    display: none;
   }
   
-  .binary-column span {
-    filter: blur(0.8px) !important;
-    opacity: 0.3;
+  /* Disable backdrop filters on mobile for performance */
+  .header {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgba(10, 10, 10, 0.95);
   }
   
-  .binary-column:nth-child(n+6) {
-    display: none; /* Hide extra columns on mobile */
+  /* Reduce animation complexity */
+  * {
+    animation-duration: 0.1s !important;
+    transition-duration: 0.1s !important;
   }
   
   /* Mobile featured badge adjustments */

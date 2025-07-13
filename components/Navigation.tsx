@@ -36,85 +36,87 @@ const Navigation: React.FC = () => {
     }, [location.pathname]);
     
     return (
-        <header className="header">
-            <div className="container">
-                <div className="header-content">
-                    <Logo onClick={closeMobileMenu} />
-                    
-                    {/* Desktop Navigation */}
-                    <nav className="nav desktop-nav">
-                        <Link to="/" className={`nav-link ${isActive('/') ? 'active' : ''}`}>
-                            Home
-                        </Link>
-                        <Link to="/analyzer" className={`nav-link ${isActive('/analyzer') ? 'active' : ''}`}>
-                            Analyzer
-                        </Link>
-                        <Link to="/about" className={`nav-link ${isActive('/about') ? 'active' : ''}`}>
-                            About
-                        </Link>
-                        <Link to="/documentation" className={`nav-link ${isActive('/documentation') ? 'active' : ''}`}>
-                            Documentation
-                        </Link>
-                        <Link to="/donate" className={`nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}>
-                            Support Us
-                        </Link>
-                    </nav>
-                    
-                    {/* Mobile Menu Button */}
-                    <button 
-                        className="mobile-menu-toggle"
-                        onClick={toggleMobileMenu}
-                        aria-label="Toggle mobile menu"
-                        aria-expanded={isMobileMenuOpen}
-                    >
-                        <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
-                        <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
-                        <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
-                    </button>
-                </div>
-                
-                {/* Mobile Navigation */}
-                <nav className={`mobile-nav ${isMobileMenuOpen ? 'open' : ''}`}>
-                    <div className="mobile-nav-content">
-                        <Link 
-                            to="/" 
-                            className={`mobile-nav-link ${isActive('/') ? 'active' : ''}`}
-                            onClick={closeMobileMenu}
+        <>
+            <header className="header">
+                <div className="container">
+                    <div className="header-content">
+                        <Logo onClick={closeMobileMenu} />
+                        
+                        {/* Desktop Navigation */}
+                        <nav className="nav desktop-nav">
+                            <Link to="/" className={`nav-link ${isActive('/') ? 'active' : ''}`}>
+                                Home
+                            </Link>
+                            <Link to="/analyzer" className={`nav-link ${isActive('/analyzer') ? 'active' : ''}`}>
+                                Analyzer
+                            </Link>
+                            <Link to="/about" className={`nav-link ${isActive('/about') ? 'active' : ''}`}>
+                                About
+                            </Link>
+                            <Link to="/documentation" className={`nav-link ${isActive('/documentation') ? 'active' : ''}`}>
+                                Documentation
+                            </Link>
+                            <Link to="/donate" className={`nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}>
+                                Support Us
+                            </Link>
+                        </nav>
+                        
+                        {/* Mobile Menu Button */}
+                        <button 
+                            className="mobile-menu-toggle"
+                            onClick={toggleMobileMenu}
+                            aria-label="Toggle mobile menu"
+                            aria-expanded={isMobileMenuOpen}
                         >
-                            Home
-                        </Link>
-                        <Link 
-                            to="/analyzer" 
-                            className={`mobile-nav-link ${isActive('/analyzer') ? 'active' : ''}`}
-                            onClick={closeMobileMenu}
-                        >
-                            Analyzer
-                        </Link>
-                        <Link 
-                            to="/about" 
-                            className={`mobile-nav-link ${isActive('/about') ? 'active' : ''}`}
-                            onClick={closeMobileMenu}
-                        >
-                            About
-                        </Link>
-                        <Link 
-                            to="/documentation" 
-                            className={`mobile-nav-link ${isActive('/documentation') ? 'active' : ''}`}
-                            onClick={closeMobileMenu}
-                        >
-                            Documentation
-                        </Link>
-                        <Link 
-                            to="/donate" 
-                            className={`mobile-nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}
-                            onClick={closeMobileMenu}
-                        >
-                            Support Us
-                        </Link>
+                            <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
+                            <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
+                            <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
+                        </button>
                     </div>
-                </nav>
-            </div>
-        </header>
+                </div>
+            </header>
+            
+            {/* Mobile Navigation - Outside of header */}
+            <nav className={`mobile-nav ${isMobileMenuOpen ? 'open' : ''}`}>
+                <div className="mobile-nav-content">
+                    <Link 
+                        to="/" 
+                        className={`mobile-nav-link ${isActive('/') ? 'active' : ''}`}
+                        onClick={closeMobileMenu}
+                    >
+                        Home
+                    </Link>
+                    <Link 
+                        to="/analyzer" 
+                        className={`mobile-nav-link ${isActive('/analyzer') ? 'active' : ''}`}
+                        onClick={closeMobileMenu}
+                    >
+                        Analyzer
+                    </Link>
+                    <Link 
+                        to="/about" 
+                        className={`mobile-nav-link ${isActive('/about') ? 'active' : ''}`}
+                        onClick={closeMobileMenu}
+                    >
+                        About
+                    </Link>
+                    <Link 
+                        to="/documentation" 
+                        className={`mobile-nav-link ${isActive('/documentation') ? 'active' : ''}`}
+                        onClick={closeMobileMenu}
+                    >
+                        Documentation
+                    </Link>
+                    <Link 
+                        to="/donate" 
+                        className={`mobile-nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}
+                        onClick={closeMobileMenu}
+                    >
+                        Support Us
+                    </Link>
+                </div>
+            </nav>
+        </>
     );
 };
 
