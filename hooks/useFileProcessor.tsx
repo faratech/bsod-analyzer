@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
 
+import JSZip from 'jszip';
+
 const DUMP_TYPE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
 
 export const useFileProcessor = () => {
