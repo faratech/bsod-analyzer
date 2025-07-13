@@ -24,7 +24,8 @@
     "react-dom": "latest",
     "react-markdown": "latest",
     "react-router-dom": "latest",
-    "remark-gfm": "latest"
+    "remark-gfm": "latest",
+    "jszip": "latest"
   },
   "devDependencies": {
     "@fullhuman/postcss-purgecss": "^7.0.2",
