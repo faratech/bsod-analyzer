@@ -927,32 +927,60 @@ body.mobile-menu-open {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
   overflow: hidden;
-  z-index: 0;
+  z-index: -1;
   pointer-events: none;
+  transition: filter 0.8s ease;
+}
+
+.hero:hover .floating-binary {
+  filter: brightness(1.2) contrast(1.1);
+}
+
+.hero:hover .binary-string {
+  animation-duration: 15s !important;
 }
 
 .binary-string {
   position: absolute;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
+  font-size: 0.6rem;
   color: var(--brand-primary);
-  opacity: 0.08;
+  opacity: 0.03;
   animation: floatBinary 25s ease-in-out infinite;
   white-space: nowrap;
   letter-spacing: 1px;
+  user-select: none;
+  filter: blur(0.5px);
+  transition: all 0.3s ease;
 }
 
 .binary-string:nth-child(odd) {
   color: var(--brand-accent);
-  opacity: 0.06;
+  opacity: 0.02;
   animation-duration: 30s;
   animation-direction: reverse;
+  filter: blur(0.8px);
+  animation-name: floatBinaryBlur;
 }
 
 .binary-string:nth-child(3n) {
-  color: rgba(59, 130, 246, 0.4);
-  opacity: 0.1;
+  color: rgba(59, 130, 246, 0.2);
+  opacity: 0.04;
   animation-duration: 20s;
+  filter: blur(0.3px);
+  animation-name: floatBinaryGlow;
+}
+
+.binary-string:nth-child(5n) {
+  animation-name: floatBinaryDistort;
+  animation-duration: 35s;
+  filter: blur(0.6px) brightness(1.2);
+}
+
+.binary-string:nth-child(7n) {
+  animation-name: floatBinaryGlitch;
+  animation-duration: 40s;
+  filter: blur(0.4px) contrast(1.1);
 }
 
 .floating-errors {
@@ -1432,23 +1460,170 @@ body.mobile-menu-open {
 @keyframes floatBinary {
   0% { 
     transform: translate(0, 0) rotate(0deg);
-    opacity: 0.08;
+    opacity: 0.03;
+    filter: blur(0.5px);
   }
   25% { 
-    transform: translate(20px, -30px) rotate(2deg);
-    opacity: 0.12;
+    transform: translate(40px, -60px) rotate(3deg);
+    opacity: 0.05;
+    filter: blur(0.3px);
   }
   50% { 
-    transform: translate(-15px, 25px) rotate(-1deg);
-    opacity: 0.06;
+    transform: translate(-30px, 50px) rotate(-2deg);
+    opacity: 0.02;
+    filter: blur(0.8px);
   }
   75% { 
-    transform: translate(30px, 10px) rotate(1.5deg);
-    opacity: 0.1;
+    transform: translate(60px, 20px) rotate(2.5deg);
+    opacity: 0.04;
+    filter: blur(0.4px);
   }
   100% { 
     transform: translate(0, 0) rotate(0deg);
-    opacity: 0.08;
+    opacity: 0.03;
+    filter: blur(0.5px);
+  }
+}
+
+@keyframes floatBinaryBlur {
+  0% { 
+    transform: translate(0, 0) rotate(0deg) scale(1);
+    opacity: 0.02;
+    filter: blur(0.8px);
+  }
+  33% { 
+    transform: translate(-50px, 40px) rotate(-4deg) scale(1.1);
+    opacity: 0.04;
+    filter: blur(1.2px);
+  }
+  66% { 
+    transform: translate(45px, -30px) rotate(5deg) scale(0.9);
+    opacity: 0.015;
+    filter: blur(0.4px);
+  }
+  100% { 
+    transform: translate(0, 0) rotate(0deg) scale(1);
+    opacity: 0.02;
+    filter: blur(0.8px);
+  }
+}
+
+@keyframes floatBinaryGlow {
+  0% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.04;
+    filter: blur(0.3px) brightness(1);
+  }
+  20% { 
+    transform: translate(25px, -40px) rotate(2deg);
+    opacity: 0.06;
+    filter: blur(0.1px) brightness(1.3);
+  }
+  40% { 
+    transform: translate(-35px, 20px) rotate(-3deg);
+    opacity: 0.03;
+    filter: blur(0.6px) brightness(0.8);
+  }
+  60% { 
+    transform: translate(50px, 35px) rotate(4deg);
+    opacity: 0.05;
+    filter: blur(0.2px) brightness(1.1);
+  }
+  80% { 
+    transform: translate(-20px, -25px) rotate(-1deg);
+    opacity: 0.02;
+    filter: blur(0.4px) brightness(0.9);
+  }
+  100% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.04;
+    filter: blur(0.3px) brightness(1);
+  }
+}
+
+@keyframes floatBinaryDistort {
+  0% { 
+    transform: translate(0, 0) rotate(0deg) skewX(0deg);
+    opacity: 0.03;
+    filter: blur(0.6px) brightness(1.2);
+  }
+  25% { 
+    transform: translate(70px, -50px) rotate(6deg) skewX(2deg);
+    opacity: 0.05;
+    filter: blur(0.2px) brightness(1.4);
+  }
+  50% { 
+    transform: translate(-60px, 70px) rotate(-5deg) skewX(-3deg);
+    opacity: 0.02;
+    filter: blur(1px) brightness(1);
+  }
+  75% { 
+    transform: translate(40px, -20px) rotate(3deg) skewX(1deg);
+    opacity: 0.04;
+    filter: blur(0.4px) brightness(1.3);
+  }
+  100% { 
+    transform: translate(0, 0) rotate(0deg) skewX(0deg);
+    opacity: 0.03;
+    filter: blur(0.6px) brightness(1.2);
+  }
+}
+
+@keyframes floatBinaryGlitch {
+  0% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.03;
+    filter: blur(0.4px) contrast(1.1);
+  }
+  10% { 
+    transform: translate(2px, -1px) rotate(0.5deg);
+    opacity: 0.05;
+    filter: blur(0.1px) contrast(1.3);
+  }
+  20% { 
+    transform: translate(-1px, 2px) rotate(-0.3deg);
+    opacity: 0.02;
+    filter: blur(0.8px) contrast(0.9);
+  }
+  30% { 
+    transform: translate(80px, -70px) rotate(7deg);
+    opacity: 0.04;
+    filter: blur(0.3px) contrast(1.2);
+  }
+  40% { 
+    transform: translate(-70px, 60px) rotate(-6deg);
+    opacity: 0.025;
+    filter: blur(0.6px) contrast(1);
+  }
+  50% { 
+    transform: translate(1px, -2px) rotate(0.2deg);
+    opacity: 0.045;
+    filter: blur(0.2px) contrast(1.4);
+  }
+  60% { 
+    transform: translate(-2px, 1px) rotate(-0.4deg);
+    opacity: 0.02;
+    filter: blur(0.7px) contrast(0.8);
+  }
+  70% { 
+    transform: translate(90px, 40px) rotate(4deg);
+    opacity: 0.035;
+    filter: blur(0.4px) contrast(1.1);
+  }
+  80% { 
+    transform: translate(-50px, -80px) rotate(-8deg);
+    opacity: 0.025;
+    filter: blur(0.9px) contrast(1);
+  }
+  90% { 
+    transform: translate(1px, 1px) rotate(0.1deg);
+    opacity: 0.04;
+    filter: blur(0.3px) contrast(1.2);
+  }
+  100% { 
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0.03;
+    filter: blur(0.4px) contrast(1.1);
   }
 }
 
@@ -1502,16 +1677,24 @@ body.mobile-menu-open {
   
   /* Mobile binary optimization */
   .binary-string {
-    font-size: 0.6rem;
-    opacity: 0.05;
+    font-size: 0.5rem;
+    opacity: 0.02;
+    filter: blur(0.3px) !important;
   }
   
   .binary-string:nth-child(odd) {
-    opacity: 0.04;
+    opacity: 0.015;
+    filter: blur(0.4px) !important;
   }
   
   .binary-string:nth-child(3n) {
-    opacity: 0.06;
+    opacity: 0.025;
+    filter: blur(0.2px) !important;
+  }
+  
+  .binary-string:nth-child(5n),
+  .binary-string:nth-child(7n) {
+    filter: blur(0.3px) !important;
   }
   
   /* Mobile featured badge adjustments */
