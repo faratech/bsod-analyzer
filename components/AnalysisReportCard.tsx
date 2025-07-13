@@ -1,10 +1,36 @@
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+
+// Lazy load ReactMarkdown and remarkGfm
+const ReactMarkdown = lazy(() => import('react-markdown'));
+const remarkGfmModule = import('remark-gfm');
+
+// Wrapper component for lazy-loaded markdown
+const LazyMarkdown: React.FC<{ children: string }> = ({ children }) => {
+    const [remarkGfm, setRemarkGfm] = useState<any>(null);
+    
+    React.useEffect(() => {
+        remarkGfmModule.then(module => setRemarkGfm(() => module.default));
+    }, []);
+    
+    return (
+        <Suspense fallback={<div style={{ padding: '1rem' }}>Loading...</div>}>
+            <ReactMarkdown
+                remarkPlugins={remarkGfm ? [remarkGfm] : []}
+                components={{
+                    pre: ({node, ...props}) => <pre className="code-block" style={{margin: 0}} {...props} />,
+                    code: ({ node, inline, ...props }: any) => <code style={{fontFamily: 'Jetbrains Mono, monospace', backgroundColor: inline ? 'var(--bg-secondary)' : 'transparent', padding: inline ? '0.2em 0.4em' : 0, borderRadius: '3px'}} {...props} />,
+                    a: ({node, ...props}) => <a style={{color: 'var(--brand-primary)'}} target="_blank" rel="noopener noreferrer" {...props} />,
+                }}
+            >
+                {children}
+            </ReactMarkdown>
+        </Suspense>
+    );
+};
 
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
@@ -219,16 +245,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     <div key={index} style={{backgroundColor: 'var(--bg-primary)', borderRadius: '0.5rem', border: '1px solid var(--border-primary)'}}>
                                         <p style={{ fontFamily: 'Jetbrains Mono, monospace', fontSize: '0.875rem', backgroundColor: 'var(--bg-secondary)', padding: '0.5rem 1rem', borderBottom: '1px solid var(--border-primary)', color: 'var(--text-primary)'}}>{`> ${analysis.tool}`}</p>
                                         <div style={{padding: '0.5rem 1rem 1rem', overflowX: 'auto'}}>
-                                            <ReactMarkdown
-                                                remarkPlugins={[remarkGfm]}
-                                                components={{
-                                                    pre: ({node, ...props}) => <pre className="code-block" style={{margin: 0}} {...props} />,
-                                                    code: ({ node, inline, ...props }: any) => <code style={{fontFamily: 'Jetbrains Mono, monospace', backgroundColor: inline ? 'var(--bg-secondary)' : 'transparent', padding: inline ? '0.2em 0.4em' : 0, borderRadius: '3px'}} {...props} />,
-                                                    a: ({node, ...props}) => <a style={{color: 'var(--brand-primary)'}} target="_blank" rel="noopener noreferrer" {...props} />,
-                                                }}
-                                            >
-                                                {analysis.result}
-                                            </ReactMarkdown>
+                                            <LazyMarkdown>{analysis.result}</LazyMarkdown>
                                         </div>
                                     </div>
                                 ))}

@@ -2,8 +2,9 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../components/Icons';
 import SEO from '../components/SEO';
-import AnimatedBackground from '../components/AnimatedBackground';
 import StructuredData from '../components/StructuredData';
+import HeroSection from '../components/HeroSection';
+import FeaturesSection from '../components/FeaturesSection';
 import { DisplayAd, InFeedAd, HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
 
 const Home: React.FC = () => {
@@ -80,27 +81,23 @@ const Home: React.FC = () => {
             />
             <StructuredData data={softwareData} />
             <StructuredData data={orgData} />
-            <section className="hero">
-                <AnimatedBackground />
-                <div className="container">
-                    <div className="hero-content fade-in">
-                        <h1 className="hero-title">Decode Your Blue Screen of Death</h1>
-                        <p className="hero-subtitle">
-                            Professional-grade Windows crash dump analysis powered by AI. 
-                            Get instant insights into what caused your system crash and how to fix it.
-                        </p>
-                        <div className="hero-actions">
-                            <Link to="/analyzer" className="btn btn-primary btn-large glow-button">
-                                <span>Start Analysis</span>
-                                <span className="btn-sparkle">✨</span>
-                            </Link>
-                            <Link to="/documentation" className="btn btn-secondary btn-large">
-                                Learn More
-                            </Link>
-                        </div>
-                    </div>
-                </div>
-            </section>
+            
+            <HeroSection
+                title="Decode Your Blue Screen of Death"
+                subtitle="Professional-grade Windows crash dump analysis powered by AI. Get instant insights into what caused your system crash and how to fix it."
+                backgroundType="animated"
+                actions={
+                    <>
+                        <Link to="/analyzer" className="btn btn-primary btn-large glow-button">
+                            <span>Start Analysis</span>
+                            <span className="btn-sparkle">✨</span>
+                        </Link>
+                        <Link to="/documentation" className="btn btn-secondary btn-large">
+                            Learn More
+                        </Link>
+                    </>
+                }
+            />
 
             {/* Ad after hero section - high visibility */}
             <DisplayAd 
@@ -108,42 +105,27 @@ const Home: React.FC = () => {
                 style={{ minHeight: '90px' }}
             />
 
-            <section className="features">
-                <div className="container">
-                    <div style={{ textAlign: 'center' }}>
-                        <h2>Why Choose BSOD AI Analyzer?</h2>
-                        <p style={{ color: 'var(--text-secondary)', maxWidth: '600px', margin: '1rem auto 0' }}>
-                            Advanced AI technology meets Windows debugging expertise
-                        </p>
-                    </div>
-                    <div className="features-grid">
-                        <div className="feature-card fade-in" style={{animationDelay: '100ms'}}>
-                            <UploadFeatureIcon className="feature-icon" />
-                            <h3 className="feature-title">Easy Upload</h3>
-                            <p className="feature-description">
-                                Simply drag and drop your .dmp files or .zip archives. 
-                                Supports both minidumps and kernel dumps.
-                            </p>
-                        </div>
-                        <div className="feature-card fade-in" style={{animationDelay: '200ms'}}>
-                            <AnalyzeFeatureIcon className="feature-icon" />
-                            <h3 className="feature-title">AI-Powered Analysis</h3>
-                            <p className="feature-description">
-                                Our AI analyzes crash patterns, driver conflicts, and system states 
-                                to pinpoint the exact cause of your BSOD.
-                            </p>
-                        </div>
-                        <div className="feature-card fade-in" style={{animationDelay: '300ms'}}>
-                            <ResolveFeatureIcon className="feature-icon" />
-                            <h3 className="feature-title">Clear Solutions</h3>
-                            <p className="feature-description">
-                                Get step-by-step instructions to resolve your specific issue, 
-                                from driver updates to system configuration changes.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </section>
+            <FeaturesSection
+                title="Why Choose BSOD AI Analyzer?"
+                subtitle="Advanced AI technology meets Windows debugging expertise"
+                features={[
+                    {
+                        icon: <UploadFeatureIcon />,
+                        title: "Easy Upload",
+                        description: "Simply drag and drop your .dmp files or .zip archives. Supports both minidumps and kernel dumps."
+                    },
+                    {
+                        icon: <AnalyzeFeatureIcon />,
+                        title: "AI-Powered Analysis",
+                        description: "Our AI analyzes crash patterns, driver conflicts, and system states to pinpoint the exact cause of your BSOD."
+                    },
+                    {
+                        icon: <ResolveFeatureIcon />,
+                        title: "Clear Solutions",
+                        description: "Get step-by-step instructions to resolve your specific issue, from driver updates to system configuration changes."
+                    }
+                ]}
+            />
 
             {/* Horizontal ad between features and info sections */}
             <HorizontalAd 

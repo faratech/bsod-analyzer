@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import PayPalDonateButton from '../components/PayPalDonateButton';
-import SEO from '../components/SEO';
+import PageLayout from '../components/PageLayout';
 import { useAnalytics } from '../hooks/useAnalytics';
 
 const Donate: React.FC = () => {
@@ -21,17 +21,13 @@ const Donate: React.FC = () => {
         }
     }, [location]);
     return (
-        <>
-            <SEO 
-                title="Support BSOD AI Analyzer - Donate"
-                description="Support the development of BSOD AI Analyzer. Your donations help keep this free tool available for everyone. Multiple payment options available including PayPal and cryptocurrency."
-                keywords="donate BSOD analyzer, support Windows debugging, PayPal donation, cryptocurrency donation"
-                canonicalUrl="https://bsod.windowsforum.com/donate"
-            />
-            <main className="page-content">
-                <div className="container">
-                    <div className="content-wrapper donate-page">
-                    <h1>Support BSOD AI Analyzer</h1>
+        <PageLayout
+            title="Support BSOD AI Analyzer"
+            description="Support the development of BSOD AI Analyzer. Your donations help keep this free tool available for everyone. Multiple payment options available including PayPal and cryptocurrency."
+            keywords="donate BSOD analyzer, support Windows debugging, PayPal donation, cryptocurrency donation"
+            canonicalPath="/donate"
+        >
+            <div className="content-wrapper donate-page">
                     
                     {showSuccessMessage && (
                         <div className="success-message fade-in">
@@ -200,9 +196,7 @@ const Donate: React.FC = () => {
                         </div>
                     </section>
                 </div>
-            </div>
-        </main>
-        </>
+        </PageLayout>
     );
 };
 

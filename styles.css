@@ -2007,3 +2007,7 @@ body.mobile-menu-open {
 /* Utility class fixes */
 .w-5, .h-5 { width: 1.25rem; height: 1.25rem; }
 .w-6, .h-6 { width: 1.5rem; height: 1.5rem; }
+
+/* Spacing utilities */
+.mt-2 { margin-top: 2rem; }
+.text-center { text-align: center; }

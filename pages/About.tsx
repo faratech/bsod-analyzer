@@ -1,5 +1,5 @@
 import React from 'react';
-import SEO from '../components/SEO';
+import PageLayout from '../components/PageLayout';
 import StructuredData from '../components/StructuredData';
 import { MultiplexAd, DisplayAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
 
@@ -79,18 +79,16 @@ const About: React.FC = () => {
 
     return (
         <>
-            <SEO 
-                title="About BSOD AI Analyzer - How It Works"
-                description="Learn how BSOD AI Analyzer uses advanced artificial intelligence to diagnose Windows crashes. Understand our technology, privacy commitment, and team behind the tool."
-                keywords="about BSOD analyzer, how BSOD analysis works, AI crash analysis, Windows debugging technology"
-                canonicalUrl="https://bsod.windowsforum.com/about"
-            />
             <StructuredData data={articleData} />
             <StructuredData data={serviceData} />
-        <main className="page-content">
-            <div className="container">
+            
+            <PageLayout
+                title="About BSOD AI Analyzer"
+                description="Learn how BSOD AI Analyzer uses advanced artificial intelligence to diagnose Windows crashes. Understand our technology, privacy commitment, and team behind the tool."
+                keywords="about BSOD analyzer, how BSOD analysis works, AI crash analysis, Windows debugging technology"
+                canonicalPath="/about"
+            >
                 <div className="content-wrapper">
-                    <h1>About BSOD AI Analyzer</h1>
                     
                     <section className="content-section">
                         <h2>Our Mission</h2>
@@ -226,8 +224,7 @@ const About: React.FC = () => {
                         />
                     </section>
                 </div>
-            </div>
-        </main>
+            </PageLayout>
         </>
     );
 };
