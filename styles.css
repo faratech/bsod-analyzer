@@ -1523,6 +1523,13 @@ body.mobile-menu-open {
   background: var(--bg-secondary);
   border-radius: 0.5rem;
   overflow: hidden;
+  width: 100%;
+}
+
+/* Ensure AdSense ins element takes full space */
+.ad-container ins.adsbygoogle {
+  width: 100%;
+  min-height: inherit;
 }
 
 .ad-container.ad-header {

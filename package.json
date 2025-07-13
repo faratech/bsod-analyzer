@@ -12,7 +12,6 @@
     "start": "NODE_ENV=production node server.js"
   },
   "dependencies": {
-    "@ctrl/react-adsense": "^1.8.0",
     "@google/generative-ai": "latest",
     "compression": "latest",
     "concurrently": "latest",
