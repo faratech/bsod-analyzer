@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import Navigation from './components/Navigation';
 import Footer from './components/Footer';
@@ -9,9 +9,17 @@ import Documentation from './pages/Documentation';
 import Donate from './pages/Donate';
 import StructuredData from './components/StructuredData';
 import { useBreadcrumbs } from './hooks/useBreadcrumbs';
+import { useAnalytics } from './hooks/useAnalytics';
 
 const AppContent: React.FC = () => {
     const breadcrumbData = useBreadcrumbs();
+    const location = useLocation();
+    const { trackPageView } = useAnalytics();
+    
+    useEffect(() => {
+        // Track page views on route change
+        trackPageView(location.pathname);
+    }, [location.pathname, trackPageView]);
     
     return (
         <div className="app">

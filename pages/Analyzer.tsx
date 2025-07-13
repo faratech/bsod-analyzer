@@ -5,10 +5,12 @@ import FileUploader from '../components/FileUploader';
 import AnalysisReportCard from '../components/AnalysisReportCard';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
+import { useAnalytics } from '../hooks/useAnalytics';
 
 declare const JSZip: any;
 
 const Analyzer: React.FC = () => {
+    const { trackFileUpload, trackAnalysisStart, trackAnalysisComplete } = useAnalytics();
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -28,6 +30,8 @@ const Analyzer: React.FC = () => {
                     status: FileStatus.PENDING,
                     dumpType: dumpType,
                 });
+                // Track file upload
+                trackFileUpload(dumpType, f.size);
             }
 
             if (file.name.toLowerCase().endsWith('.zip')) {
@@ -80,6 +84,11 @@ const Analyzer: React.FC = () => {
         );
 
         try {
+            // Track analysis start for each file
+            filesToAnalyze.forEach(file => {
+                trackAnalysisStart(file.dumpType);
+            });
+
             const analysisResults = await analyzeDumpFiles(filesToAnalyze);
 
             setDumpFiles(prevFiles =>
@@ -87,8 +96,12 @@ const Analyzer: React.FC = () => {
                     const result = analysisResults.find(r => r.id === df.id);
                     if (result) {
                         if (result.report) {
+                            // Track successful analysis
+                            trackAnalysisComplete(true, df.dumpType);
                             return { ...df, status: FileStatus.ANALYZED, report: result.report };
                         }
+                        // Track failed analysis
+                        trackAnalysisComplete(false, df.dumpType);
                         return { ...df, status: FileStatus.ERROR, error: result.error || 'Unknown analysis error' };
                     }
                     return df;

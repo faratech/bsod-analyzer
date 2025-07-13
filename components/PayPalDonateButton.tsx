@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useAnalytics } from '../hooks/useAnalytics';
 
 interface PayPalDonateButtonProps {
     amount?: string;
@@ -12,6 +13,7 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
     isMonthly = false 
 }) => {
     const buttonRef = useRef<HTMLDivElement>(null);
+    const { trackDonation } = useAnalytics();
 
     useEffect(() => {
         // Create a form dynamically for PayPal donation
@@ -68,11 +70,17 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
                 </svg>
                 ${buttonText}
             `;
+            
+            // Track donation click
+            submitButton.addEventListener('click', () => {
+                trackDonation(amount || '0', isMonthly ? 'monthly' : 'one-time');
+            });
+            
             form.appendChild(submitButton);
             
             buttonRef.current.appendChild(form);
         }
-    }, [amount, buttonText, isMonthly]);
+    }, [amount, buttonText, isMonthly, trackDonation]);
 
     return <div ref={buttonRef}></div>;
 };

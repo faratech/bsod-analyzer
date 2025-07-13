@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import PayPalDonateButton from '../components/PayPalDonateButton';
 import SEO from '../components/SEO';
+import { useAnalytics } from '../hooks/useAnalytics';
 
 const Donate: React.FC = () => {
     const [selectedOneTimeAmount, setSelectedOneTimeAmount] = useState<string>('10');
     const [selectedMonthlyAmount, setSelectedMonthlyAmount] = useState<string>('5');
     const [showSuccessMessage, setShowSuccessMessage] = useState(false);
     const location = useLocation();
+    const { trackDonation } = useAnalytics();
 
     useEffect(() => {
         // Check if user returned from successful PayPal donation
