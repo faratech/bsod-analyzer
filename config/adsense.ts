@@ -12,22 +12,22 @@ export const ADSENSE_CONFIG = {
   client: 'ca-pub-7455498979488414',
   slots: {
     // Display ads (responsive)
-    headerDisplay: '1234567890', // Replace with actual ad unit ID for header display ads
-    inlineDisplay: '2345678901', // Replace with actual ad unit ID for inline display ads
+    headerDisplay: '6778196821', // WindowsForum Responsive
+    inlineDisplay: '6778196821', // WindowsForum Responsive (can reuse for multiple placements)
     
     // In-feed/In-article ads
-    inFeed: '3456789012', // Replace with actual ad unit ID for in-feed ads
-    inArticle: '4567890123', // Replace with actual ad unit ID for in-article ads
+    inFeed: '5939698092', // In-article format
+    inArticle: '5939698092', // In-article format
     
     // Multiplex ads (content recommendations)
-    multiplex: '5678901234', // Replace with actual ad unit ID for multiplex ads
+    multiplex: '5526116193', // Autorelaxed format
     
     // Mobile ads
-    mobileSticky: '6789012345', // Replace with actual ad unit ID for mobile sticky ads
+    mobileSticky: '6778196821', // WindowsForum Responsive (works for sticky too)
     
     // AMP ads
-    ampDisplay: '7890123456', // Replace with actual ad unit ID for AMP display ads
-    ampSticky: '8901234567', // Replace with actual ad unit ID for AMP sticky ads
+    ampDisplay: '6778196821', // WindowsForum Responsive
+    ampSticky: '6778196821', // WindowsForum Responsive
   }
 };
 
