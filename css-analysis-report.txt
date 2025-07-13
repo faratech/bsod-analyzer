@@ -1,0 +1,31 @@
+CSS Analysis Report
+==================
+Generated: 2025-07-13T17:49:54.203Z
+Original size: 38.35 KB
+Purged size: 35.97 KB
+Reduction: 6.2%
+
+Unused CSS Selectors:
+--------------------
+- .form-select
+- .form-select:focus
+- .form-select:disabled
+- .upload-area.dragover
+- .analysis-card
+- .analysis-card > * + *
+- .analysis-header
+- .analysis-title
+- .loading-spinner
+- .pulse-animation
+- .mobile-menu
+- .mobile-menu > * + *
+- .mobile-menu-item
+- .mobile-menu-item:hover
+- .w-8
+- .h-8
+- .w-12
+- .h-12
+- .grid-auto-fit
+- .flex-center
+- .text-gradient
+- .ad-container.banner

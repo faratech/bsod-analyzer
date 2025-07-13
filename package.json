@@ -9,7 +9,9 @@
     "dev:frontend": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "NODE_ENV=production node server.js"
+    "start": "NODE_ENV=production node server.js",
+    "analyze-css": "node scripts/purge-css.js",
+    "optimize-css": "node scripts/purge-css.js --apply"
   },
   "dependencies": {
     "@google/generative-ai": "latest",
@@ -25,10 +27,12 @@
     "remark-gfm": "latest"
   },
   "devDependencies": {
+    "@fullhuman/postcss-purgecss": "^7.0.2",
     "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
     "autoprefixer": "latest",
     "postcss": "latest",
+    "purgecss": "^7.0.2",
     "tailwindcss": "latest",
     "terser": "latest",
     "typescript": "latest",
