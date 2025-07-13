@@ -1414,52 +1414,54 @@ select:disabled {
   height: 300px;
 }
 
-/* AdSense Styles */
-.adsense-container {
+/* Google Ads Styles */
+.ad-container {
+  margin: 2rem auto;
+  text-align: center;
+  min-height: 50px;
   position: relative;
-  margin: 2rem 0;
-  padding: 1rem;
+}
+
+.ad-container.in-article {
+  margin: 3rem auto;
+  padding: 1rem 0;
+}
+
+.ad-container.multiplex {
   background-color: var(--bg-secondary);
+  padding: 1rem;
   border-radius: 0.75rem;
   border: 1px solid var(--border-primary);
-  min-height: 100px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.adsense-container::before {
+.ad-container.banner {
+  max-width: 728px;
+  margin: 2rem auto;
+}
+
+.ad-container.responsive {
+  width: 100%;
+  margin: 2rem 0;
+}
+
+/* Ad label */
+.ad-container::before {
   content: 'Advertisement';
-  position: absolute;
-  top: -0.5rem;
-  left: 1rem;
+  display: block;
   font-size: 0.75rem;
   color: var(--text-tertiary);
-  background-color: var(--bg-secondary);
-  padding: 0 0.5rem;
-  z-index: 1;
+  margin-bottom: 0.5rem;
+  text-align: center;
 }
 
-.header-ad {
-  margin: 1rem 0;
-  max-height: 90px;
-}
-
-.footer-ad {
-  margin: 2rem 0 1rem;
-  max-height: 100px;
-}
-
-.in-content-ad {
-  margin: 3rem auto;
-  max-width: 728px;
-}
-
-/* Hide ads on small screens for better UX */
+/* Responsive adjustments */
 @media (max-width: 768px) {
-  .adsense-container {
+  .ad-container.banner {
     max-width: 100%;
-    overflow: hidden;
+  }
+  
+  .ad-container {
+    margin: 1.5rem auto;
   }
 }
 

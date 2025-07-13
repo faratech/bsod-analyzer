@@ -1,7 +1,6 @@
 import React from 'react';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
-import { InContentAd } from '../components/AdSense';
 
 const Documentation: React.FC = () => {
     // FAQ Structured Data
@@ -205,8 +204,6 @@ const Documentation: React.FC = () => {
                             </div>
                         </div>
                     </section>
-
-                    <InContentAd />
 
                     <section className="content-section">
                         <h2>Using the Analyzer</h2>
