@@ -128,7 +128,7 @@ const Documentation: React.FC = () => {
                         
                         <h3>Before Analysis</h3>
                         <ul>
-                            <li>Ensure dump files are not corrupted (check file size > 0)</li>
+                            <li>Ensure dump files are not corrupted (check file size is greater than 0)</li>
                             <li>Compress large files into ZIP archives for faster upload</li>
                             <li>Check that automatic dump creation is enabled in Windows</li>
                         </ul>
