@@ -11,11 +11,9 @@ import StructuredData from './components/StructuredData';
 import { useBreadcrumbs } from './hooks/useBreadcrumbs';
 import { useAnalytics } from './hooks/useAnalytics';
 
-// Extend Window interface for AdSense functions
+// Extend Window interface for AdSense
 declare global {
     interface Window {
-        refreshAds?: () => void;
-        adsenseInitialized?: boolean;
         adsbygoogle?: any[];
     }
 }
@@ -31,14 +29,6 @@ const AppContent: React.FC = () => {
         
         // Scroll to top on route change
         window.scrollTo(0, 0);
-        
-        // Refresh ads for SPA navigation (if ads are present)
-        if (typeof window.refreshAds === 'function') {
-            // Delay to ensure DOM is updated
-            setTimeout(() => {
-                window.refreshAds();
-            }, 100);
-        }
     }, [location.pathname, trackPageView]);
     
     return (

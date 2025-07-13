@@ -71,57 +71,9 @@
       gtag('config', 'G-0HVHB49RDP');
     </script>
     
-    <!-- Google AdSense Auto Ads - Deferred with SPA handling -->
-    <script>
-    window.addEventListener('load', function() {
-      // Prevent multiple initializations
-      if (window.adsenseInitialized) return;
-      
-      var adsScript = document.createElement('script');
-      adsScript.async = true;
-      adsScript.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7455498979488414';
-      adsScript.crossOrigin = 'anonymous';
-      document.head.appendChild(adsScript);
-      
-      adsScript.onload = function() {
-        // Only initialize once
-        if (!window.adsenseInitialized) {
-          window.adsbygoogle = window.adsbygoogle || [];
-          window.adsbygoogle.push({
-            google_ad_client: "ca-pub-7455498979488414"
-          });
-          window.adsenseInitialized = true;
-        }
-      };
-      
-      adsScript.onerror = function() {
-        console.warn('AdSense script failed to load');
-      };
-    });
-    
-    // Helper function for SPA navigation
-    window.refreshAds = function() {
-      if (window.adsbygoogle && window.adsenseInitialized) {
-        try {
-          // Clear any existing ad slots that might be duplicate
-          var existingAds = document.querySelectorAll('ins.adsbygoogle[data-adsbygoogle-status]');
-          existingAds.forEach(function(ad) {
-            if (ad.getAttribute('data-adsbygoogle-status') === 'done') {
-              ad.removeAttribute('data-adsbygoogle-status');
-            }
-          });
-          
-          // Refresh ads for new page content
-          var newAds = document.querySelectorAll('ins.adsbygoogle:not([data-adsbygoogle-status])');
-          if (newAds.length > 0) {
-            window.adsbygoogle.push({});
-          }
-        } catch (e) {
-          console.warn('AdSense refresh error:', e.message);
-        }
-      }
-    };
-    </script>
+    <!-- Google AdSense -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7455498979488414"
+     crossorigin="anonymous"></script>
     
     <!-- Structured Data -->
     <script type="application/ld+json">
