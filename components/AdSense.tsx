@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { ADSENSE_CONFIG, getAdSlot } from '../config/adsense';
 
 declare global {
   interface Window {
@@ -48,7 +49,8 @@ const AdSense: React.FC<AdSenseProps> = ({
         data-ad-client={client}
         data-ad-slot={slot}
         data-ad-format={format}
-        data-full-width-responsive={fullWidthResponsive}
+        data-full-width-responsive={fullWidthResponsive ? 'true' : 'false'}
+        {...(responsive && { 'data-ad-responsive': 'true' })}
         {...(layout && { 'data-ad-layout': layout })}
         {...(layoutKey && { 'data-ad-layout-key': layoutKey })}
       />
@@ -59,7 +61,8 @@ const AdSense: React.FC<AdSenseProps> = ({
 // Specific ad type components for easier usage
 export const DisplayAd: React.FC<Partial<AdSenseProps>> = (props) => (
   <AdSense
-    client="ca-pub-7455498979488414"
+    client={ADSENSE_CONFIG.client}
+    slot={props.slot || getAdSlot('headerDisplay')}
     format="auto"
     responsive={true}
     {...props}
@@ -68,7 +71,8 @@ export const DisplayAd: React.FC<Partial<AdSenseProps>> = (props) => (
 
 export const InFeedAd: React.FC<Partial<AdSenseProps>> = (props) => (
   <AdSense
-    client="ca-pub-7455498979488414"
+    client={ADSENSE_CONFIG.client}
+    slot={props.slot || getAdSlot('inFeed')}
     format="fluid"
     layout="in-article"
     {...props}
@@ -77,7 +81,8 @@ export const InFeedAd: React.FC<Partial<AdSenseProps>> = (props) => (
 
 export const InArticleAd: React.FC<Partial<AdSenseProps>> = (props) => (
   <AdSense
-    client="ca-pub-7455498979488414"
+    client={ADSENSE_CONFIG.client}
+    slot={props.slot || getAdSlot('inArticle')}
     format="fluid"
     layout="in-article"
     style={{ textAlign: 'center' }}
@@ -87,7 +92,8 @@ export const InArticleAd: React.FC<Partial<AdSenseProps>> = (props) => (
 
 export const MultiplexAd: React.FC<Partial<AdSenseProps>> = (props) => (
   <AdSense
-    client="ca-pub-7455498979488414"
+    client={ADSENSE_CONFIG.client}
+    slot={props.slot || getAdSlot('multiplex')}
     format="autorelaxed"
     {...props}
   />
@@ -95,7 +101,8 @@ export const MultiplexAd: React.FC<Partial<AdSenseProps>> = (props) => (
 
 export const StickyAd: React.FC<Partial<AdSenseProps>> = (props) => (
   <AdSense
-    client="ca-pub-7455498979488414"
+    client={ADSENSE_CONFIG.client}
+    slot={props.slot || getAdSlot('mobileSticky')}
     format="auto"
     className="sticky-ad"
     {...props}

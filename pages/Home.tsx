@@ -104,7 +104,6 @@ const Home: React.FC = () => {
 
             {/* Ad after hero section - high visibility */}
             <DisplayAd 
-                slot="1234567890" 
                 className="ad-header"
                 style={{ minHeight: '90px' }}
             />
@@ -148,7 +147,6 @@ const Home: React.FC = () => {
 
             {/* In-feed ad between features and info sections */}
             <InFeedAd 
-                slot="2345678901" 
                 className="ad-inline"
                 style={{ maxWidth: '1280px', margin: '2rem auto' }}
             />

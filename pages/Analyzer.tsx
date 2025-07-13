@@ -183,7 +183,6 @@ const Analyzer: React.FC = () => {
             
             {/* Ad after upload section */}
             <DisplayAd 
-                slot="3456789012" 
                 className="ad-header"
                 style={{ minHeight: '90px' }}
             />
@@ -217,7 +216,6 @@ const Analyzer: React.FC = () => {
         {/* Sticky ad for mobile - only shows on mobile devices */}
         <div className="mobile-only">
             <StickyAd 
-                slot="4567890123" 
                 style={{ maxHeight: '90px' }}
             />
         </div>

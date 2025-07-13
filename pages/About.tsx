@@ -196,7 +196,6 @@ const About: React.FC = () => {
                             Recommended Resources
                         </h3>
                         <MultiplexAd 
-                            slot="5678901234" 
                             style={{ minHeight: '300px' }}
                         />
                     </section>
