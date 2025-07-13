@@ -4,6 +4,7 @@ import { analyzeDumpFiles } from '../services/geminiProxy';
 import FileUploader from '../components/FileUploader';
 import AnalysisReportCard from '../components/AnalysisReportCard';
 import { AnalyzeIcon } from '../components/Icons';
+import SEO from '../components/SEO';
 
 declare const JSZip: any;
 
@@ -130,8 +131,15 @@ const Analyzer: React.FC = () => {
     const pendingFilesCount = dumpFiles.filter(df => df.status === FileStatus.PENDING).length;
 
     return (
-        <main>
-            <section className="analyzer-hero">
+        <>
+            <SEO 
+                title="BSOD Dump File Analyzer - Upload & Analyze Crash Dumps"
+                description="Upload your Windows crash dump files (.dmp) for instant AI-powered analysis. Support for minidumps, kernel dumps, and complete memory dumps. Get detailed crash analysis in seconds."
+                keywords="upload dump file, analyze BSOD, crash dump analyzer, minidump upload, kernel dump analysis, Windows debugging tool"
+                canonicalUrl="https://bsod.windowsforum.com/analyzer"
+            />
+            <main>
+                <section className="analyzer-hero">
                 <div className="container">
                     <div className="analyzer-header">
                         <h1>BSOD Dump Analyzer</h1>
@@ -184,6 +192,7 @@ const Analyzer: React.FC = () => {
                 )}
             </div>
         </main>
+        </>
     );
 };
 

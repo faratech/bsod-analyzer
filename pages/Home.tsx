@@ -1,10 +1,14 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from '../components/Icons';
+import SEO from '../components/SEO';
 
 const Home: React.FC = () => {
     return (
         <>
+            <SEO 
+                canonicalUrl="https://bsod.windowsforum.com/"
+            />
             <section className="hero">
                 <div className="hero-background">
                     <div className="hero-grid"></div>

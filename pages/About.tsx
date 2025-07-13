@@ -1,7 +1,15 @@
 import React from 'react';
+import SEO from '../components/SEO';
 
 const About: React.FC = () => {
     return (
+        <>
+            <SEO 
+                title="About BSOD AI Analyzer - How It Works"
+                description="Learn how BSOD AI Analyzer uses advanced artificial intelligence to diagnose Windows crashes. Understand our technology, privacy commitment, and team behind the tool."
+                keywords="about BSOD analyzer, how BSOD analysis works, AI crash analysis, Windows debugging technology"
+                canonicalUrl="https://bsod.windowsforum.com/about"
+            />
         <main className="page-content">
             <div className="container">
                 <div className="content-wrapper">
@@ -107,6 +115,7 @@ const About: React.FC = () => {
                 </div>
             </div>
         </main>
+        </>
     );
 };
 

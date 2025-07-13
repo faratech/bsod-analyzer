@@ -1,7 +1,15 @@
 import React from 'react';
+import SEO from '../components/SEO';
 
 const Documentation: React.FC = () => {
     return (
+        <>
+            <SEO 
+                title="BSOD Documentation - Crash Dump Analysis Guide"
+                description="Complete guide to Windows crash dump analysis. Learn about minidumps, kernel dumps, common BSOD error codes, and step-by-step instructions for using our analyzer."
+                keywords="BSOD documentation, crash dump guide, minidump tutorial, kernel dump analysis, Windows error codes, debugging guide"
+                canonicalUrl="https://bsod.windowsforum.com/documentation"
+            />
         <main className="page-content">
             <div className="container">
                 <div className="content-wrapper">
@@ -174,6 +182,7 @@ const Documentation: React.FC = () => {
                 </div>
             </div>
         </main>
+        </>
     );
 };
 

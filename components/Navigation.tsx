@@ -11,7 +11,7 @@ const Navigation: React.FC = () => {
         <header className="header">
             <div className="container">
                 <div className="header-content">
-                    <Link to="/" className="logo">
+                    <Link to="/" className="logo" aria-label="BSOD AI Analyzer Home">
                         <div className="logo-icon">
                             <AnimatedLogoIcon />
                         </div>
