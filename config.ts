@@ -2,7 +2,7 @@
 export const config = {
     // Advertisement Settings
     ads: {
-        enabled: false,  // Set to true to enable ads
+        enabled: true,  // Set to true to enable ads
         publisherId: 'ca-pub-7455498979488414',
         autoAds: true   // Enable/disable auto ads
     },
@@ -16,7 +16,7 @@ export const config = {
     
     // API Settings
     api: {
-        geminiModel: 'gemini-2.0-flash-exp',
+        geminiModel: 'gemini-2.5-flash',
         maxFileSize: 100 * 1024 * 1024, // 100MB
         minidumpThreshold: 5 * 1024 * 1024 // 5MB
     }
