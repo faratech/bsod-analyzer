@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -115,18 +115,17 @@
       }
     }
     </script>
-    <!-- Critical CSS inlined for performance -->
+    <!-- Critical CSS with Tailwind utilities -->
     <style>
-    :root{--brand-primary:#3b82f6;--brand-secondary:#1e40af;--brand-accent:#60a5fa;--bg-primary:#0a0a0a;--bg-secondary:#111111;--bg-tertiary:#1a1a1a;--bg-hover:#222222;--text-primary:#ffffff;--text-secondary:#a0a0a0;--text-tertiary:#666666;--border-primary:#2a2a2a;--border-secondary:#333333;--status-success:#10b981;--status-warning:#f59e0b;--status-error:#ef4444;--status-info:#3b82f6;--shadow-sm:0 1px 2px 0 rgba(0,0,0,0.5);--shadow-md:0 4px 6px -1px rgba(0,0,0,0.5);--shadow-lg:0 10px 15px -3px rgba(0,0,0,0.5);--shadow-glow:0 0 20px rgba(59,130,246,0.5)}*{box-sizing:border-box}body{background-color:var(--bg-primary);color:var(--text-primary);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;line-height:1.6;margin:0;padding:0;min-height:100vh;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}.header{background-color:rgba(10,10,10,0.8);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border-primary);position:sticky;top:0;z-index:50}.container{max-width:1280px;margin:0 auto;padding:0 1.5rem}h1{font-size:clamp(1.75rem,4vw,2.5rem);font-weight:800;letter-spacing:-0.02em;line-height:1.2}
+    *{box-sizing:border-box}body{background-color:#0a0a0a;color:#ffffff;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:0;min-height:100vh;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}.container{max-width:1280px;margin:0 auto;padding:0 1.5rem}
     </style>
     
     <!-- Preload critical fonts -->
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"></noscript>
     
-    <!-- Load full CSS after critical render -->
-    <link rel="preload" href="/index.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="/index.css"></noscript>
+    <!-- Load Tailwind CSS -->
+    <link rel="stylesheet" href="/styles.css">
     
     <!-- Preload and defer non-critical scripts -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
