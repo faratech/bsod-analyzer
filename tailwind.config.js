@@ -40,8 +40,8 @@ export default {
         }
       },
       fontFamily: {
-        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+        mono: ['ui-monospace', 'SF Mono', 'Monaco', 'Cascadia Mono', 'Roboto Mono', 'Consolas', 'Courier New', 'monospace'],
       },
       fontSize: {
         'hero': 'clamp(1.75rem, 4vw, 2.5rem)',

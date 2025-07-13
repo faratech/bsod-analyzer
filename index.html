@@ -49,12 +49,6 @@
     <meta name="theme-color" content="#0a0a0a" />
     
     <!-- Resource hints for performance -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    
-    <!-- Preload critical font file to prevent layout shift -->
-    <link rel="preload" href="https://fonts.gstatic.com/s/inter/v19/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2" as="font" type="font/woff2" crossorigin>
-    
     <link rel="preconnect" href="https://pagead2.googlesyndication.com">
     <link rel="preconnect" href="https://www.googletagmanager.com">
     <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
@@ -70,13 +64,7 @@
     <style>
     /* Critical CSS - Inline for faster first paint */
     
-    /* Font fallback to prevent layout shift */
-    @font-face {
-      font-family: 'Inter-fallback';
-      size-adjust: 100.06%;
-      ascent-override: 90%;
-      src: local('Arial');
-    }
+    /* System font stack for zero layout shift and optimal performance */
     
     :root {
       --brand-primary: #3b82f6;
@@ -110,7 +98,7 @@
     body {
       background-color: var(--bg-primary);
       color: var(--text-primary);
-      font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
       /* Font synthesis to prevent layout shift */
       font-synthesis: none;
       font-size: 16px;
@@ -321,8 +309,7 @@
     }
     </script>
     
-    <!-- Critical fonts - loaded synchronously to prevent layout shift -->
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+    <!-- No external fonts - using system fonts for zero layout shift -->
     
     <!-- Main CSS - loaded synchronously for initial render -->
     <link rel="stylesheet" href="/styles.css">
