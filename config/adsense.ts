@@ -14,6 +14,9 @@ export const ADSENSE_CONFIG = {
     // Display ads (responsive)
     headerDisplay: '6778196821', // WindowsForum Responsive
     inlineDisplay: '6778196821', // WindowsForum Responsive (can reuse for multiple placements)
+    squareResponsive: '5987799550', // Square Responsive
+    horizontalResponsive: '2048554545', // Horizontal Responsive
+    verticalResponsive: '8366550888', // Vertical Responsive
     
     // In-feed/In-article ads
     inFeed: '5939698092', // In-article format
@@ -21,6 +24,7 @@ export const ADSENSE_CONFIG = {
     
     // Multiplex ads (content recommendations)
     multiplex: '5526116193', // Autorelaxed format
+    verticalMultiplex: '1275879997', // Vertical Responsive Multiplex
     
     // Mobile ads
     mobileSticky: '6778196821', // WindowsForum Responsive (works for sticky too)
@@ -28,6 +32,10 @@ export const ADSENSE_CONFIG = {
     // AMP ads
     ampDisplay: '6778196821', // WindowsForum Responsive
     ampSticky: '6778196821', // WindowsForum Responsive
+    ampSquare: '5987799550', // Square Responsive for AMP
+    ampHorizontal: '2048554545', // Horizontal Responsive for AMP
+    ampVertical: '8366550888', // Vertical Responsive for AMP
+    ampMultiplex: '1275879997', // Vertical Multiplex for AMP
   }
 };
 
