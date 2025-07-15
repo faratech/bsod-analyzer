@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
-
-import JSZip from 'jszip';
+import { extractZipSafely } from '../utils/zipSecurity';
+import { SECURITY_CONFIG } from '../config/security';
 
 const DUMP_TYPE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
 
@@ -31,17 +31,22 @@ export const useFileProcessor = () => {
 
             if (file.name.toLowerCase().endsWith('.zip')) {
                 try {
-                    const JSZip = (await import('jszip')).default;
-                    const zip = await JSZip.loadAsync(file);
-                    for (const relativePath in zip.files) {
-                        if (relativePath.toLowerCase().endsWith('.dmp')) {
-                            const zipEntry = zip.files[relativePath];
-                            if (!zipEntry.dir) {
-                                const blob = await zipEntry.async('blob');
-                                const dmpFile = new File([blob], zipEntry.name, { type: 'application/octet-stream' });
-                                processFile(dmpFile);
-                            }
-                        }
+                    const { files: extractedFiles, errors } = await extractZipSafely(file);
+                    
+                    if (errors.length > 0) {
+                        console.error("Errors processing zip file:", errors);
+                        setError(errors.join('\n'));
+                    }
+                    
+                    // Check if extracting these files would exceed our limits
+                    const totalFiles = newDumpFiles.length + extractedFiles.length;
+                    if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
+                        setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                        continue;
+                    }
+                    
+                    for (const extractedFile of extractedFiles) {
+                        processFile(extractedFile);
                     }
                 } catch (e) {
                     console.error("Error processing zip file:", e);

@@ -61,7 +61,7 @@ const App: React.FC = () => {
                     subtitle="Stop guessing. Upload your Windows .dmp or .zip files and get an expert-level diagnosis in seconds. Our AI analyzes crash dumps to identify the root cause and provide actionable solutions."
                     backgroundType="grid"
                 >
-                    <FileUploader onFilesAdded={handleFilesAdded} />
+                    <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} />
                 </HeroSection>
                 
                 <div className="container" style={{paddingTop: '2rem'}}>

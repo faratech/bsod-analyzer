@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
+import { SECURITY_CONFIG } from './serverConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,6 +14,15 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Middleware
+// Rate limiting middleware
+const apiLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.api.rateLimiting.windowMs,
+  max: SECURITY_CONFIG.api.rateLimiting.maxRequests,
+  message: SECURITY_CONFIG.api.rateLimiting.message,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use(compression({
   level: 6, // Compression level 1-9 (6 is good balance)
   threshold: 1024, // Only compress responses above 1KB
@@ -24,7 +35,7 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: `${SECURITY_CONFIG.api.maxRequestSize}` }));
 
 // Security middleware - block access to sensitive paths
 app.use((req, res, next) => {
@@ -95,9 +106,19 @@ app.use(express.static(path.join(__dirname, 'dist'), {
 // Initialize Gemini AI with server-side API key
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// Apply rate limiting to API endpoints
+app.use('/api/', apiLimiter);
+
 // Proxy endpoint for Gemini API calls
 app.post('/api/gemini/generateContent', async (req, res) => {
   try {
+    // Validate request size
+    const requestSize = JSON.stringify(req.body).length;
+    if (requestSize > SECURITY_CONFIG.api.maxRequestSize) {
+      return res.status(413).json({ 
+        error: `Request too large. Maximum size is ${SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024}MB` 
+      });
+    }
     const { model, contents, generationConfig, safetySettings, config } = req.body;
     
     // Handle model specification - use the same model as frontend

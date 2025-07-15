@@ -1,5 +1,6 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
 import { DumpFile, AnalysisReportData, FileStatus } from '../types';
+import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 
 // Define types to match original imports
 enum Type {
@@ -80,12 +81,19 @@ const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
 };
 
 function extractPrintableStrings(buffer: ArrayBuffer, minLength = 4): string {
+    const startTime = Date.now();
     const view = new Uint8Array(buffer);
     let result = '';
     let currentString = '';
     
     // ASCII strings
     for (let i = 0; i < view.length; i++) {
+        // Check timeout periodically
+        if (i % 10000 === 0 && !validateProcessingTimeout(startTime)) {
+            console.warn('String extraction timed out');
+            break;
+        }
+        
         const charCode = view[i];
         if (charCode >= 32 && charCode <= 126) {
             currentString += String.fromCharCode(charCode);
@@ -126,6 +134,7 @@ function extractPrintableStrings(buffer: ArrayBuffer, minLength = 4): string {
     return result.replace(/(\r\n|\n|\r)/gm, "\n"); // Normalize newlines
 }
 
+// Legacy function kept for compatibility - actual sanitization happens in sanitizeHexDump
 function generateHexDump(buffer: ArrayBuffer, length = 1024): string {
     const view = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, length));
     let result = '';
@@ -178,8 +187,9 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
 
             const MAX_STRINGS_LENGTH = 25000;
-            const extractedStrings = extractPrintableStrings(fileBuffer).substring(0, MAX_STRINGS_LENGTH);
-            const hexDump = generateHexDump(fileBuffer, 1024);
+            const rawExtractedStrings = extractPrintableStrings(fileBuffer);
+            const extractedStrings = sanitizeExtractedContent(rawExtractedStrings).substring(0, MAX_STRINGS_LENGTH);
+            const hexDump = sanitizeHexDump(fileBuffer);
 
             const prompt = `
 Act as a world-class Windows kernel debugger analyzing a BSOD crash dump. You will be provided with data extracted directly from a dump file. Your task is to perform a root cause analysis based on this data.
@@ -275,8 +285,9 @@ export const runAdvancedAnalysis = async (tool: string, dumpFile: DumpFile): Pro
     // Re-process the file to get the data needed for the prompt.
     const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
     const MAX_STRINGS_LENGTH = 25000;
-    const extractedStrings = extractPrintableStrings(fileBuffer).substring(0, MAX_STRINGS_LENGTH);
-    const hexDump = generateHexDump(fileBuffer, 1024);
+    const rawExtractedStrings = extractPrintableStrings(fileBuffer);
+    const extractedStrings = sanitizeExtractedContent(rawExtractedStrings).substring(0, MAX_STRINGS_LENGTH);
+    const hexDump = sanitizeHexDump(fileBuffer);
 
     const prompt = getAdvancedPrompt(tool, dumpFile, extractedStrings, hexDump);
     try {

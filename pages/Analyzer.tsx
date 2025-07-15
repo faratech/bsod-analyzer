@@ -53,7 +53,7 @@ const Analyzer: React.FC = () => {
                     </div>
                     
                     <div className="analyzer-upload-section">
-                        <FileUploader onFilesAdded={handleFilesAdded} />
+                        <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} />
                         
                         {dumpFiles.length > 0 && (
                             <div className="analyzer-controls">
