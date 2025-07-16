@@ -40,6 +40,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 
 # Copy server file and other necessary files
 COPY --chown=nodejs:nodejs server.js ./
+COPY --chown=nodejs:nodejs serverConfig.js ./
 COPY --chown=nodejs:nodejs services ./services
 COPY --chown=nodejs:nodejs components ./components
 COPY --chown=nodejs:nodejs pages ./pages
