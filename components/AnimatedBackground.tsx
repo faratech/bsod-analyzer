@@ -1,34 +1,41 @@
 import React from 'react';
 
 const AnimatedBackground: React.FC = () => {
+    // Consolidated error codes and binary patterns
+    const errorElements = [
+        { type: 'hex', value: '0x0000000A', top: '15%', left: '10%' },
+        { type: 'text', value: 'IRQL_NOT_LESS_OR_EQUAL', top: '60%', right: '15%' },
+        { type: 'hex', value: '0x00000050', bottom: '35%', left: '20%' },
+        { type: 'text', value: 'PAGE_FAULT', top: '40%', right: '25%' },
+        { type: 'hex', value: '0x0000003B', bottom: '20%', right: '10%' },
+        { type: 'binary', value: '10110101', top: '25%', right: '40%' },
+        { type: 'hex', value: '0x000000D1', top: '70%', left: '35%' },
+        { type: 'binary', value: '01001110', bottom: '25%', left: '45%' },
+        { type: 'text', value: 'KERNEL_MODE', top: '80%', right: '35%' },
+        { type: 'binary', value: '11010010', top: '45%', left: '5%' }
+    ];
+
     return (
         <div className="animated-bg">
             <div className="animated-bg-layer layer-1">
-                <div className="code-rain">
-                    {Array.from({ length: 20 }).map((_, i) => (
-                        <div key={i} className="code-drop" style={{ 
-                            left: `${Math.random() * 100}%`,
-                            animationDelay: `${Math.random() * 5}s`,
-                            animationDuration: `${15 + Math.random() * 10}s`
-                        }}>
-                            {Array.from({ length: 30 }).map((_, j) => (
-                                <span key={j} style={{ opacity: Math.random() }}>
-                                    {Math.random() > 0.5 ? '0' : '1'}
-                                </span>
-                            ))}
+                {/* Consolidated floating elements */}
+                <div className="floating-elements">
+                    {errorElements.map((element, i) => (
+                        <div 
+                            key={i} 
+                            className={`floating-element ${element.type}`}
+                            style={{ 
+                                ...(element.top && { top: element.top }),
+                                ...(element.bottom && { bottom: element.bottom }),
+                                ...(element.left && { left: element.left }),
+                                ...(element.right && { right: element.right }),
+                                animationDelay: `${i * 2}s`,
+                                animationDuration: `${20 + (i % 3) * 5}s`
+                            }}
+                        >
+                            {element.value}
                         </div>
                     ))}
-                </div>
-            </div>
-            
-            <div className="animated-bg-layer layer-2">
-                {/* Floating error codes */}
-                <div className="floating-errors">
-                    <div className="error-code" style={{ top: '20%', left: '10%' }}>0x0000000A</div>
-                    <div className="error-code" style={{ top: '60%', right: '15%' }}>IRQL_NOT_LESS_OR_EQUAL</div>
-                    <div className="error-code" style={{ bottom: '30%', left: '20%' }}>0x00000050</div>
-                    <div className="error-code" style={{ top: '40%', right: '30%' }}>PAGE_FAULT</div>
-                    <div className="error-code" style={{ bottom: '20%', right: '10%' }}>0x0000003B</div>
                 </div>
             </div>
             

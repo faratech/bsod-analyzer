@@ -852,99 +852,107 @@ body.mobile-menu-open {
   width: 100%; height: 100%;
 }
 
-/* Binary Rain Animation */
-.binary-rain {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  overflow: hidden;
-  z-index: 1;
-  pointer-events: none;
+/* Consolidated Floating Elements Animation */
+.floating-elements {
+  position: relative;
+  width: 100%;
+  height: 100%;
 }
 
-.binary-column {
+.floating-element {
   position: absolute;
-  top: -100%;
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
   font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'Courier New', monospace;
-  font-size: 0.75rem;
-  color: var(--brand-primary);
-  opacity: 0;
-  animation: binaryFall 20s linear infinite;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  animation: floatDrift 20s ease-in-out infinite;
+  pointer-events: none;
+  user-select: none;
 }
 
-.binary-column span {
-  display: block;
+/* Different styles for element types */
+.floating-element.hex {
+  color: var(--brand-primary);
+  opacity: 0.2;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-shadow: 0 0 10px currentColor;
+}
+
+.floating-element.binary {
+  color: rgba(96, 165, 250, 0.8);
+  opacity: 0.15;
+  font-size: 0.75rem;
   letter-spacing: 2px;
   text-shadow: 0 0 8px currentColor;
   filter: blur(0.5px);
 }
 
-/* Stagger the opacity for depth effect */
-.binary-column:nth-child(odd) {
-  opacity: 0.4;
-  animation-duration: 18s;
+.floating-element.text {
+  color: var(--brand-accent);
+  opacity: 0.18;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
-.binary-column:nth-child(even) {
-  opacity: 0.6;
-  animation-duration: 22s;
+/* Animation variations for depth */
+.floating-element:nth-child(odd) {
+  animation-direction: alternate-reverse;
 }
 
-.binary-column:nth-child(3n) {
-  opacity: 0.3;
-  animation-duration: 25s;
+.floating-element:nth-child(3n) {
+  animation-name: floatDriftDeep;
+  opacity: 0.1;
   filter: blur(1px);
 }
 
-/* Different colors for variety */
-.binary-column:nth-child(4n) span {
-  color: var(--brand-accent);
+.floating-element:nth-child(5n) {
+  animation-duration: 30s;
 }
 
-.binary-column:nth-child(5n) span {
-  color: rgba(96, 165, 250, 0.8);
+/* Hover interaction */
+.hero:hover .floating-element {
+  animation-duration: 15s;
 }
 
-/* Hover effect */
-.hero:hover .binary-column {
-  animation-duration: 10s !important;
-}
-
-@keyframes binaryFall {
-  0% {
-    transform: translateY(-100%);
+@keyframes floatDrift {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
     opacity: 0;
   }
   10% {
-    opacity: 0.6;
+    opacity: 0.15;
+  }
+  25% {
+    transform: translate(-20px, -30px) scale(1.05);
+  }
+  50% {
+    transform: translate(30px, -20px) scale(0.95);
+    opacity: 0.2;
+  }
+  75% {
+    transform: translate(-10px, 20px) scale(1.02);
   }
   90% {
-    opacity: 0.6;
+    opacity: 0.1;
   }
-  100% {
-    transform: translateY(calc(100vh + 100%));
+}
+
+@keyframes floatDriftDeep {
+  0%, 100% {
+    transform: translate(0, 0) scale(0.9);
     opacity: 0;
   }
-}
-
-.floating-errors {
-  position: relative;
-  width: 100%; height: 100%;
-}
-
-.error-code {
-  position: absolute;
-  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'Courier New', monospace;
-  font-size: 0.875rem;
-  color: var(--brand-accent);
-  opacity: 0.15;
-  animation: float 20s ease-in-out infinite;
-  white-space: nowrap;
+  10% {
+    opacity: 0.08;
+  }
+  50% {
+    transform: translate(-40px, 30px) scale(0.85);
+    opacity: 0.12;
+  }
+  90% {
+    opacity: 0.05;
+  }
 }
 
 .circuit-svg {
@@ -1768,11 +1776,14 @@ body.mobile-menu-open {
   .hero-grid,
   .hero-background,
   .glitch-overlay,
-  .floating-errors {
+  .floating-errors,
+  .floating-elements,
+  .animated-bg-layer {
     display: none !important;
   }
   
-  .binary-column {
+  .binary-column,
+  .floating-element {
     display: none;
   }
   
@@ -1829,6 +1840,20 @@ body.mobile-menu-open {
   .upload-area { padding: 2rem 1.5rem; }
   .features-grid { grid-template-columns: 1fr; gap: 2rem; }
   .info-grid { grid-template-columns: 1fr; gap: 2rem; }
+  
+  /* Reduce animation complexity on tablets */
+  .floating-element {
+    opacity: 0.1 !important;
+    animation-duration: 30s !important;
+  }
+  
+  .floating-element.binary {
+    display: none;
+  }
+  
+  .floating-element:nth-child(n+7) {
+    display: none;
+  }
   .donate-cards { 
     grid-template-columns: 1fr; 
     gap: 2rem;
