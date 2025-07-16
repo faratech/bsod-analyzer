@@ -35,7 +35,7 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
-app.use(express.json({ limit: `${SECURITY_CONFIG.api.maxRequestSize}` }));
+app.use(express.json({ limit: '10mb' }));
 
 // Security middleware - block access to sensitive paths
 app.use((req, res, next) => {
