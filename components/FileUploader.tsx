@@ -79,7 +79,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
         style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', borderWidth: 0 }}
         onChange={handleFileChange}
       />
-      <label htmlFor="file-upload" style={{ cursor: 'pointer', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      <label htmlFor="file-upload" style={{ cursor: 'pointer', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 2 }}>
           <UploadIcon className="upload-icon" />
           <span className="upload-text">
               Drop .dmp or .zip files here

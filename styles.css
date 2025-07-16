@@ -373,6 +373,13 @@ p {
   transform: translate(-50%, -50%);
   transition: all 0.5s ease;
   border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.upload-area > * {
+  position: relative;
+  z-index: 1;
 }
 
 .upload-area:hover {
