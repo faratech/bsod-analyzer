@@ -806,6 +806,24 @@ body.mobile-menu-open {
   transform: translateY(-1px);
 }
 
+/* Cloudflare Turnstile Styles */
+.turnstile-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.cf-turnstile {
+  margin: 0 auto;
+}
+
+.turnstile-loading {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
 /* Mobile Navigation System */
 .mobile-menu-toggle {
   display: none;

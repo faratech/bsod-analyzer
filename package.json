@@ -7,7 +7,8 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "node server.js",
     "dev:frontend": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/generate-sri.js",
+    "build:no-sri": "vite build",
     "preview": "vite preview",
     "start": "NODE_ENV=production node server.js",
     "analyze-css": "node scripts/purge-css.js",
@@ -17,6 +18,7 @@
     "@google/generative-ai": "latest",
     "compression": "latest",
     "concurrently": "latest",
+    "cookie-parser": "^1.4.7",
     "cors": "latest",
     "dotenv": "latest",
     "express": "latest",
@@ -26,7 +28,8 @@
     "react-dom": "latest",
     "react-markdown": "latest",
     "react-router-dom": "latest",
-    "remark-gfm": "latest"
+    "remark-gfm": "latest",
+    "xxhash-wasm": "^1.1.0"
   },
   "devDependencies": {
     "@fullhuman/postcss-purgecss": "latest",

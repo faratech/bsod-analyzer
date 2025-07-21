@@ -1,6 +1,7 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
 import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
+import { initializeSession, handleSessionError } from '../utils/sessionManager';
 
 // Define types to match original imports
 enum Type {
@@ -27,19 +28,36 @@ class GoogleGenAI {
         this.apiKey = config.apiKey;
         this.models = {
             generateContent: async (params: any) => {
-                const response = await fetch('/api/gemini/generateContent', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(params)
-                });
+                const makeRequest = async () => {
+                    const response = await fetch('/api/gemini/generateContent', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        credentials: 'include', // Important: include cookies
+                        body: JSON.stringify(params)
+                    });
 
-                if (!response.ok) {
-                    throw new Error(`API request failed: ${response.statusText}`);
-                }
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        
+                        // Check if it's a session error
+                        if (response.status === 401 && handleSessionError(errorData)) {
+                            // Try to re-initialize session
+                            const sessionSuccess = await initializeSession();
+                            if (sessionSuccess) {
+                                // Retry the request once after session refresh
+                                return makeRequest();
+                            }
+                        }
+                        
+                        throw new Error(errorData.error || `API request failed: ${response.statusText}`);
+                    }
 
-                const data = await response.json();
+                    return response.json();
+                };
+
+                const data = await makeRequest();
                 return {
                     text: data.text || ''
                 };

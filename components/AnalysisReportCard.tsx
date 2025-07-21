@@ -218,6 +218,12 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                              </pre>
                         </div>
                         
+                        <div style={{marginTop: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderRadius: '0.5rem'}}>
+                            <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>
+                                * You can verify this AI analysis with <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/getting-started-with-windbg" target="_blank" rel="noopener noreferrer" style={{color: 'var(--brand-primary)'}}>Microsoft WinDbg</a>
+                            </p>
+                        </div>
+                        
                         <div style={{marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-primary)'}}>
                             <h3 style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}><TerminalIcon className="w-5 h-5"/> Advanced Tools</h3>
                             <div style={{display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '1rem', flexWrap: 'wrap'}}>
