@@ -262,10 +262,36 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 4. Push to branch: `git push origin feature/your-feature`
 5. Submit a pull request
 
-## License
-
-This project is proprietary software. All rights reserved.
-
 ## Support
 
 For issues and feature requests, please use the [GitHub issue tracker](https://github.com/faratech/bsod-analyzer/issues).
+
+## License
+
+This project is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.
+
+### You are free to:
+- **Share** — copy and redistribute the material in any medium or format
+- **Adapt** — remix, transform, and build upon the material for any purpose, even commercially
+
+### Under the following terms:
+- **Attribution** — You must give appropriate credit, provide a link to the license, and indicate if changes were made
+
+### How to Attribute:
+When using this software, please include:
+```
+BSOD Analyzer by the BSOD Analyzer Contributors, licensed under CC BY 4.0
+Source: https://github.com/faratech/bsod-analyzer
+```
+
+See the [LICENSE](LICENSE) file for full details.
+
+## Contributing
+
+Contributions are welcome! By contributing to this project, you agree to license your contributions under the same CC BY 4.0 license.
+
+## Acknowledgments
+
+- Powered by Google Gemini AI for intelligent crash analysis
+- Built with React, TypeScript, and Vite
+- Deployed on Google Cloud Run
