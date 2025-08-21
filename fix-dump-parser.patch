@@ -1,0 +1,99 @@
+--- a/utils/dumpParser.ts
++++ b/utils/dumpParser.ts
+@@ -959,16 +959,20 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
+         
+         // Check for PAGEDU64 signature
+         if (sig1 === 0x45474150 && sig2 === 0x34365544) { // 'PAGE' 'DU64'
+-            // In full dumps, bug check is at offset 0x80
++            // CRITICAL FIX: In PAGEDU64 dumps, bug check is at offset 0x38, NOT 0x80!
++            // This was causing all dumps to show wrong bug check codes
++            console.log('[BugCheck] Detected PAGEDU64 format, using correct offset 0x38');
+             try {
+-                const code = view.getUint32(0x80, true);
++                const code = view.getUint32(0x38, true);  // CORRECT OFFSET
+                 if (isValidBugCheckCode(code)) {
+-                    const p1 = view.getUint32(0x88, true);
+-                    const p2 = view.getUint32(0x90, true);
+-                    const p3 = view.getUint32(0x98, true);
+-                    const p4 = view.getUint32(0xA0, true);
++                    // Parameters are 64-bit values at offsets 0x40, 0x48, 0x50, 0x58
++                    const p1 = view.getBigUint64(0x40, true);
++                    const p2 = view.getBigUint64(0x48, true);
++                    const p3 = view.getBigUint64(0x50, true);
++                    const p4 = view.getBigUint64(0x58, true);
+                     
+-                    if (validateBugCheckParameters(code, p1, p2, p3, p4)) {
+-                        return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
++                    console.log(`[BugCheck] Extracted: 0x${code.toString(16).toUpperCase()} (${BUG_CHECK_CODES[code] || 'UNKNOWN'})`);
++                    if (validateBugCheckParameters(code, Number(p1), Number(p2), Number(p3), Number(p4))) {
++                        return createBugCheckInfo(code, p1, p2, p3, p4);
+                     }
+                 }
+@@ -1486,6 +1490,25 @@ function isValidBugCheckCode(code: number): boolean {
+     return code > 0 && code < 0x10000000 && (BUG_CHECK_CODES[code] !== undefined || code >= 0x1000);
+ }
+ 
++// Add validation for fake driver names
++export function isLegitimateDriver(name: string): boolean {
++    // Reject known fake drivers that AI hallucinates
++    const fakeDrivers = ['wxr.sys', 'web.sys', 'vs.sys', 'xxx.sys', 'test.sys'];
++    if (fakeDrivers.includes(name.toLowerCase())) {
++        console.warn(`[Validation] Rejected fake driver: ${name}`);
++        return false;
++    }
++    
++    // Must match Windows driver naming patterns
++    if (!/^[a-zA-Z0-9_\-]+\.(sys|dll|exe)$/i.test(name)) {
++        return false;
++    }
++    
++    // Must be reasonable length
++    if (name.length < 4 || name.length > 64) {
++        return false;
++    }
++    
++    return true;
++}
+ 
+ function createBugCheckInfo(
+     code: number,
+
+--- a/services/geminiProxy.ts
++++ b/services/geminiProxy.ts
+@@ -200,6 +200,20 @@ async function prepareAnalysisPrompt(files: DumpFile[]): Promise<string> {
+         const hexDump = createHexDump(new Uint8Array(content.slice(0, Math.min(content.byteLength, 512))));
+         const bugCheckInfo = extractBugCheckInfo(content);
+         
++        // CRITICAL: Add strict rules to prevent AI hallucination
++        const strictRules = `
++MANDATORY RULES - FAILURE TO FOLLOW WILL RESULT IN INCORRECT ANALYSIS:
++1. You MUST use ONLY the bug check code provided: ${bugCheckInfo ? '0x' + bugCheckInfo.code.toString(16).toUpperCase() : 'NONE'}
++2. You MUST use ONLY module/driver names found in the dump data
++3. You MUST NOT invent driver names like "wXr.sys", "wEB.sys", or similar
++4. You MUST NOT create bug check codes that don't exist (like 0x65F4)
++5. If the bug check code is not in the known list, say "Unknown bug check"
++6. Base your analysis on Microsoft's official documentation for the specific bug check
++
++This is CRITICAL for accurate crash analysis. Any deviation will produce wrong results.
++`;
++        
+         // Use new WinDbg-style analysis
+         const windbgAnalysis = await performWinDbgAnalysis(content);
+         
+@@ -229,6 +243,7 @@ async function prepareAnalysisPrompt(files: DumpFile[]): Promise<string> {
+         const moduleNames = dumpInfo.moduleList
+             .slice(0, 20)
+             .map(m => m.name)
++            .filter(name => isLegitimateDriver(name))  // Filter out fake drivers
+             .join(', ');
+         
+         // Use crash pattern database for enhanced analysis
+@@ -241,6 +256,8 @@ async function prepareAnalysisPrompt(files: DumpFile[]): Promise<string> {
+         
+         prompts.push(`
+ === Analyze Dump File: ${file.name} ===
++${strictRules}
++
+ File Format: ${fileType}
+ 
+ ${windbgAnalysis ? `WinDbg-Style Analysis:

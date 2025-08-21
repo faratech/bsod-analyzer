@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Symbol Route Test</title>
+</head>
+<body>
+    <h1>Testing Symbol Routes</h1>
+    <div id="results"></div>
+    
+    <script>
+        async function testSymbolRoutes() {
+            const results = document.getElementById('results');
+            
+            // Test local symbol file
+            try {
+                console.log('Fetching /symbols/ntoskrnl.exe.json...');
+                const response = await fetch('/symbols/ntoskrnl.exe.json');
+                console.log('Response:', response);
+                
+                const status = document.createElement('p');
+                status.textContent = `Status: ${response.status} ${response.statusText}`;
+                status.style.color = response.ok ? 'green' : 'red';
+                results.appendChild(status);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const info = document.createElement('p');
+                    info.textContent = `Found ${Object.keys(data).length} symbols`;
+                    results.appendChild(info);
+                    
+                    // Show first few symbols
+                    const symbols = Object.entries(data).slice(0, 5);
+                    const list = document.createElement('ul');
+                    symbols.forEach(([addr, name]) => {
+                        const li = document.createElement('li');
+                        li.textContent = `${addr} → ${name}`;
+                        list.appendChild(li);
+                    });
+                    results.appendChild(list);
+                } else {
+                    const error = document.createElement('p');
+                    error.textContent = `Error: Could not load symbols`;
+                    error.style.color = 'red';
+                    results.appendChild(error);
+                }
+            } catch (e) {
+                console.error('Error:', e);
+                const error = document.createElement('p');
+                error.textContent = `Exception: ${e.message}`;
+                error.style.color = 'red';
+                results.appendChild(error);
+            }
+        }
+        
+        // Run test
+        testSymbolRoutes();
+    </script>
+</body>
+</html>

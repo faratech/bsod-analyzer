@@ -1,0 +1,11 @@
+{
+  "0x1000": "NdisMIndicateReceiveNetBufferLists",
+  "0x2000": "NdisAllocateNetBufferList",
+  "0x3000": "NdisFreeNetBufferList",
+  "0x4000": "NdisMSendNetBufferListsComplete",
+  "0x5000": "NdisAcquireSpinLock",
+  "0x6000": "NdisReleaseSpinLock",
+  "0x7000": "NdisMIndicateStatusEx",
+  "0x8000": "NdisOpenAdapterEx",
+  "0x9000": "NdisCloseAdapterEx"
+}

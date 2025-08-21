@@ -1,0 +1,10 @@
+{
+  "0x1000": "FltRegisterFilter",
+  "0x2000": "FltUnregisterFilter",
+  "0x3000": "FltStartFiltering",
+  "0x4000": "FltEnumerateFilters",
+  "0x5000": "FltGetFileNameInformation",
+  "0x6000": "FltReleaseFileNameInformation",
+  "0x7000": "FltpPassThrough",
+  "0x8000": "FltpDispatch"
+}

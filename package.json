@@ -1,0 +1,52 @@
+{
+  "name": "bsod-minidump-analyzer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "node server.js",
+    "dev:frontend": "vite",
+    "build": "vite build && node scripts/generate-sri.js",
+    "build:no-sri": "vite build",
+    "preview": "vite preview",
+    "start": "NODE_ENV=production node server.js",
+    "analyze-css": "node scripts/purge-css.js",
+    "optimize-css": "node scripts/purge-css.js --apply"
+  },
+  "dependencies": {
+    "@google/generative-ai": "latest",
+    "compression": "latest",
+    "concurrently": "latest",
+    "cookie-parser": "latest",
+    "cors": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "express-rate-limit": "latest",
+    "jszip": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "latest",
+    "react-router-dom": "latest",
+    "remark-gfm": "latest",
+    "xxhash-wasm": "latest"
+  },
+  "devDependencies": {
+    "@fullhuman/postcss-purgecss": "latest",
+    "@tailwindcss/postcss": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "autoprefixer": "latest",
+    "postcss": "latest",
+    "purgecss": "latest",
+    "tailwindcss": "latest",
+    "terser": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}

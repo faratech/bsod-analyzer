@@ -1,0 +1,98 @@
+/* AdSense container fixes to prevent zero-width errors */
+
+/* Ensure ad containers have minimum dimensions */
+.ad-container {
+  min-height: 90px;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+  display: block; /* Ensure block display */
+}
+
+/* Ensure parent containers provide width */
+body .ad-container {
+  min-width: 250px; /* Minimum width for ads */
+}
+
+/* Ensure adsbygoogle elements have proper sizing */
+.adsbygoogle {
+  min-height: 90px;
+  width: 100%;
+}
+
+/* Prevent ads in hidden elements */
+.ad-container:empty {
+  display: none;
+}
+
+/* Fix for mobile sticky ads */
+.sticky-ad {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: white;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+  min-height: 50px;
+  max-height: 100px;
+}
+
+/* Ensure ads don't show in collapsed accordions or tabs */
+.collapsed .ad-container,
+.hidden .ad-container,
+[style*="display: none"] .ad-container,
+[style*="display:none"] .ad-container,
+[hidden] .ad-container {
+  display: none !important;
+}
+
+/* Responsive ad sizing */
+@media (max-width: 768px) {
+  .ad-container {
+    min-height: 50px;
+  }
+  
+  .adsbygoogle {
+    min-height: 50px;
+  }
+}
+
+/* Loading state for ads */
+.ad-container.loading {
+  background: #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ad-container.loading::after {
+  content: "Loading ad...";
+  color: #666;
+  font-size: 12px;
+}
+
+/* Error state */
+.ad-container.error {
+  display: none;
+}
+
+/* Ensure parent containers have width */
+.page-content .ad-container,
+.article-content .ad-container,
+.main-content .ad-container {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Fix for flex containers */
+.flex-container .ad-container {
+  flex: 1 1 auto;
+  min-width: 200px;
+}
+
+/* Fix for grid containers */
+.grid-container .ad-container {
+  grid-column: 1 / -1;
+  min-width: 200px;
+}

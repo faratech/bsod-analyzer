@@ -1,0 +1,11 @@
+{
+  "0x1000": "DriverEntry",
+  "0x2000": "DriverUnload",
+  "0x3000": "DispatchCreate",
+  "0x4000": "DispatchClose",
+  "0x5000": "DispatchRead",
+  "0x6000": "DispatchWrite",
+  "0x7000": "DispatchDeviceControl",
+  "0x8000": "DispatchPower",
+  "0x9000": "DispatchPnp"
+}

@@ -1,0 +1,54 @@
+# Block direct access to public directory
+# This prevents users from accessing /public/filename directly
+
+# Deny access to this directory when accessed via /public/ path
+<If "%{REQUEST_URI} =~ m#^/public/#">
+    Require all denied
+</If>
+
+# Alternative method - deny access to common sensitive files
+<FilesMatch "\.(json|ts|tsx|js\.map|css\.map|log|env|gitignore|htaccess)$">
+    Require all denied
+</FilesMatch>
+
+# Deny access to source directories if somehow accessible
+<IfModule mod_alias.c>
+    RedirectMatch 403 ^/public/
+    RedirectMatch 403 ^/src/
+    RedirectMatch 403 ^/components/
+    RedirectMatch 403 ^/pages/
+    RedirectMatch 403 ^/node_modules/
+    RedirectMatch 403 ^/\.git/
+</IfModule>
+
+# Security headers for allowed files
+<IfModule mod_headers.c>
+    # Prevent MIME type sniffing
+    Header always set X-Content-Type-Options nosniff
+    
+    # Prevent clickjacking
+    Header always set X-Frame-Options DENY
+    
+    # Enable XSS protection
+    Header always set X-XSS-Protection "1; mode=block"
+    
+    # HSTS for HTTPS (only if using HTTPS)
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</IfModule>
+
+# Cache static assets properly
+<IfModule mod_expires.c>
+    ExpiresActive On
+    
+    # Favicon and images
+    ExpiresByType image/x-icon "access plus 1 year"
+    ExpiresByType image/webp "access plus 1 year"
+    ExpiresByType image/png "access plus 1 year"
+    
+    # Manifest
+    ExpiresByType application/manifest+json "access plus 1 week"
+    
+    # Sitemap and robots (check more frequently)
+    ExpiresByType application/xml "access plus 1 day"
+    ExpiresByType text/plain "access plus 1 day"
+</IfModule>

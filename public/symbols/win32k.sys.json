@@ -1,0 +1,11 @@
+{
+  "0x1000": "NtUserCallOneParam",
+  "0x2000": "NtUserCallTwoParam",
+  "0x3000": "NtGdiDdDDICreateDevice",
+  "0x4000": "EngAlphaBlend",
+  "0x5000": "GrePatBlt",
+  "0x6000": "UserSessionSwitchLeaveCrit",
+  "0x7000": "xxxCreateWindowEx",
+  "0x8000": "xxxDestroyWindow",
+  "0x9000": "xxxDispatchMessage"
+}

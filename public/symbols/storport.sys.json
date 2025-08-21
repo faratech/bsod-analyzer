@@ -1,0 +1,11 @@
+{
+  "0x1000": "StorPortNotification",
+  "0x2000": "StorPortGetPhysicalAddress",
+  "0x3000": "StorPortCompleteRequest",
+  "0x4000": "StorPortPauseDevice",
+  "0x5000": "StorPortResumeDevice",
+  "0x6000": "StorPortAcquireSpinLock",
+  "0x7000": "StorPortReleaseSpinLock",
+  "0x8000": "RaidAdapterStartIo",
+  "0x9000": "RaidUnitStartIo"
+}

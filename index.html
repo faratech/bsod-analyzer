@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BSOD AI Analyzer - Instant Windows Crash Dump Analysis</title>
+    
+    <!-- Primary Meta Tags -->
+    <meta name="title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis" />
+    <meta name="description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files (.dmp) and get instant diagnosis with actionable solutions. Analyzes both classic blue and modern black crash screens." />
+    <meta name="keywords" content="BSOD analyzer, blue screen of death, Windows crash dump, minidump analysis, kernel dump, crash analysis, Windows debugging, dump file analyzer, BSOD fix, Windows error, 0x0000000A, IRQL_NOT_LESS_OR_EQUAL, PAGE_FAULT_IN_NONPAGED_AREA, SYSTEM_SERVICE_EXCEPTION" />
+    <meta name="author" content="WindowsForum & Fara Technologies LLC" />
+    <meta name="robots" content="index, follow" />
+    <meta name="language" content="English" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://bsod.windowsforum.com/" />
+    <meta property="og:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis" />
+    <meta property="og:description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files and get instant diagnosis with actionable solutions for both classic and modern crash screens." />
+    <meta property="og:image" content="https://bsod.windowsforum.com/og-image.webp" />
+    <meta property="og:site_name" content="BSOD AI Analyzer" />
+    <meta property="og:locale" content="en_US" />
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:url" content="https://bsod.windowsforum.com/" />
+    <meta property="twitter:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis" />
+    <meta property="twitter:description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files and get instant diagnosis with actionable solutions for both classic and modern crash screens." />
+    <meta property="twitter:image" content="https://bsod.windowsforum.com/og-image.webp" />
+    <meta property="twitter:site" content="@windowsforum" />
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://bsod.windowsforum.com/" />
+    <!-- AMP HTML -->
+    <link rel="amphtml" href="https://bsod.windowsforum.com/amp/index.html" />
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/webp" href="/favicon.webp" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.webp" />
+    <link rel="icon" type="image/webp" sizes="32x32" href="/favicon-32x32.webp" />
+    <link rel="icon" type="image/webp" sizes="16x16" href="/favicon-16x16.webp" />
+    <link rel="icon" type="image/webp" sizes="192x192" href="/android-chrome-192x192.webp" />
+    <link rel="icon" type="image/webp" sizes="512x512" href="/android-chrome-512x512.webp" />
+    <link rel="manifest" href="/site.webmanifest" />
+    
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#0a0a0a" />
+    
+    <!-- Resource hints for performance -->
+    <link rel="preconnect" href="https://pagead2.googlesyndication.com">
+    <link rel="preconnect" href="https://www.googletagmanager.com">
+    <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
+    
+    <!-- Additional SEO -->
+    <meta name="application-name" content="BSOD AI Analyzer" />
+    <meta name="apple-mobile-web-app-title" content="BSOD Analyzer" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="format-detection" content="telephone=no" />
+    
+    <!-- Inline Critical CSS for above-the-fold content -->
+    <style>
+    /* Critical CSS - Inline for faster first paint */
+    
+    /* System font stack for zero layout shift and optimal performance */
+    
+    :root {
+      --brand-primary: #3b82f6;
+      --brand-secondary: #1e40af;
+      --brand-accent: #60a5fa;
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #111111;
+      --bg-tertiary: #1a1a1a;
+      --bg-hover: #222222;
+      --text-primary: #ffffff;
+      --text-secondary: #a0a0a0;
+      --text-tertiary: #666666;
+      --border-primary: #2a2a2a;
+      --border-secondary: #333333;
+      --status-success: #10b981;
+      --status-warning: #f59e0b;
+      --status-error: #ef4444;
+      --status-info: #3b82f6;
+    }
+    
+    * {
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+    }
+    
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+      /* Font synthesis to prevent layout shift */
+      font-synthesis: none;
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+    
+    /* Header styles */
+    .header {
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-primary);
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      backdrop-filter: blur(10px);
+      background-color: rgba(17, 17, 17, 0.9);
+    }
+    
+    .header-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 0;
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+    
+    .logo-icon {
+      width: 48px;
+      height: 48px;
+      flex-shrink: 0;
+    }
+    
+    .logo-text {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    
+    .logo-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+    
+    /* Hero section critical styles */
+    .hero {
+      position: relative;
+      min-height: 500px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 4rem 0;
+    }
+    
+    .hero-background {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    
+    .hero-content {
+      position: relative;
+      z-index: 10;
+      text-align: center;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    
+    .hero-title {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 1.5rem;
+    }
+    
+    .hero-subtitle {
+      font-size: 1.125rem;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin-bottom: 2rem;
+    }
+    
+    /* Button styles */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.75rem 1.5rem;
+      font-weight: 500;
+      font-size: 0.875rem;
+      border-radius: 0.5rem;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      white-space: nowrap;
+      user-select: none;
+    }
+    
+    .btn-primary {
+      background-color: var(--brand-primary);
+      color: white;
+    }
+    
+    /* Footer with explicit dimensions to prevent layout shift */
+    .footer {
+      background-color: var(--bg-secondary);
+      border-top: 1px solid var(--border-primary);
+      margin-top: 6rem;
+      padding: 3rem 0 2rem;
+      min-height: 350px; /* Increased to match actual content height */
+      contain: layout style paint; /* Isolate layout calculations */
+    }
+    
+    /* Reserve space for footer content */
+    .footer-content {
+      min-height: 250px;
+    }
+    
+    /* Loading state */
+    #root {
+      min-height: 100vh;
+    }
+    
+    /* Prevent FOUC */
+    .app {
+      opacity: 1;
+      transition: opacity 0.3s ease;
+    }
+    </style>
+    
+    <!-- Google Analytics - Conditional Loading -->
+    <script>
+    // These will be replaced by config values during build
+    window.__ANALYTICS_ENABLED__ = true;
+    window.__GA_ID__ = 'G-0HVHB49RDP';
+    
+    if (window.__ANALYTICS_ENABLED__ && window.__GA_ID__) {
+        var gaScript = document.createElement('script');
+        gaScript.async = true;
+        gaScript.src = 'https://www.googletagmanager.com/gtag/js?id=' + window.__GA_ID__;
+        document.head.appendChild(gaScript);
+        
+        gaScript.onload = function() {
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', window.__GA_ID__);
+        };
+    }
+    </script>
+    
+    <!-- Google AdSense - Conditional Loading -->
+    <script>
+    // This will be replaced by the config value during build
+    window.__ADS_ENABLED__ = true;
+    
+    if (window.__ADS_ENABLED__) {
+        var adsScript = document.createElement('script');
+        adsScript.async = true;
+        adsScript.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7455498979488414';
+        adsScript.crossOrigin = 'anonymous';
+        document.head.appendChild(adsScript);
+    }
+    </script>
+    
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "BSOD AI Analyzer",
+      "description": "Free AI-powered Blue/Black Screen of Death analyzer for Windows crash dump analysis. Supports both classic blue screens and Windows 11's modern black screens.",
+      "url": "https://bsod.windowsforum.com/",
+      "applicationCategory": "Utility",
+      "operatingSystem": "Any",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "author": {
+        "@type": "Organization",
+        "name": "WindowsForum",
+        "url": "https://windowsforum.com"
+      },
+      "provider": {
+        "@type": "Organization",
+        "name": "Fara Technologies LLC"
+      }
+    }
+    </script>
+    
+    <!-- No external fonts - using system fonts for zero layout shift -->
+    
+    <!-- Main CSS - loaded synchronously for initial render -->
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles/adsense-fix.css">
+    
+</head>
+<body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>
