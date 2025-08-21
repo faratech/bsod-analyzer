@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html ⚡>
+<head>
+    <meta charset="utf-8">
+    <script async src="https://cdn.ampproject.org/v0.js"></script>
+    <script async custom-element="amp-analytics" src="https://cdn.ampproject.org/v0/amp-analytics-0.1.js"></script>
+    <script async custom-element="amp-auto-ads" src="https://cdn.ampproject.org/v0/amp-auto-ads-0.1.js"></script>
+    <script async custom-element="amp-ad" src="https://cdn.ampproject.org/v0/amp-ad-0.1.js"></script>
+    
+    <title>BSOD AI Analyzer - Instant Windows Crash Dump Analysis</title>
+    <link rel="canonical" href="https://bsod.windowsforum.com/">
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1">
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files and get instant diagnosis with actionable solutions for both classic and modern crash screens.">
+    <meta name="keywords" content="BSOD analyzer, blue screen of death, Windows crash dump, minidump analysis, kernel dump, crash analysis, Windows debugging, dump file analyzer, BSOD fix, Windows error">
+    
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://bsod.windowsforum.com/">
+    <meta property="og:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis">
+    <meta property="og:description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files and get instant diagnosis with actionable solutions for both classic and modern crash screens.">
+    <meta property="og:image" content="https://bsod.windowsforum.com/og-image.webp">
+    <meta property="og:site_name" content="BSOD AI Analyzer">
+    
+    <!-- Twitter Card -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://bsod.windowsforum.com/">
+    <meta property="twitter:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis">
+    <meta property="twitter:description" content="Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files and get instant diagnosis with actionable solutions for both classic and modern crash screens.">
+    <meta property="twitter:image" content="https://bsod.windowsforum.com/og-image.webp">
+    
+    <!-- Favicons -->
+    <link rel="icon" type="image/webp" href="/favicon.webp">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.webp">
+    
+    <!-- Theme -->
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="BSOD Analyzer">
+    <meta name="application-name" content="BSOD AI Analyzer">
+    
+    <style amp-boilerplate>body{-webkit-animation:-amp-start 8s steps(1,end) 0s 1 normal both;-moz-animation:-amp-start 8s steps(1,end) 0s 1 normal both;-ms-animation:-amp-start 8s steps(1,end) 0s 1 normal both;animation:-amp-start 8s steps(1,end) 0s 1 normal both}@-webkit-keyframes -amp-start{from{visibility:hidden}to{visibility:visible}}@-moz-keyframes -amp-start{from{visibility:hidden}to{visibility:visible}}@-ms-keyframes -amp-start{from{visibility:hidden}to{visibility:visible}}@-o-keyframes -amp-start{from{visibility:hidden}to{visibility:visible}}@keyframes -amp-start{from{visibility:hidden}to{visibility:visible}}</style><noscript><style amp-boilerplate>body{-webkit-animation:none;-moz-animation:none;-ms-animation:none;animation:none}</style></noscript>
+    
+    <style amp-custom>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --text-tertiary: #666666;
+            --brand-primary: #3b82f6;
+            --brand-secondary: #2563eb;
+            --border-primary: #333333;
+            --border-secondary: #555555;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+        
+        /* Header */
+        .header {
+            background-color: var(--bg-primary);
+            border-bottom: 1px solid var(--border-primary);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .header-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 4rem;
+            gap: 1rem;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            color: var(--text-primary);
+        }
+        
+        .logo-icon {
+            width: 2rem;
+            height: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .logo-text {
+            font-size: 1.1rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .nav {
+            display: flex;
+            gap: 1.5rem;
+        }
+        
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: color 0.2s ease;
+            padding: 0.5rem;
+        }
+        
+        .nav-link:hover, .nav-link.active {
+            color: var(--brand-primary);
+        }
+        
+        /* Hero Section */
+        .hero {
+            padding: 3rem 0;
+            text-align: center;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(37, 99, 235, 0.05));
+        }
+        
+        .hero-title {
+            font-size: clamp(2rem, 5vw, 3.5rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+        }
+        
+        .hero-subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 2rem;
+        }
+        
+        .hero-actions {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.875rem 1.75rem;
+            border-radius: 0.5rem;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+        }
+        
+        .btn-primary {
+            background-color: var(--brand-primary);
+            color: white;
+            border-color: var(--brand-primary);
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--brand-secondary);
+            border-color: var(--brand-secondary);
+        }
+        
+        .btn-secondary {
+            background-color: transparent;
+            color: var(--text-primary);
+            border-color: var(--border-secondary);
+        }
+        
+        .btn-secondary:hover {
+            background-color: var(--bg-secondary);
+            border-color: var(--brand-primary);
+        }
+        
+        /* Features Section */
+        .features {
+            padding: 4rem 0;
+        }
+        
+        .features h2 {
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        
+        .features-subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 3rem;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        
+        .feature-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-primary);
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+        }
+        
+        .feature-icon {
+            width: 4rem;
+            height: 4rem;
+            background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+            border-radius: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+            color: white;
+            font-size: 1.5rem;
+        }
+        
+        .feature-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        .feature-description {
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        
+        /* Info Section */
+        .info-section {
+            padding: 4rem 0;
+            background-color: var(--bg-secondary);
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 2rem;
+        }
+        
+        .info-card {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-primary);
+            border-radius: 1rem;
+            padding: 2rem;
+        }
+        
+        .info-card h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--brand-primary);
+        }
+        
+        .info-card p {
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+        
+        .info-card ul {
+            list-style: none;
+            margin: 1rem 0;
+        }
+        
+        .info-card li {
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+        
+        .info-card li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--success);
+            font-weight: bold;
+        }
+        
+        /* CTA Section */
+        .cta-section {
+            padding: 4rem 0;
+            text-align: center;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(37, 99, 235, 0.05));
+        }
+        
+        .cta-content h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        
+        .cta-content p {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+        
+        /* Footer */
+        .footer {
+            background-color: var(--bg-secondary);
+            border-top: 1px solid var(--border-primary);
+            padding: 2rem 0;
+        }
+        
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+        }
+        
+        .footer-brand h3 {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        
+        .footer-tagline {
+            font-size: 0.875rem;
+            color: var(--text-tertiary);
+        }
+        
+        .footer-links {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .footer-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.2s ease;
+        }
+        
+        .footer-link:hover {
+            color: var(--brand-primary);
+        }
+        
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            .nav {
+                display: none;
+            }
+            
+            .hero-actions {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .btn {
+                width: 100%;
+                max-width: 300px;
+            }
+            
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .footer-content {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+            
+            .footer-links {
+                justify-content: center;
+            }
+        }
+    </style>
+    
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "BSOD AI Analyzer",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Web Browser",
+        "url": "https://bsod.windowsforum.com",
+        "description": "Free AI-powered Blue Screen of Death analyzer for Windows crash dump analysis",
+        "author": {
+            "@type": "Organization",
+            "name": "WindowsForum",
+            "url": "https://windowsforum.com"
+        },
+        "provider": {
+            "@type": "Organization",
+            "name": "Fara Technologies LLC"
+        },
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        }
+    }
+    </script>
+</head>
+<body>
+    <!-- Google Analytics -->
+    <amp-analytics type="gtag" data-credentials="include">
+        <script type="application/json">
+        {
+            "vars": {
+                "gtag_id": "G-0HVHB49RDP",
+                "config": {
+                    "G-0HVHB49RDP": {
+                        "groups": "default"
+                    }
+                }
+            }
+        }
+        </script>
+    </amp-analytics>
+    
+    <!-- AdSense Auto Ads -->
+    <amp-auto-ads type="adsense" data-ad-client="ca-pub-7455498979488414"></amp-auto-ads>
+    
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <a href="/" class="logo" aria-label="BSOD AI Analyzer Home">
+                    <amp-img src="/logo-header.webp" width="32" height="32" alt="BSOD AI Analyzer Logo" class="logo-icon"></amp-img>
+                    <div class="logo-text">BSOD AI Analyzer</div>
+                </a>
+                
+                <nav class="nav">
+                    <a href="/amp/index.html" class="nav-link active">Home</a>
+                    <a href="/analyzer" class="nav-link">Analyzer</a>
+                    <a href="/amp/about.html" class="nav-link">About</a>
+                    <a href="/amp/documentation.html" class="nav-link">Documentation</a>
+                    <a href="/amp/donate.html" class="nav-link">Support Us</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+    
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <h1 class="hero-title">Decode Your Blue/Black Screen of Death</h1>
+            <p class="hero-subtitle">
+                Professional-grade Windows crash dump analysis powered by AI. 
+                Get instant insights into what caused your system crash and how to fix it.
+                Supports both classic blue screens and Windows 11's modern black screens.
+            </p>
+            <div class="hero-actions">
+                <a href="/analyzer" class="btn btn-primary">Start Analysis</a>
+                <a href="/amp/documentation.html" class="btn btn-secondary">Learn More</a>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Display Ad after Hero -->
+    <div class="ad-container" style="margin: 2rem auto; max-width: 728px;">
+        <amp-ad width="728" height="90"
+            type="adsense"
+            data-ad-client="ca-pub-7455498979488414"
+            data-ad-slot="6778196821"
+            data-auto-format="rspv"
+            data-full-width="">
+            <div overflow=""></div>
+        </amp-ad>
+    </div>
+    
+    <!-- Features Section -->
+    <section class="features">
+        <div class="container">
+            <h2>Why Choose BSOD AI Analyzer?</h2>
+            <p class="features-subtitle">
+                Advanced AI technology meets Windows debugging expertise
+            </p>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">📁</div>
+                    <h3 class="feature-title">Easy Upload</h3>
+                    <p class="feature-description">
+                        Simply drag and drop your .dmp files or .zip archives. 
+                        Supports both minidumps and kernel dumps.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🧠</div>
+                    <h3 class="feature-title">AI-Powered Analysis</h3>
+                    <p class="feature-description">
+                        Our AI analyzes crash patterns, driver conflicts, and system states 
+                        to pinpoint the exact cause of your BSOD.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔧</div>
+                    <h3 class="feature-title">Actionable Solutions</h3>
+                    <p class="feature-description">
+                        Get step-by-step instructions to resolve your specific crash, 
+                        from driver updates to hardware diagnostics.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Horizontal Responsive Ad Between Sections -->
+    <section style="text-align: center; margin: 2rem 0;">
+        <amp-ad width="100vw" height="320"
+                type="adsense"
+                data-ad-client="ca-pub-7455498979488414"
+                data-ad-slot="2048554545"
+                data-auto-format="rspv"
+                data-full-width="">
+            <div overflow=""></div>
+        </amp-ad>
+    </section>
+    
+    <!-- Info Section -->
+    <section class="info-section">
+        <div class="container">
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>What is a Blue Screen of Death?</h3>
+                    <p>
+                        The Blue Screen of Death (BSOD) is Windows' way of protecting your system 
+                        when it encounters a critical error. When Windows detects an issue that could 
+                        corrupt data or damage hardware, it immediately stops all processes and displays 
+                        the blue error screen.
+                    </p>
+                    <p>
+                        Common causes include driver conflicts, hardware failures, corrupted system files, 
+                        and incompatible software. Each BSOD generates a memory dump file that contains 
+                        crucial information about what went wrong.
+                    </p>
+                </div>
+                <div class="info-card">
+                    <h3>How Our Analysis Works</h3>
+                    <p>
+                        Our AI-powered analyzer examines your crash dump files to identify:
+                    </p>
+                    <ul>
+                        <li>The specific error code and its meaning</li>
+                        <li>Which driver or system component caused the crash</li>
+                        <li>The exact sequence of events leading to the failure</li>
+                        <li>Potential hardware or software conflicts</li>
+                    </ul>
+                    <p>
+                        Using advanced pattern recognition, we provide targeted solutions based on 
+                        millions of analyzed crash scenarios.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Square Responsive Ad Before CTA -->
+    <section style="text-align: center; margin: 2rem 0;">
+        <amp-ad width="100vw" height="320"
+                type="adsense"
+                data-ad-client="ca-pub-7455498979488414"
+                data-ad-slot="5987799550"
+                data-auto-format="rspv"
+                data-full-width="">
+            <div overflow=""></div>
+        </amp-ad>
+    </section>
+    
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <div class="container">
+            <div class="cta-content">
+                <h2>Ready to Fix Your BSOD?</h2>
+                <p>Upload your crash dump and get answers in seconds</p>
+                <a href="/analyzer" class="btn btn-primary">Analyze Your Dump File</a>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Vertical Multiplex Ad for Content Recommendations -->
+    <section style="margin: 2rem auto; max-width: 1200px; padding: 0 1rem;">
+        <h3 style="text-align: center; margin-bottom: 1.5rem; color: #a0a0a0;">Recommended Resources</h3>
+        <amp-ad width="100vw" height="320"
+                type="adsense"
+                data-ad-client="ca-pub-7455498979488414"
+                data-ad-slot="1275879997"
+                data-auto-format="mcrspv"
+                data-full-width="">
+            <div overflow=""></div>
+        </amp-ad>
+    </section>
+    
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <h3>BSOD AI Analyzer</h3>
+                    <p class="footer-tagline">Intelligent Windows crash analysis</p>
+                </div>
+                <div class="footer-links">
+                    <a href="/amp/about.html" class="footer-link">About</a>
+                    <a href="/amp/documentation.html" class="footer-link">Documentation</a>
+                    <a href="https://windowsforum.com/help/privacy-policy/" class="footer-link">Privacy</a>
+                    <a href="https://windowsforum.com/help/terms/" class="footer-link">Terms</a>
+                </div>
+                <div class="footer-links">
+                    <a href="https://windowsforum.com" class="footer-link">WindowsForum</a>
+                    <a href="/amp/donate.html" class="footer-link">Support</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Sticky Ad for Mobile -->
+    <amp-sticky-ad layout="nodisplay">
+        <amp-ad width="320" height="50"
+            type="adsense"
+            data-ad-client="ca-pub-7455498979488414"
+            data-ad-slot="6778196821">
+        </amp-ad>
+    </amp-sticky-ad>
+</body>
+</html>

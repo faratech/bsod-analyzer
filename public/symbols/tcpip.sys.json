@@ -1,0 +1,10 @@
+{
+  "0x1000": "TcpReceive",
+  "0x2000": "TcpSend",
+  "0x3000": "IppProcessInbound",
+  "0x4000": "IppSendDatagramsCommon",
+  "0x5000": "TcpCreateAndConnectTcb",
+  "0x6000": "TcpDisconnect",
+  "0x7000": "UdpSendMessages",
+  "0x8000": "UdpReceiveDatagrams"
+}

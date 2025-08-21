@@ -1,0 +1,10 @@
+{
+  "0x1000": "NtfsCommonRead",
+  "0x2000": "NtfsCommonWrite",
+  "0x3000": "NtfsCommonCreate",
+  "0x4000": "NtfsCommonClose",
+  "0x5000": "NtfsAllocateFile",
+  "0x6000": "NtfsDeallocateFile",
+  "0x7000": "NtfsFlushVolume",
+  "0x8000": "NtfsCheckpointVolume"
+}

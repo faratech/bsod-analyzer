@@ -1,0 +1,12 @@
+Update homepage to explain different Windows crash screen types
+
+- Clarify that not all crashes show blue screens
+- Explain black screen appears in Windows 11 Build 22000.346+
+- Add info about green screens for Insider builds
+- Mention system freezes without error screens
+- Update hero section and SEO descriptions for accuracy
+- Update dateModified to 2025-08-18
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>

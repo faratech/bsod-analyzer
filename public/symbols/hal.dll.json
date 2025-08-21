@@ -1,0 +1,12 @@
+{
+  "0x1000": "HalProcessorIdle",
+  "0x2000": "HalMakeBeep",
+  "0x3000": "HalReturnToFirmware",
+  "0x4000": "HalpCheckForSoftwareInterrupt",
+  "0x5000": "HalpClockInterrupt",
+  "0x6000": "HalpIpiHandler",
+  "0x7000": "HalRequestIpi",
+  "0x8000": "HalHandleNMI",
+  "0x9000": "HalpMcaExceptionHandler",
+  "0xA000": "HalpPerfInterrupt"
+}

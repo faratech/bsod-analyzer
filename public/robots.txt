@@ -1,0 +1,61 @@
+User-agent: *
+Allow: /
+
+# Important pages for crawling
+Allow: /analyzer
+Allow: /about
+Allow: /documentation
+Allow: /donate
+
+# AMP pages
+Allow: /amp/
+
+# Block direct access to public directory
+Disallow: /public/
+Disallow: /public/*
+
+# Block source files and configs
+Disallow: /src/
+Disallow: /components/
+Disallow: /pages/
+Disallow: /services/
+Disallow: /hooks/
+Disallow: /types/
+Disallow: /*.ts
+Disallow: /*.tsx
+Disallow: /*.js.map
+Disallow: /*.css.map
+Disallow: /package.json
+Disallow: /package-lock.json
+Disallow: /tsconfig.json
+Disallow: /vite.config.ts
+Disallow: /.env*
+Disallow: /node_modules/
+
+# Block build and deployment files
+Disallow: /dist/
+Disallow: /build/
+Disallow: /.git/
+Disallow: /*.log
+Disallow: /deploy*.sh
+Disallow: /cloudbuild.yaml
+Disallow: /Dockerfile
+
+# Block admin and API
+Disallow: /api/
+Disallow: /admin/
+
+# Allow specific static assets (served from root, not /public/)
+Allow: /favicon.ico
+Allow: /favicon.webp
+Allow: /apple-touch-icon.webp
+Allow: /android-chrome-*.webp
+Allow: /og-image.webp
+Allow: /site.webmanifest
+
+# Allow important files
+Allow: /sitemap.xml
+Allow: /ads.txt
+Allow: /robots.txt
+
+Sitemap: https://bsod.windowsforum.com/sitemap.xml

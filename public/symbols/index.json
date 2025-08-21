@@ -1,0 +1,226 @@
+{
+  "version": "1.0.0",
+  "generated": "2025-07-27T21:49:13.206Z",
+  "modules": [
+    {
+      "name": "ntoskrnl.exe",
+      "description": "Windows kernel",
+      "symbolCount": 28
+    },
+    {
+      "name": "ntkrnlmp.exe",
+      "description": "Windows kernel (multiprocessor)",
+      "symbolCount": 28
+    },
+    {
+      "name": "hal.dll",
+      "description": "Hardware Abstraction Layer",
+      "symbolCount": 10
+    },
+    {
+      "name": "win32k.sys",
+      "description": "Win32 subsystem kernel driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "ndis.sys",
+      "description": "Network Driver Interface",
+      "symbolCount": 9
+    },
+    {
+      "name": "tcpip.sys",
+      "description": "TCP/IP Protocol Driver",
+      "symbolCount": 8
+    },
+    {
+      "name": "afd.sys",
+      "description": "Ancillary Function Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "http.sys",
+      "description": "HTTP Protocol Stack",
+      "symbolCount": 9
+    },
+    {
+      "name": "netio.sys",
+      "description": "Network I/O Subsystem",
+      "symbolCount": 9
+    },
+    {
+      "name": "storport.sys",
+      "description": "Storage Port Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "ataport.sys",
+      "description": "ATA Port Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "disk.sys",
+      "description": "Disk Class Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "partmgr.sys",
+      "description": "Partition Manager",
+      "symbolCount": 9
+    },
+    {
+      "name": "volmgr.sys",
+      "description": "Volume Manager",
+      "symbolCount": 9
+    },
+    {
+      "name": "mountmgr.sys",
+      "description": "Mount Point Manager",
+      "symbolCount": 9
+    },
+    {
+      "name": "volsnap.sys",
+      "description": "Volume Shadow Copy",
+      "symbolCount": 9
+    },
+    {
+      "name": "ntfs.sys",
+      "description": "NTFS File System Driver",
+      "symbolCount": 8
+    },
+    {
+      "name": "fastfat.sys",
+      "description": "FAT File System Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "exfat.sys",
+      "description": "exFAT File System Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "refs.sys",
+      "description": "ReFS File System Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "fltmgr.sys",
+      "description": "File System Filter Manager",
+      "symbolCount": 8
+    },
+    {
+      "name": "pci.sys",
+      "description": "PCI Bus Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "acpi.sys",
+      "description": "ACPI Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "intelppm.sys",
+      "description": "Intel Processor Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "amdppm.sys",
+      "description": "AMD Processor Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "usbhub.sys",
+      "description": "USB Hub Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "usbport.sys",
+      "description": "USB Port Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "usbehci.sys",
+      "description": "USB EHCI Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "usbxhci.sys",
+      "description": "USB xHCI Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "usbhub3.sys",
+      "description": "USB 3.0 Hub Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "dxgkrnl.sys",
+      "description": "DirectX Graphics Kernel",
+      "symbolCount": 9
+    },
+    {
+      "name": "dxgmms1.sys",
+      "description": "DirectX Graphics MMS",
+      "symbolCount": 9
+    },
+    {
+      "name": "dxgmms2.sys",
+      "description": "DirectX Graphics MMS v2",
+      "symbolCount": 9
+    },
+    {
+      "name": "nvlddmkm.sys",
+      "description": "NVIDIA Display Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "atikmdag.sys",
+      "description": "AMD Display Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "igdkmd64.sys",
+      "description": "Intel Graphics Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "ksecdd.sys",
+      "description": "Kernel Security Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "cng.sys",
+      "description": "Cryptography Next Generation",
+      "symbolCount": 9
+    },
+    {
+      "name": "msrpc.sys",
+      "description": "Microsoft RPC",
+      "symbolCount": 9
+    },
+    {
+      "name": "srv.sys",
+      "description": "Server Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "srv2.sys",
+      "description": "Server Driver v2",
+      "symbolCount": 9
+    },
+    {
+      "name": "srvnet.sys",
+      "description": "Server Network Driver",
+      "symbolCount": 9
+    },
+    {
+      "name": "mrxsmb.sys",
+      "description": "SMB Redirector",
+      "symbolCount": 9
+    },
+    {
+      "name": "rdbss.sys",
+      "description": "Redirected Buffering Subsystem",
+      "symbolCount": 9
+    }
+  ]
+}

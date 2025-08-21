@@ -1,0 +1,14 @@
+# Ignore files for Cloud Build
+.git
+.gitignore
+node_modules
+.env
+.env.local
+dist
+*.log
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store

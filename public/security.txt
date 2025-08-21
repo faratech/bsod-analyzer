@@ -1,0 +1,19 @@
+# Security Policy
+# This directory contains static assets that should be served from the root
+# Direct access to /public/ URLs should be blocked by server configuration
+
+# Files in this directory:
+# - sitemap.xml (served as /sitemap.xml)
+# - robots.txt (served as /robots.txt) 
+# - ads.txt (served as /ads.txt)
+# - favicon files (served from root)
+# - webmanifest (served from root)
+
+# Security measures implemented:
+# 1. robots.txt blocks /public/ crawling
+# 2. .htaccess blocks direct access
+# 3. nginx.conf blocks sensitive paths
+# 4. server.js middleware blocks access
+# 5. Security headers added
+
+# Contact: security@windowsforum.com

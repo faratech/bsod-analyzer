@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Symbol Download Test</title>
+</head>
+<body>
+    <h1>Testing Symbol Download</h1>
+    <div id="results"></div>
+    
+    <script type="module">
+        // Test the symbol download endpoint
+        const results = document.getElementById('results');
+        
+        function log(message, isError = false) {
+            const div = document.createElement('div');
+            div.textContent = message;
+            div.style.color = isError ? 'red' : 'green';
+            results.appendChild(div);
+        }
+        
+        async function testSymbolDownload() {
+            // Test URLs we're using
+            const testUrls = [
+                {
+                    name: 'GitHub Raw (faratech repo)',
+                    url: 'https://raw.githubusercontent.com/faratech/bsod-symbols/main/ntoskrnl.exe.json'
+                },
+                {
+                    name: 'GitHub Raw (this repo)',
+                    url: 'https://raw.githubusercontent.com/faratech/bsod-analyzer/main/public/symbols/ntoskrnl.exe.json'
+                },
+                {
+                    name: 'jsDelivr CDN',
+                    url: 'https://cdn.jsdelivr.net/gh/faratech/bsod-analyzer@main/public/symbols/ntoskrnl.exe.json'
+                },
+                {
+                    name: 'Local file',
+                    url: '/symbols/ntoskrnl.exe.json'
+                }
+            ];
+            
+            for (const test of testUrls) {
+                try {
+                    log(`\nTesting ${test.name}...`);
+                    log(`URL: ${test.url}`);
+                    
+                    const response = await fetch(test.url);
+                    log(`Status: ${response.status} ${response.statusText}`);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        const symbolCount = Object.keys(data).length;
+                        log(`✓ Success! Found ${symbolCount} symbols`);
+                        
+                        // Show first few symbols
+                        const firstSymbols = Object.entries(data).slice(0, 3);
+                        firstSymbols.forEach(([rva, name]) => {
+                            log(`  ${rva} → ${name}`);
+                        });
+                    } else {
+                        log(`✗ Failed: ${response.status} ${response.statusText}`, true);
+                    }
+                } catch (error) {
+                    log(`✗ Error: ${error.message}`, true);
+                }
+            }
+        }
+        
+        // Run the test
+        testSymbolDownload();
+    </script>
+</body>
+</html>
