@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 
 interface TurnstileOptions {
   sitekey: string;
@@ -33,7 +33,7 @@ interface CloudflareTurnstileProps {
   cdata?: string;
 }
 
-const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
+const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = memo(({
   siteKey,
   onSuccess,
   onError,
@@ -44,11 +44,37 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const isRenderedRef = useRef(false);
+  const callbacksRef = useRef({ onSuccess, onError, onExpire });
+
+  // Update callbacks ref when they change
+  useEffect(() => {
+    callbacksRef.current = { onSuccess, onError, onExpire };
+  }, [onSuccess, onError, onExpire]);
+
+  const handleSuccess = useCallback((token: string) => {
+    setIsLoading(false);
+    callbacksRef.current.onSuccess(token);
+  }, []);
+
+  const handleError = useCallback(() => {
+    setIsLoading(false);
+    callbacksRef.current.onError?.();
+  }, []);
+
+  const handleExpire = useCallback(() => {
+    callbacksRef.current.onExpire?.();
+  }, []);
 
   useEffect(() => {
+    // Only render once, don't re-render on prop changes
+    if (isRenderedRef.current) {
+      return;
+    }
+
     // Reset loading state on mount
     setIsLoading(true);
-    
+
     // Load Turnstile script
     const loadTurnstile = () => {
       if (document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')) {
@@ -72,7 +98,7 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
       script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
       script.async = true;
       script.defer = true;
-      
+
       script.onload = () => {
         // Wait for turnstile to be available
         const checkTurnstile = setInterval(() => {
@@ -87,6 +113,11 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
     };
 
     const renderWidget = () => {
+      // Don't render again if already rendered
+      if (isRenderedRef.current) {
+        return;
+      }
+
       // Clean up any existing widget first
       if (widgetIdRef.current && window.turnstile) {
         try {
@@ -97,7 +128,7 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
           widgetIdRef.current = null;
         }
       }
-      
+
       if (!containerRef.current) return;
 
       try {
@@ -107,23 +138,12 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
           'refresh-timeout': 'auto',
           'retry': 'auto',
           'retry-interval': 8000,
-          callback: (token: string) => {
-            setIsLoading(false);
-            onSuccess(token);
-          },
-          'error-callback': () => {
-            setIsLoading(false);
-            onError?.();
-          },
-          'expired-callback': () => {
-            onExpire?.();
-          },
-          'timeout-callback': () => {
-            setIsLoading(false);
-            onError?.();
-          }
+          callback: handleSuccess,
+          'error-callback': handleError,
+          'expired-callback': handleExpire,
+          'timeout-callback': handleError
         };
-        
+
         // Add action and cdata if provided
         if (action) {
           widgetConfig.action = action;
@@ -131,12 +151,13 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
         if (cdata) {
           widgetConfig.cdata = cdata;
         }
-        
+
         widgetIdRef.current = window.turnstile.render(containerRef.current, widgetConfig);
+        isRenderedRef.current = true;
       } catch (error) {
         console.error('Failed to render Turnstile widget:', error);
         setIsLoading(false);
-        onError?.();
+        handleError();
       }
     };
 
@@ -148,12 +169,13 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
         try {
           window.turnstile.remove(widgetIdRef.current);
           widgetIdRef.current = null;
+          isRenderedRef.current = false;
         } catch (error) {
           console.error('Error removing Turnstile widget:', error);
         }
       }
     };
-  }, [siteKey, onSuccess, onError, onExpire, action, cdata]);
+  }, [siteKey, action, handleSuccess, handleError, handleExpire]); // Only essential dependencies
 
   return (
     <div className="turnstile-container">
@@ -165,6 +187,12 @@ const CloudflareTurnstile: React.FC<CloudflareTurnstileProps> = ({
       )}
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison - only re-render if siteKey or action changes
+  return prevProps.siteKey === nextProps.siteKey &&
+         prevProps.action === nextProps.action;
+});
+
+CloudflareTurnstile.displayName = 'CloudflareTurnstile';
 
 export default CloudflareTurnstile;
