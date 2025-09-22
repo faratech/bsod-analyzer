@@ -1,22 +1,38 @@
+# Disable MultiViews to prevent Apache from guessing file extensions
+Options -MultiViews
+
 # Enable Apache modules
 <IfModule mod_rewrite.c>
     RewriteEngine On
+    RewriteBase /
+
+    # Force removal of X-Content-Type-Options for assets BEFORE any rewrites
+    RewriteRule \.(js|css|woff|woff2|ttf|otf|eot)$ - [E=NO_SNIFF:1]
 
     # Handle client-side routing for React Router
     # Don't rewrite files or directories
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_URI} !^/assets/
     # Rewrite everything else to index.html
     RewriteRule ^(.*)$ /index.html [L]
+
+    # Ensure assets directory is accessible
+    RewriteRule ^assets/(.*)$ /assets/$1 [L]
 </IfModule>
 
-# Force correct MIME types
+# Force correct MIME types - CRITICAL FOR PRODUCTION
 <IfModule mod_mime.c>
-    # JavaScript
+    # Remove any default handlers
+    RemoveType .js .css
+    RemoveHandler .js .css
+
+    # JavaScript - MUST be set correctly
     AddType application/javascript .js
     AddType application/javascript .mjs
+    AddType text/javascript .js
 
-    # CSS
+    # CSS - MUST be set correctly
     AddType text/css .css
 
     # Images
@@ -29,28 +45,41 @@
     # Fonts
     AddType font/woff2 .woff2
     AddType font/woff .woff
+    AddType font/ttf .ttf
+    AddType font/otf .otf
+    AddType application/vnd.ms-fontobject .eot
 
     # Other
     AddType application/json .json
     AddType application/manifest+json .webmanifest
     AddType text/plain .txt
     AddType text/xml .xml
+    AddType text/html .html
 </IfModule>
 
-# Security headers
+# Security headers with proper asset handling
 <IfModule mod_headers.c>
-    # Remove X-Content-Type-Options nosniff for assets to allow proper MIME type handling
-    <FilesMatch "\.(js|css|woff|woff2|ttf|otf|eot|svg)$">
-        Header unset X-Content-Type-Options
+    # CRITICAL: Remove X-Content-Type-Options for JS/CSS files
+    <FilesMatch "\.(js|mjs|css|woff|woff2|ttf|otf|eot)$">
+        Header always unset X-Content-Type-Options
+        Header always set Cache-Control "public, max-age=31536000, immutable"
     </FilesMatch>
 
-    # Set proper headers for JavaScript and CSS
+    # Force correct Content-Type headers for JavaScript
     <FilesMatch "\.js$">
-        Header set Content-Type "application/javascript"
+        Header always set Content-Type "application/javascript"
+        Header always unset X-Content-Type-Options
     </FilesMatch>
 
+    # Force correct Content-Type headers for CSS
     <FilesMatch "\.css$">
-        Header set Content-Type "text/css"
+        Header always set Content-Type "text/css"
+        Header always unset X-Content-Type-Options
+    </FilesMatch>
+
+    # Only set X-Content-Type-Options for HTML
+    <FilesMatch "\.html$">
+        Header always set X-Content-Type-Options "nosniff"
     </FilesMatch>
 
     # Prevent clickjacking
@@ -59,8 +88,8 @@
     # Enable XSS protection
     Header always set X-XSS-Protection "1; mode=block"
 
-    # Content Security Policy - comprehensive for all ad and analytics services
-    Header set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.googlesyndication.com https://*.googletagmanager.com https://*.google-analytics.com https://*.google.com https://*.gstatic.com https://*.paypalobjects.com https://*.paypal.com https://*.doubleclick.net https://adnxs.com https://securepubads.g.doubleclick.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https://*.google-analytics.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.gstatic.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://challenges.cloudflare.com https://*.cloudflareinsights.com https://csi.gstatic.com; frame-src 'self' https://*.google.com https://*.doubleclick.net https://www.paypal.com https://challenges.cloudflare.com https://tpc.googlesyndication.com; base-uri 'self'; form-action 'self'"
+    # Content Security Policy - NO fenced-frame-src directive
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.googlesyndication.com https://*.googletagmanager.com https://*.google-analytics.com https://*.google.com https://*.gstatic.com https://*.paypalobjects.com https://*.paypal.com https://*.doubleclick.net https://adnxs.com https://securepubads.g.doubleclick.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https://*.google-analytics.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.gstatic.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://challenges.cloudflare.com https://*.cloudflareinsights.com https://csi.gstatic.com; frame-src 'self' https://*.google.com https://*.doubleclick.net https://www.paypal.com https://challenges.cloudflare.com https://tpc.googlesyndication.com; base-uri 'self'; form-action 'self'"
 
     # CORS headers for assets
     <FilesMatch "\.(js|css|woff|woff2|ttf|otf|eot|svg|webp|png|jpg|jpeg)$">
@@ -68,14 +97,20 @@
     </FilesMatch>
 </IfModule>
 
+# Force UTF-8 encoding
+AddDefaultCharset UTF-8
+<IfModule mod_mime.c>
+    AddCharset UTF-8 .js .css .json .xml .txt .html
+</IfModule>
+
 # Enable compression
 <IfModule mod_deflate.c>
     # Compress HTML, CSS, JavaScript, Text, XML and fonts
     AddOutputFilterByType DEFLATE text/html
     AddOutputFilterByType DEFLATE text/css
+    AddOutputFilterByType DEFLATE text/javascript
     AddOutputFilterByType DEFLATE application/javascript
     AddOutputFilterByType DEFLATE application/x-javascript
-    AddOutputFilterByType DEFLATE text/javascript
     AddOutputFilterByType DEFLATE text/plain
     AddOutputFilterByType DEFLATE text/xml
     AddOutputFilterByType DEFLATE application/xml
@@ -83,12 +118,11 @@
     AddOutputFilterByType DEFLATE application/rss+xml
     AddOutputFilterByType DEFLATE application/json
     AddOutputFilterByType DEFLATE image/svg+xml
-
-    # Remove browser bugs
-    BrowserMatch ^Mozilla/4 gzip-only-text/html
-    BrowserMatch ^Mozilla/4\.0[678] no-gzip
-    BrowserMatch \bMSIE !no-gzip !gzip-only-text/html
-    Header append Vary User-Agent
+    AddOutputFilterByType DEFLATE font/woff
+    AddOutputFilterByType DEFLATE font/woff2
+    AddOutputFilterByType DEFLATE font/ttf
+    AddOutputFilterByType DEFLATE font/otf
+    AddOutputFilterByType DEFLATE application/vnd.ms-fontobject
 </IfModule>
 
 # Cache static assets
@@ -103,6 +137,7 @@
 
     # CSS and JavaScript - 1 year (they have hash in filename)
     ExpiresByType text/css "access plus 1 year"
+    ExpiresByType text/javascript "access plus 1 year"
     ExpiresByType application/javascript "access plus 1 year"
     ExpiresByType application/x-javascript "access plus 1 year"
 
@@ -117,8 +152,9 @@
     # Fonts
     ExpiresByType font/woff2 "access plus 1 year"
     ExpiresByType font/woff "access plus 1 year"
-    ExpiresByType application/font-woff2 "access plus 1 year"
-    ExpiresByType application/font-woff "access plus 1 year"
+    ExpiresByType font/ttf "access plus 1 year"
+    ExpiresByType font/otf "access plus 1 year"
+    ExpiresByType application/vnd.ms-fontobject "access plus 1 year"
 
     # Other
     ExpiresByType application/manifest+json "access plus 1 week"
@@ -129,7 +165,7 @@
     Require all denied
 </FilesMatch>
 
-<FilesMatch "\.(log|md|lock|yaml|yml|bak|backup|sql)$">
+<FilesMatch "\.(log|md|lock|yaml|yml|bak|backup|sql|sh|env)$">
     Require all denied
 </FilesMatch>
 
@@ -140,3 +176,7 @@ Options -Indexes
 <Files .htaccess>
     Require all denied
 </Files>
+
+# Handle errors gracefully
+ErrorDocument 404 /index.html
+ErrorDocument 403 /index.html
