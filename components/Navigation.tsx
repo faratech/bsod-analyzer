@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
+import ThemeToggle from './ThemeToggle';
 
 const Navigation: React.FC = () => {
     const location = useLocation();
@@ -59,8 +60,9 @@ const Navigation: React.FC = () => {
                             <Link to="/donate" className={`nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}>
                                 Support Us
                             </Link>
+                            <ThemeToggle />
                         </nav>
-                        
+
                         {/* Mobile Menu Button */}
                         <button 
                             className="mobile-menu-toggle"
