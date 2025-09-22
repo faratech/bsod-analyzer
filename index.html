@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -66,7 +66,9 @@
     
     /* System font stack for zero layout shift and optimal performance */
     
-    :root {
+    /* Dark theme (default) */
+    :root,
+    .dark {
       --brand-primary: #3b82f6;
       --brand-secondary: #1e40af;
       --brand-accent: #60a5fa;
@@ -83,6 +85,26 @@
       --status-warning: #f59e0b;
       --status-error: #ef4444;
       --status-info: #3b82f6;
+    }
+
+    /* Light theme */
+    .light {
+      --brand-primary: #2563eb;
+      --brand-secondary: #1d4ed8;
+      --brand-accent: #3b82f6;
+      --bg-primary: #ffffff;
+      --bg-secondary: #f8f9fa;
+      --bg-tertiary: #f1f3f5;
+      --bg-hover: #e9ecef;
+      --text-primary: #1a1a1a;
+      --text-secondary: #495057;
+      --text-tertiary: #868e96;
+      --border-primary: #dee2e6;
+      --border-secondary: #ced4da;
+      --status-success: #059669;
+      --status-warning: #d97706;
+      --status-error: #dc2626;
+      --status-info: #2563eb;
     }
     
     * {
