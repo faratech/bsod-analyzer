@@ -6,6 +6,7 @@ import Loader from './components/Loader';
 import StructuredData from './components/StructuredData';
 import { useBreadcrumbs } from './hooks/useBreadcrumbs';
 import { useAnalytics } from './hooks/useAnalytics';
+import { ThemeProvider } from './hooks/useTheme';
 
 // Lazy load all route components
 const Home = React.lazy(() => import('./pages/Home'));
@@ -47,9 +48,11 @@ const AppContent: React.FC = () => {
 
 const AppRouter: React.FC = () => {
     return (
-        <Router>
-            <AppContent />
-        </Router>
+        <ThemeProvider>
+            <Router>
+                <AppContent />
+            </Router>
+        </ThemeProvider>
     );
 };
 
