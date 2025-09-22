@@ -1,54 +1,142 @@
-# Block direct access to public directory
-# This prevents users from accessing /public/filename directly
+# Enable Apache modules
+<IfModule mod_rewrite.c>
+    RewriteEngine On
 
-# Deny access to this directory when accessed via /public/ path
-<If "%{REQUEST_URI} =~ m#^/public/#">
-    Require all denied
-</If>
+    # Handle client-side routing for React Router
+    # Don't rewrite files or directories
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    # Rewrite everything else to index.html
+    RewriteRule ^(.*)$ /index.html [L]
+</IfModule>
 
-# Alternative method - deny access to common sensitive files
-<FilesMatch "\.(json|ts|tsx|js\.map|css\.map|log|env|gitignore|htaccess)$">
+# Force correct MIME types
+<IfModule mod_mime.c>
+    # JavaScript
+    AddType application/javascript .js
+    AddType application/javascript .mjs
+
+    # CSS
+    AddType text/css .css
+
+    # Images
+    AddType image/webp .webp
+    AddType image/png .png
+    AddType image/jpeg .jpg .jpeg
+    AddType image/svg+xml .svg
+    AddType image/x-icon .ico
+
+    # Fonts
+    AddType font/woff2 .woff2
+    AddType font/woff .woff
+
+    # Other
+    AddType application/json .json
+    AddType application/manifest+json .webmanifest
+    AddType text/plain .txt
+    AddType text/xml .xml
+</IfModule>
+
+# Security headers
+<IfModule mod_headers.c>
+    # Remove X-Content-Type-Options nosniff for assets to allow proper MIME type handling
+    <FilesMatch "\.(js|css|woff|woff2|ttf|otf|eot|svg)$">
+        Header unset X-Content-Type-Options
+    </FilesMatch>
+
+    # Set proper headers for JavaScript and CSS
+    <FilesMatch "\.js$">
+        Header set Content-Type "application/javascript"
+    </FilesMatch>
+
+    <FilesMatch "\.css$">
+        Header set Content-Type "text/css"
+    </FilesMatch>
+
+    # Prevent clickjacking
+    Header always set X-Frame-Options "SAMEORIGIN"
+
+    # Enable XSS protection
+    Header always set X-XSS-Protection "1; mode=block"
+
+    # Content Security Policy (without fenced-frame-src which is not widely supported)
+    Header set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://pagead2.googlesyndication.com https://www.googletagmanager.com https://www.google-analytics.com https://www.google.com https://www.gstatic.com https://www.paypalobjects.com https://www.paypal.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https://www.google-analytics.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com; frame-src https://www.google.com https://www.paypal.com https://challenges.cloudflare.com; base-uri 'self'; form-action 'self'"
+
+    # CORS headers for assets
+    <FilesMatch "\.(js|css|woff|woff2|ttf|otf|eot|svg|webp|png|jpg|jpeg)$">
+        Header set Access-Control-Allow-Origin "*"
+    </FilesMatch>
+</IfModule>
+
+# Enable compression
+<IfModule mod_deflate.c>
+    # Compress HTML, CSS, JavaScript, Text, XML and fonts
+    AddOutputFilterByType DEFLATE text/html
+    AddOutputFilterByType DEFLATE text/css
+    AddOutputFilterByType DEFLATE application/javascript
+    AddOutputFilterByType DEFLATE application/x-javascript
+    AddOutputFilterByType DEFLATE text/javascript
+    AddOutputFilterByType DEFLATE text/plain
+    AddOutputFilterByType DEFLATE text/xml
+    AddOutputFilterByType DEFLATE application/xml
+    AddOutputFilterByType DEFLATE application/xhtml+xml
+    AddOutputFilterByType DEFLATE application/rss+xml
+    AddOutputFilterByType DEFLATE application/json
+    AddOutputFilterByType DEFLATE image/svg+xml
+
+    # Remove browser bugs
+    BrowserMatch ^Mozilla/4 gzip-only-text/html
+    BrowserMatch ^Mozilla/4\.0[678] no-gzip
+    BrowserMatch \bMSIE !no-gzip !gzip-only-text/html
+    Header append Vary User-Agent
+</IfModule>
+
+# Cache static assets
+<IfModule mod_expires.c>
+    ExpiresActive On
+
+    # Default
+    ExpiresDefault "access plus 1 month"
+
+    # HTML - no cache
+    ExpiresByType text/html "access plus 0 seconds"
+
+    # CSS and JavaScript - 1 year (they have hash in filename)
+    ExpiresByType text/css "access plus 1 year"
+    ExpiresByType application/javascript "access plus 1 year"
+    ExpiresByType application/x-javascript "access plus 1 year"
+
+    # Images
+    ExpiresByType image/webp "access plus 1 year"
+    ExpiresByType image/png "access plus 1 year"
+    ExpiresByType image/jpeg "access plus 1 year"
+    ExpiresByType image/gif "access plus 1 year"
+    ExpiresByType image/svg+xml "access plus 1 year"
+    ExpiresByType image/x-icon "access plus 1 year"
+
+    # Fonts
+    ExpiresByType font/woff2 "access plus 1 year"
+    ExpiresByType font/woff "access plus 1 year"
+    ExpiresByType application/font-woff2 "access plus 1 year"
+    ExpiresByType application/font-woff "access plus 1 year"
+
+    # Other
+    ExpiresByType application/manifest+json "access plus 1 week"
+</IfModule>
+
+# Prevent access to sensitive files
+<FilesMatch "^\.">
     Require all denied
 </FilesMatch>
 
-# Deny access to source directories if somehow accessible
-<IfModule mod_alias.c>
-    RedirectMatch 403 ^/public/
-    RedirectMatch 403 ^/src/
-    RedirectMatch 403 ^/components/
-    RedirectMatch 403 ^/pages/
-    RedirectMatch 403 ^/node_modules/
-    RedirectMatch 403 ^/\.git/
-</IfModule>
+<FilesMatch "\.(log|md|lock|yaml|yml|bak|backup|sql)$">
+    Require all denied
+</FilesMatch>
 
-# Security headers for allowed files
-<IfModule mod_headers.c>
-    # Prevent MIME type sniffing
-    Header always set X-Content-Type-Options nosniff
-    
-    # Prevent clickjacking
-    Header always set X-Frame-Options DENY
-    
-    # Enable XSS protection
-    Header always set X-XSS-Protection "1; mode=block"
-    
-    # HSTS for HTTPS (only if using HTTPS)
-    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
-</IfModule>
+# Disable directory browsing
+Options -Indexes
 
-# Cache static assets properly
-<IfModule mod_expires.c>
-    ExpiresActive On
-    
-    # Favicon and images
-    ExpiresByType image/x-icon "access plus 1 year"
-    ExpiresByType image/webp "access plus 1 year"
-    ExpiresByType image/png "access plus 1 year"
-    
-    # Manifest
-    ExpiresByType application/manifest+json "access plus 1 week"
-    
-    # Sitemap and robots (check more frequently)
-    ExpiresByType application/xml "access plus 1 day"
-    ExpiresByType text/plain "access plus 1 day"
-</IfModule>
+# Protect .htaccess file
+<Files .htaccess>
+    Require all denied
+</Files>
