@@ -13,7 +13,6 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isVerified, setIsVerified] = useState(false);
   const [verificationError, setVerificationError] = useState(false);
-  const [mountTime] = useState(() => Date.now());
   
   // Use the provided site key
   const TURNSTILE_SITE_KEY = '0x4AAAAAAABiq2_hH-dGCkQi';
@@ -111,7 +110,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
     }
   };
   
-  const handleTurnstileSuccess = async (token: string) => {
+  const handleTurnstileSuccess = useCallback(async (token: string) => {
     try {
       // Verify token with backend using Siteverify
       const response = await fetch('/api/auth/verify-turnstile', {
@@ -120,19 +119,19 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           token,
           action: 'file-upload', // Must match what's sent to Turnstile widget
           cdata: `files-${currentFileCount}` // Optional context data
         })
       });
-      
+
       const result = await response.json();
-      
+
       if (result.success) {
         setIsVerified(true);
         setVerificationError(false);
-        
+
         // Log successful verification
         console.log('Turnstile verified:', {
           challenge_ts: result.challenge_ts,
@@ -140,11 +139,11 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
         });
       } else {
         setVerificationError(true);
-        
+
         // Show specific error message based on error code
         const errorMessage = result.error || 'Security verification failed. Please try again.';
         setValidationErrors([errorMessage]);
-        
+
         // If token expired or duplicate, clear verification
         if (result['error-codes']?.includes('timeout-or-duplicate')) {
           setIsVerified(false);
@@ -155,16 +154,16 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
       setVerificationError(true);
       setValidationErrors(['Network error. Please check your connection and try again.']);
     }
-  };
-  
-  const handleTurnstileError = () => {
+  }, [currentFileCount]);
+
+  const handleTurnstileError = useCallback(() => {
     setVerificationError(true);
     setValidationErrors(['Security check failed. Please refresh and try again.']);
-  };
-  
-  const handleTurnstileExpire = () => {
+  }, []);
+
+  const handleTurnstileExpire = useCallback(() => {
     setIsVerified(false);
-  };
+  }, []);
 
   // Show Turnstile first, then the upload area
   if (!isVerified) {
@@ -178,13 +177,11 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
         </div>
         
         <CloudflareTurnstile
-          key={`turnstile-${mountTime}`}
           siteKey={TURNSTILE_SITE_KEY}
           onSuccess={handleTurnstileSuccess}
           onError={handleTurnstileError}
           onExpire={handleTurnstileExpire}
           action="file-upload"
-          cdata={`files-${currentFileCount}`}
         />
         
         {validationErrors.length > 0 && (
