@@ -7,11 +7,13 @@ import ErrorAlert from './components/ErrorAlert';
 import HeroSection from './components/HeroSection';
 import FeaturesSection from './components/FeaturesSection';
 import AnalysisResults from './components/AnalysisResults';
+import ThemeToggle from './components/ThemeToggle';
 import { AnalyzeIcon, UploadFeatureIcon, AnalyzeFeatureIcon, ResolveFeatureIcon } from './components/Icons';
 import { useFileProcessor } from './hooks/useFileProcessor';
 import { useAnalysis } from './hooks/useAnalysis';
+import { ThemeProvider } from './hooks/useTheme';
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const { processFiles, addFilesToState, error: fileError } = useFileProcessor();
     const { isAnalyzing, error: analysisError, analyzeFiles, updateAdvancedAnalysis } = useAnalysis();
@@ -39,18 +41,21 @@ const App: React.FC = () => {
                 <div className="container">
                     <div className="header-content">
                         <Logo showLink={false} />
-                         {dumpFiles.length > 0 && (
-                            <button
-                                onClick={handleAnalyze}
-                                disabled={isAnalyzing || pendingFilesCount === 0}
-                                className="btn btn-primary"
-                            >
-                                <AnalyzeIcon />
-                                <span style={{ marginLeft: '0.5rem' }}>
-                                    {isAnalyzing ? 'Analyzing...' : `Analyze ${pendingFilesCount} New File(s)`}
-                                </span>
-                            </button>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <ThemeToggle />
+                            {dumpFiles.length > 0 && (
+                                <button
+                                    onClick={handleAnalyze}
+                                    disabled={isAnalyzing || pendingFilesCount === 0}
+                                    className="btn btn-primary"
+                                >
+                                    <AnalyzeIcon />
+                                    <span style={{ marginLeft: '0.5rem' }}>
+                                        {isAnalyzing ? 'Analyzing...' : `Analyze ${pendingFilesCount} New File(s)`}
+                                    </span>
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
             </header>
@@ -101,6 +106,14 @@ const App: React.FC = () => {
 
             <Footer />
         </>
+    );
+};
+
+const App: React.FC = () => {
+    return (
+        <ThemeProvider>
+            <AppContent />
+        </ThemeProvider>
     );
 };
 
