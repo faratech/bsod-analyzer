@@ -2590,18 +2590,78 @@ body.mobile-menu-open {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
+/* Feature cards in light mode - better contrast */
 .light .feature-card {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  background: white;
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
 .light .feature-card:hover {
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.12);
+  border-color: var(--brand-primary);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.15);
+  background: white;
+}
+
+.light .feature-title {
+  color: #1a1a1a;
+  font-weight: 700;
+}
+
+.light .feature-description {
+  color: #4a5568;
+  font-weight: 400;
+}
+
+.light .feature-icon {
+  color: var(--brand-primary);
 }
 
 /* Header adjustments for light mode */
 .light .header {
   background-color: rgba(255, 255, 255, 0.95);
   border-bottom-color: var(--border-primary);
+}
+
+/* Hero section improvements for light mode */
+.light .hero {
+  background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 50%, #e2e8f0 100%);
+}
+
+.light .hero-title {
+  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-secondary) 50%, var(--brand-primary) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: brightness(0.9);
+}
+
+.light .hero-subtitle {
+  color: #2d3748;
+  font-weight: 500;
+}
+
+.light h3 {
+  color: var(--brand-primary);
+}
+
+.light p {
+  color: #4a5568;
+}
+
+/* Upload area text in light mode */
+.light .upload-text {
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.light .upload-hint {
+  color: #718096;
+}
+
+.light .upload-icon {
+  color: var(--brand-primary);
+  opacity: 0.8;
 }
 
 /* Footer adjustments for light mode */
@@ -2631,6 +2691,38 @@ body.mobile-menu-open {
 
 .light ::-webkit-scrollbar-thumb:hover {
   background-color: var(--border-primary);
+}
+
+/* Navigation improvements for light mode */
+.light .nav-link {
+  color: #4a5568;
+  font-weight: 500;
+}
+
+.light .nav-link:hover {
+  color: var(--brand-primary);
+}
+
+.light .nav-link.active {
+  color: var(--brand-primary);
+  font-weight: 600;
+}
+
+.light .logo-text {
+  background: linear-gradient(to right, var(--brand-primary), var(--brand-secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Section backgrounds in light mode */
+.light .comparison-section {
+  background: #f7fafc;
+}
+
+.light .features-section,
+.light .info-section {
+  background: white;
 }
 
 /* Ensure theme toggle is always visible */
