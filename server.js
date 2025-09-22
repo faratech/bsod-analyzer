@@ -189,15 +189,15 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   
   // Content Security Policy
+  // Note: fenced-frame-src removed as it's not a standard CSP directive
   const cspDirectives = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.googletagmanager.com https://*.google-analytics.com https://*.google https://*.cloudflareinsights.com",
-    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.googletagmanager.com https://*.google-analytics.com https://*.google https://*.cloudflareinsights.com https://*.gstatic.com https://adnxs.com https://securepubads.g.doubleclick.net",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: https: blob:",
-    "font-src 'self' data:",
-    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google-analytics.com https://*.google https://*.cloudflareinsights.com",
-    "frame-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google",
-    "fenced-frame-src 'self' https: https://*.googlesyndication.com https://*.doubleclick.net https://*.google https://*.googleadservices.com https://*.googletagservices.com",
+    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google-analytics.com https://*.google https://*.cloudflareinsights.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://csi.gstatic.com",
+    "frame-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google https://www.paypal.com https://tpc.googlesyndication.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -218,12 +218,55 @@ app.use((req, res, next) => {
   next();
 });
 
+// CRITICAL: Set MIME types for assets BEFORE any other middleware
+// This ensures Cloud Run serves files with correct Content-Type
+app.use((req, res, next) => {
+  // Handle assets directory specifically
+  if (req.path.startsWith('/assets/')) {
+    // JavaScript
+    if (req.path.endsWith('.js') || req.path.endsWith('.mjs')) {
+      res.type('application/javascript');
+    }
+    // CSS
+    else if (req.path.endsWith('.css')) {
+      res.type('text/css');
+    }
+    // Fonts
+    else if (req.path.endsWith('.woff2')) {
+      res.type('font/woff2');
+    }
+    else if (req.path.endsWith('.woff')) {
+      res.type('font/woff');
+    }
+    else if (req.path.endsWith('.ttf')) {
+      res.type('font/ttf');
+    }
+    else if (req.path.endsWith('.otf')) {
+      res.type('font/otf');
+    }
+    // Images
+    else if (req.path.endsWith('.png')) {
+      res.type('image/png');
+    }
+    else if (req.path.endsWith('.jpg') || req.path.endsWith('.jpeg')) {
+      res.type('image/jpeg');
+    }
+    else if (req.path.endsWith('.webp')) {
+      res.type('image/webp');
+    }
+    else if (req.path.endsWith('.svg')) {
+      res.type('image/svg+xml');
+    }
+  }
+  next();
+});
+
 // Security middleware - block access to sensitive paths
 app.use((req, res, next) => {
   const blockedPaths = [
     '/public',
     '/src',
-    '/components', 
+    '/components',
     '/pages',
     '/services',
     '/hooks',
@@ -232,10 +275,10 @@ app.use((req, res, next) => {
     '/.git',
     '/.env'
   ];
-  
+
   const blockedExtensions = [
     '.ts',
-    '.tsx', 
+    '.tsx',
     '.js.map',
     '.css.map',
     '.log',
@@ -245,46 +288,99 @@ app.use((req, res, next) => {
     'vite.config.ts',
     '.env'
   ];
-  
+
   // Block access to sensitive directories
   if (blockedPaths.some(path => req.path.startsWith(path))) {
     return res.status(403).send('Access Denied');
   }
-  
+
   // Block access to sensitive file types
   if (blockedExtensions.some(ext => req.path.endsWith(ext))) {
     return res.status(403).send('Access Denied');
   }
-  
+
   next();
 });
 
-// Static file serving with efficient caching
+// Static file serving with explicit MIME types and efficient caching
 app.use(express.static(path.join(__dirname, 'dist'), {
   maxAge: '1y', // Cache static assets for 1 year
   etag: true,
   lastModified: true,
   setHeaders: (res, filePath) => {
-    // Different cache strategies for different file types
-    if (filePath.endsWith('.html')) {
-      // HTML files - short cache to allow updates
+    // CRITICAL: Set MIME types FIRST before any other headers
+    // This ensures Cloud Run doesn't override them
+
+    // JavaScript files - MUST be set correctly for Cloud Run
+    if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('X-Content-Type-Options', 'nosniff'); // Prevent MIME sniffing
+    }
+
+    // CSS files - MUST be set correctly for Cloud Run
+    else if (filePath.endsWith('.css')) {
+      res.setHeader('Content-Type', 'text/css; charset=utf-8');
+      res.setHeader('X-Content-Type-Options', 'nosniff'); // Prevent MIME sniffing
+    }
+
+    // HTML files
+    else if (filePath.endsWith('.html')) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'public, max-age=300'); // 5 minutes
-    } else if (filePath.match(/\.(js|css|woff2|woff|ttf|png|jpg|jpeg|webp|svg|ico)$/)) {
-      // Static assets - long cache with fingerprinting
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year
-    } else if (filePath.endsWith('.json')) {
-      // JSON files - medium cache
-      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+
+    // JSON files
+    else if (filePath.endsWith('.json')) {
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
       // Allow cross-origin for symbol files
       if (filePath.includes('/symbols/')) {
         res.setHeader('Access-Control-Allow-Origin', '*');
       }
     }
-    
-    // Set proper MIME type for JavaScript modules
-    if (filePath.endsWith('.js')) {
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+
+    // Web fonts
+    else if (filePath.endsWith('.woff2')) {
+      res.setHeader('Content-Type', 'font/woff2');
+    } else if (filePath.endsWith('.woff')) {
+      res.setHeader('Content-Type', 'font/woff');
+    } else if (filePath.endsWith('.ttf')) {
+      res.setHeader('Content-Type', 'font/ttf');
+    } else if (filePath.endsWith('.otf')) {
+      res.setHeader('Content-Type', 'font/otf');
+    } else if (filePath.endsWith('.eot')) {
+      res.setHeader('Content-Type', 'application/vnd.ms-fontobject');
+    }
+
+    // Images
+    else if (filePath.endsWith('.png')) {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', 'image/jpeg');
+    } else if (filePath.endsWith('.webp')) {
+      res.setHeader('Content-Type', 'image/webp');
+    } else if (filePath.endsWith('.svg')) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+    } else if (filePath.endsWith('.ico')) {
+      res.setHeader('Content-Type', 'image/x-icon');
+    }
+
+    // Set cache headers AFTER MIME types
+    if (filePath.endsWith('.html')) {
+      // HTML files - short cache to allow updates
+      res.setHeader('Cache-Control', 'public, max-age=300'); // 5 minutes
+    } else if (filePath.match(/\.(js|mjs|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico)$/)) {
+      // Static assets - long cache with fingerprinting
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year
+    } else if (filePath.endsWith('.json')) {
+      // JSON files - medium cache
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+    }
+
+    // Allow CORS for fonts and certain resources
+    if (filePath.match(/\.(woff2|woff|ttf|otf|eot)$/)) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
     }
   }
 }));
@@ -789,7 +885,15 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
 app.use((req, res) => {
   const { amp } = req.query;
   const pathname = req.path;
-  
+
+  // CRITICAL: Don't handle asset files with the catch-all route
+  // Static files should be served by express.static middleware
+  if (pathname.startsWith('/assets/') ||
+      pathname.match(/\.(js|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico|json|xml|txt|webmanifest)$/)) {
+    // Return 404 for asset files that weren't found by static middleware
+    return res.status(404).send('File not found');
+  }
+
   // If ?amp=1 is present, redirect to AMP version
   if (amp === '1') {
     let ampPath;
@@ -805,10 +909,10 @@ app.use((req, res) => {
       // Default to home AMP page for unknown routes
       ampPath = '/amp/index.html';
     }
-    
+
     return res.redirect(302, ampPath);
   }
-  
+
   // Serve static AMP files directly
   if (pathname.startsWith('/amp/')) {
     const ampFile = path.join(__dirname, pathname);
@@ -818,8 +922,8 @@ app.use((req, res) => {
       }
     });
   }
-  
-  // Serve React app for all other routes
+
+  // Serve React app for all other routes (non-asset routes only)
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
