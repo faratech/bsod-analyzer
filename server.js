@@ -11,7 +11,18 @@ import crypto from 'crypto';
 import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
-import stringify from 'fast-json-stable-stringify';
+
+// Manual stable stringify to ensure consistent key ordering (matches client implementation)
+function stableStringify(obj) {
+  if (obj === null) return 'null';
+  if (typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(stableStringify).join(',') + ']';
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs = keys.map(key => JSON.stringify(key) + ':' + stableStringify(obj[key]));
+  return '{' + pairs.join(',') + '}';
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -847,7 +858,7 @@ function validateRequestSignature(req) {
   console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
   console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
 
-  const contentsStr = stringify(req.body.contents); // Canonical JSON
+  const contentsStr = stableStringify(req.body.contents); // Stable JSON with sorted keys
   const payload = contentsStr + timestamp;
 
   console.log('[Debug] Canonical JSON length:', contentsStr.length);
