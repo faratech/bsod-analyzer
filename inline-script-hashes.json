@@ -1,0 +1,8 @@
+{
+  "hashes": [
+    "'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I='",
+    "'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI='"
+  ],
+  "generated": "2025-11-12T02:05:02.567Z",
+  "cspDirective": "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI='"
+}
