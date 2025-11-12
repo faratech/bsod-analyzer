@@ -203,13 +203,13 @@ app.use((req, res, next) => {
     // - sha256-...: Hashes for inline scripts (Google Analytics, AdSense loaders)
     // - Third-party: Google services (Analytics, Ads, Tag Manager, Turnstile)
     // - NO 'unsafe-inline' or 'unsafe-eval' - all scripts must be hashed or from trusted sources
-    "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI=' 'sha256-GAVaxQGyKWkldj7+n6XRhsA3WjpwIO+/Vewq1C7lfTc=' https://*.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.googletagmanager.com https://*.google-analytics.com https://*.cloudflareinsights.com https://*.gstatic.com https://*.adtrafficquality.google https://adnxs.com https://securepubads.g.doubleclick.net https://fundingchoicesmessages.google.com",
+    "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI=' 'sha256-GAVaxQGyKWkldj7+n6XRhsA3WjpwIO+/Vewq1C7lfTc=' https://*.cloudflare.com https://*.google https://*.google.com https://adnxs.com https://securepubads.g.doubleclick.net",
     // Styles: Allow inline for React/Tailwind (future: move to hash-based)
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: https: blob:",
-    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google-analytics.com https://*.cloudflareinsights.com https://*.adtrafficquality.google https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://csi.gstatic.com",
-    "frame-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com https://tpc.googlesyndication.com",
+    "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",
+    "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://www.paypal.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
