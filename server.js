@@ -943,7 +943,9 @@ function validateBSODPrompt(contents) {
   const technicalMatches = technicalPatterns.filter(pattern => pattern.test(promptText)).length;
 
   // Legitimate BSOD prompts should have at least 2 technical indicators
-  if (technicalMatches < 2) {
+  // RELAXED: For initial prompts that just describe the file, allow 1 match
+  if (technicalMatches < 1) {
+    console.log('[Validation] Technical matches:', technicalMatches, 'Prompt preview:', promptText.substring(0, 200));
     return { valid: false, reason: 'Insufficient technical crash analysis content' };
   }
 
