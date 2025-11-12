@@ -29,7 +29,7 @@ interface GenerateContentResponse {
 }
 
 interface GenerateContentParams {
-    contents: string;
+    contents: any; // Array of content objects or string
     config?: {
         responseMimeType?: string;
         responseSchema?: any;

@@ -208,15 +208,13 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: https: blob:",
-    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google-analytics.com https://*.cloudflareinsights.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://csi.gstatic.com",
+    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googleapis.com https://*.googlesyndication.com https://*.doubleclick.net https://*.google-analytics.com https://*.cloudflareinsights.com https://*.adtrafficquality.google https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com https://csi.gstatic.com",
     "frame-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com https://tpc.googlesyndication.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'self'",
-    "upgrade-insecure-requests",
-    // Require SRI for scripts and styles
-    "require-sri-for script style"
+    "upgrade-insecure-requests"
   ];
   
   res.setHeader('Content-Security-Policy', cspDirectives.join('; '));
