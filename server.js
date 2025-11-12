@@ -874,8 +874,10 @@ function validateRequestSignature(req) {
 }
 
 // Helper function to validate that prompts are BSOD-related (prevent API abuse)
+// SIMPLIFIED: Focus on blocking obvious abuse, allow all BSOD-related content
 function validateBSODPrompt(contents) {
   if (!Array.isArray(contents) || contents.length === 0) {
+    console.log('[Validation] FAILED: Invalid contents structure');
     return { valid: false, reason: 'Invalid contents structure' };
   }
 
@@ -886,23 +888,15 @@ function validateBSODPrompt(contents) {
     .join(' ')
     .toLowerCase();
 
+  console.log('[Validation] Prompt length:', promptText.length, 'First 100 chars:', promptText.substring(0, 100));
+
   // Must be substantial prompt (not just "hi" or "test")
   if (promptText.length < 50) {
+    console.log('[Validation] FAILED: Prompt too short');
     return { valid: false, reason: 'Prompt too short for crash analysis' };
   }
 
-  // ADVANCED: Check for keyword stuffing (attempt to bypass validation)
-  // If someone just adds keywords to bypass, detect the pattern
-  const keywordCount = (promptText.match(/crash dump|bug check|bsod|kernel debugger|minidump/gi) || []).length;
-  const totalWords = promptText.split(/\s+/).length;
-  const keywordDensity = keywordCount / totalWords;
-
-  // If keywords appear too frequently (>15% of text), it's likely stuffing
-  if (keywordDensity > 0.15) {
-    return { valid: false, reason: 'Suspicious keyword density (possible bypass attempt)' };
-  }
-
-  // Must contain BSOD/crash analysis keywords
+  // Must contain BSOD/crash analysis keywords (at least ONE)
   const requiredKeywords = [
     'crash dump',
     'windows crash',
@@ -915,7 +909,13 @@ function validateBSODPrompt(contents) {
     'memory dump',
     'stop code',
     'exception code',
-    'faulting module'
+    'faulting module',
+    'windows',
+    'crash',
+    'dump',
+    'error',
+    'blue screen',
+    'black screen'
   ];
 
   const hasKeyword = requiredKeywords.some(keyword =>
@@ -923,83 +923,28 @@ function validateBSODPrompt(contents) {
   );
 
   if (!hasKeyword) {
+    console.log('[Validation] FAILED: Missing crash analysis keywords');
     return { valid: false, reason: 'Missing crash analysis keywords' };
   }
 
-  // ADVANCED: Reject if keywords appear at end (bypass attempt)
-  // Legitimate prompts have keywords throughout, not just appended
-  const lastQuarter = promptText.substring(Math.floor(promptText.length * 0.75));
-  const keywordsInLastQuarter = requiredKeywords.filter(kw => lastQuarter.includes(kw)).length;
-  const keywordsInTotal = requiredKeywords.filter(kw => promptText.includes(kw)).length;
+  console.log('[Validation] Has keyword: true');
 
-  if (keywordsInTotal > 0 && keywordsInLastQuarter === keywordsInTotal) {
-    return { valid: false, reason: 'Keywords only at end (possible bypass attempt)' };
-  }
-
-  // ADVANCED: Must contain technical identifiers typical of crash dumps
-  const technicalPatterns = [
-    /0x[0-9a-f]{8}/i,           // Hex addresses
-    /parameter\s*[1-4]/i,        // Bug check parameters
-    /\.sys|\.dll|\.exe/i,        // Module names
-    /stack\s+trace|call\s+stack/i, // Stack references
-    /irql|dpc|apc/i,             // Kernel terms
-    /exception|fault|trap/i,     // Crash terms
-    /thread|process|driver/i     // System components
-  ];
-
-  const technicalMatches = technicalPatterns.filter(pattern => pattern.test(promptText)).length;
-
-  // Legitimate BSOD prompts should have at least 1 technical indicator
-  // RELAXED: Many legitimate dumps don't have explicit technical terms in the prompt
-  if (technicalMatches < 1 && !hasKeyword) {
-    console.log('[Validation] Technical matches:', technicalMatches, 'Has keyword:', hasKeyword, 'Prompt preview:', promptText.substring(0, 200));
-    return { valid: false, reason: 'Insufficient technical crash analysis content' };
-  }
-
-  console.log('[Validation] Passed technical validation - matches:', technicalMatches, 'keywords:', hasKeyword);
-
-  // Reject obvious abuse patterns
+  // Reject obvious abuse patterns (simplified)
   const abusePatterns = [
-    /write\s+(me\s+)?(a\s+)?(story|poem|essay|song|novel|article)/i,
-    /generate\s+(a\s+)?(email|letter|report|code|script)/i,
-    /create\s+(a\s+)?(website|app|program|game)/i,
-    /help\s+(me\s+)?(with\s+)?(my\s+)?(homework|assignment|project)/i,
-    /translate\s+/i,
-    /summarize\s+(this\s+)?(book|article|text|document)/i,
+    /write\s+(me\s+)?(a\s+)?(story|poem|essay|song|novel)/i,
     /tell\s+me\s+(a\s+)?(joke|story)/i,
-    /what\s+is\s+(the\s+)?(meaning|purpose|capital)/i,
-    /how\s+(do\s+)?i\s+(make|cook|bake|build)/i,
-    /explain\s+(quantum|physics|chemistry|biology|history)/i,
-    /write\s+code\s+for/i,
-    /ignore\s+(previous|above|all)\s+(instructions|rules)/i, // Prompt injection
-    /forget\s+(your|previous)\s+(instructions|rules)/i      // Prompt injection
+    /translate\s+to\s+/i,
+    /ignore\s+(previous|above)\s+instructions/i,
+    /forget\s+your\s+instructions/i
   ];
 
   const matchedPattern = abusePatterns.find(pattern => pattern.test(promptText));
   if (matchedPattern) {
-    return { valid: false, reason: `Abuse pattern detected: ${matchedPattern}` };
+    console.log('[Validation] FAILED: Abuse pattern detected:', matchedPattern);
+    return { valid: false, reason: `Abuse pattern detected` };
   }
 
-  // ADVANCED: Check for prompt injection attempts
-  const injectionIndicators = [
-    'ignore previous',
-    'forget your',
-    'new instructions',
-    'act as',
-    'pretend you are',
-    'you are now',
-    'disregard',
-    'override system'
-  ];
-
-  const hasInjection = injectionIndicators.some(indicator =>
-    promptText.includes(indicator)
-  );
-
-  if (hasInjection) {
-    return { valid: false, reason: 'Prompt injection attempt detected' };
-  }
-
+  console.log('[Validation] PASSED all checks');
   return { valid: true };
 }
 
