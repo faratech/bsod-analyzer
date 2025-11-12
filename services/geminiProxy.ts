@@ -13,6 +13,8 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { SymbolResolver } from '../utils/symbolResolver';
 import { extractStackFramesWithSymbols } from '../utils/stackExtractor';
+// @ts-ignore - no types available
+import stringify from 'fast-json-stable-stringify';
 
 // Define types to match original imports
 enum Type {
@@ -74,7 +76,8 @@ async function signRequest(contents: any, timestamp: number): Promise<string> {
     const signingKey = await getSigningKey();
 
     // Create payload: contents + timestamp
-    const payload = JSON.stringify(contents) + timestamp;
+    // CRITICAL: Use canonical JSON to ensure consistent key ordering with server
+    const payload = stringify(contents) + timestamp;
 
     // Use SubtleCrypto for HMAC-SHA256
     const encoder = new TextEncoder();

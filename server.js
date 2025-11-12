@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
+import stringify from 'fast-json-stable-stringify';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -845,14 +846,15 @@ function validateRequestSignature(req) {
   console.log('[Debug] Signing key (first 20 chars):', signingKey.substring(0, 20) + '...');
 
   // Compute expected signature
+  // CRITICAL: Use canonical JSON to ensure consistent key ordering
   // Sign: contents + timestamp to prevent replay with different data
   console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
   console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
 
-  const contentsStr = JSON.stringify(req.body.contents);
+  const contentsStr = stringify(req.body.contents); // Canonical JSON
   const payload = contentsStr + timestamp;
 
-  console.log('[Debug] Contents string length:', contentsStr.length);
+  console.log('[Debug] Canonical JSON length:', contentsStr.length);
   console.log('[Debug] Payload length:', payload.length);
   console.log('[Debug] Payload preview (first 100 chars):', payload.substring(0, 100));
   console.log('[Debug] Payload end (last 30 chars):', payload.substring(payload.length - 30));
@@ -969,9 +971,8 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     const sessionId = req.cookies.bsod_session_id;
 
     // SECURITY: Validate request signature (prevent tampering and replay attacks)
-    // TEMPORARILY DISABLED: Signature validation has implementation issues
-    // TODO: Fix client/server signature mismatch before re-enabling
-    const SIGNATURE_VALIDATION_ENABLED = false;
+    // ENABLED: Now using canonical JSON serialization to ensure consistent signatures
+    const SIGNATURE_VALIDATION_ENABLED = true;
 
     if (SIGNATURE_VALIDATION_ENABLED) {
       const signatureValidation = validateRequestSignature(req);

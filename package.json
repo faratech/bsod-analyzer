@@ -27,6 +27,7 @@
     "dotenv": "latest",
     "express": "latest",
     "express-rate-limit": "latest",
+    "fast-json-stable-stringify": "^2.1.0",
     "jszip": "latest",
     "react": "latest",
     "react-dom": "latest",
