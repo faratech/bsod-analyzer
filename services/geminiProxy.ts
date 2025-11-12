@@ -13,8 +13,17 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { SymbolResolver } from '../utils/symbolResolver';
 import { extractStackFramesWithSymbols } from '../utils/stackExtractor';
-// @ts-ignore - no types available
-import stringify from 'fast-json-stable-stringify';
+// Manual stable stringify to avoid bundling issues with Vite
+function stableStringify(obj: any): string {
+    if (obj === null) return 'null';
+    if (typeof obj !== 'object') return JSON.stringify(obj);
+    if (Array.isArray(obj)) {
+        return '[' + obj.map(stableStringify).join(',') + ']';
+    }
+    const keys = Object.keys(obj).sort();
+    const pairs = keys.map(key => JSON.stringify(key) + ':' + stableStringify(obj[key]));
+    return '{' + pairs.join(',') + '}';
+}
 
 // Define types to match original imports
 enum Type {
@@ -76,8 +85,8 @@ async function signRequest(contents: any, timestamp: number): Promise<string> {
     const signingKey = await getSigningKey();
 
     // Create payload: contents + timestamp
-    // CRITICAL: Use canonical JSON to ensure consistent key ordering with server
-    const payload = stringify(contents) + timestamp;
+    // CRITICAL: Use stable stringify to ensure consistent key ordering with server
+    const payload = stableStringify(contents) + timestamp;
 
     // Use SubtleCrypto for HMAC-SHA256
     const encoder = new TextEncoder();
