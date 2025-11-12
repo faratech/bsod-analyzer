@@ -815,12 +815,20 @@ function validateRequestSignature(req) {
 
   // Check required fields
   if (!signature || !timestamp) {
+    console.log('[Debug] Missing signature or timestamp:', { hasSignature: !!signature, hasTimestamp: !!timestamp });
     return { valid: false, reason: 'Missing signature or timestamp' };
   }
 
   // Verify timestamp is recent (within 5 minutes)
   const now = Date.now();
   const requestAge = now - timestamp;
+
+  console.log('[Debug] Timestamp validation:', {
+    now,
+    timestamp,
+    requestAge,
+    maxAge: 5 * 60 * 1000
+  });
 
   if (requestAge > 5 * 60 * 1000) {
     return { valid: false, reason: 'Request expired (timestamp too old)' };
@@ -835,12 +843,22 @@ function validateRequestSignature(req) {
     .update(sessionId)
     .digest('hex');
 
+  console.log('[Debug] Session ID:', sessionId?.substring(0, 10) + '...');
+  console.log('[Debug] Signing key (first 20 chars):', signingKey.substring(0, 20) + '...');
+
   // Compute expected signature
   // Sign: contents + timestamp to prevent replay with different data
   const payload = JSON.stringify(req.body.contents) + timestamp;
+  console.log('[Debug] Payload length:', payload.length);
+  console.log('[Debug] Payload preview (first 100 chars):', payload.substring(0, 100));
+
   const expectedSignature = crypto.createHmac('sha256', signingKey)
     .update(payload)
     .digest('hex');
+
+  console.log('[Debug] Expected signature:', expectedSignature);
+  console.log('[Debug] Received signature:', signature);
+  console.log('[Debug] Signatures match:', signature === expectedSignature);
 
   // Constant-time comparison to prevent timing attacks
   if (signature !== expectedSignature) {
