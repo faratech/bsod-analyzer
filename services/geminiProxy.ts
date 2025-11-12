@@ -41,18 +41,85 @@ interface GenerateContentParams {
     tools?: any[];
 }
 
+// Cache signing key for session
+let cachedSigningKey: string | null = null;
+
+// Get signing key for request authentication
+async function getSigningKey(): Promise<string> {
+    if (cachedSigningKey) {
+        return cachedSigningKey;
+    }
+
+    try {
+        const response = await fetch('/api/auth/signing-key', {
+            method: 'GET',
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to get signing key');
+        }
+
+        const data = await response.json();
+        cachedSigningKey = data.signingKey;
+        return cachedSigningKey;
+    } catch (error) {
+        console.error('[Security] Failed to get signing key:', error);
+        throw error;
+    }
+}
+
+// Sign request with HMAC
+async function signRequest(contents: any, timestamp: number): Promise<string> {
+    const signingKey = await getSigningKey();
+
+    // Create payload: contents + timestamp
+    const payload = JSON.stringify(contents) + timestamp;
+
+    // Use SubtleCrypto for HMAC-SHA256
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(signingKey);
+    const messageData = encoder.encode(payload);
+
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
+
+    // Convert to hex string
+    return Array.from(new Uint8Array(signature))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
 const createGeminiProxy = () => {
     const generateContent = async (params: GenerateContentParams): Promise<GenerateContentResponse> => {
         const makeRequest = async (): Promise<any> => {
             try {
+                // Generate timestamp and signature
+                const timestamp = Date.now();
+                const signature = await signRequest(params.contents, timestamp);
+
+                // Add signature and timestamp to request
+                const signedParams = {
+                    ...params,
+                    signature,
+                    timestamp
+                };
+
                 // Log the request size for debugging
-                const requestBody = JSON.stringify(params);
+                const requestBody = JSON.stringify(signedParams);
                 console.log('[GeminiProxy] Request size:', requestBody.length, 'bytes');
                 if (requestBody.length > 1000000) {
                     console.warn('[GeminiProxy] Large request size may cause issues');
                 }
-                
+
                 const response = await fetch('/api/gemini/generateContent', {
                     method: 'POST',
                     headers: {
@@ -80,13 +147,18 @@ const createGeminiProxy = () => {
                         }
                     }
                     
-                    // Check if it's a session error
-                    if (response.status === 401 && handleSessionError(errorData)) {
-                        // Try to re-initialize session
-                        const sessionSuccess = await initializeSession();
-                        if (sessionSuccess) {
-                            // Retry the request once after session refresh
-                            return makeRequest();
+                    // Check if it's a session or signature error
+                    if (response.status === 401) {
+                        // Clear cached signing key on auth errors
+                        cachedSigningKey = null;
+
+                        if (handleSessionError(errorData)) {
+                            // Try to re-initialize session
+                            const sessionSuccess = await initializeSession();
+                            if (sessionSuccess) {
+                                // Retry the request once after session refresh
+                                return makeRequest();
+                            }
                         }
                     }
                     
