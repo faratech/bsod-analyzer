@@ -204,13 +204,13 @@ app.use((req, res, next) => {
     // - sha256-...: Hashes for inline scripts (Google Analytics, AdSense loaders)
     // - Third-party: Google services (Analytics, Ads, Tag Manager, Turnstile)
     // - NO 'unsafe-inline' or 'unsafe-eval' - all scripts must be hashed or from trusted sources
-    "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI=' 'sha256-GAVaxQGyKWkldj7+n6XRhsA3WjpwIO+/Vewq1C7lfTc=' 'sha256-3CMhv2AbxODcOkB5dDhR/BTBGDxQOnv8Qc1YmEL+DaM=' https://*.cloudflare.com https://*.google https://*.google.com https://adnxs.com https://securepubads.g.doubleclick.net https://static.cloudflareinsights.com",
+    "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI=' 'sha256-GAVaxQGyKWkldj7+n6XRhsA3WjpwIO+/Vewq1C7lfTc=' 'sha256-3CMhv2AbxODcOkB5dDhR/BTBGDxQOnv8Qc1YmEL+DaM=' 'sha256-PWKXFgzrQYSOn3jRZb2OlyjzeoZK3sa1CcIZ9RnmI9Y=' https://*.cloudflare.com https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com",
     // Styles: Allow inline for React/Tailwind (future: move to hash-based)
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: https: blob:",
-    "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",
-    "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://www.paypal.com",
+    "connect-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",
+    "frame-src 'self' https://challenges.cloudflare.com https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://www.paypal.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -699,13 +699,9 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
       maxAge: SESSION_EXPIRY,
       path: '/', // Ensure cookies are available for all paths
       // Don't set domain - let browser handle it to work with any domain
+      // Don't use 'partitioned' - these are first-party cookies, not third-party
     };
-    
-    // Add partitioned attribute for CHIPS (Cookies Having Independent Partitioned State)
-    if (process.env.NODE_ENV === 'production') {
-      cookieOptions.partitioned = true;
-    }
-    
+
     res.cookie('bsod_session_id', sessionId, cookieOptions);
     res.cookie('bsod_session_hash', sessionHash, cookieOptions);
     res.cookie('bsod_turnstile_verified', 'true', { ...cookieOptions, maxAge: 2 * 60 * 60 * 1000 }); // 2 hours
