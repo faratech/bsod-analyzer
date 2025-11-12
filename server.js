@@ -846,9 +846,16 @@ function validateRequestSignature(req) {
 
   // Compute expected signature
   // Sign: contents + timestamp to prevent replay with different data
-  const payload = JSON.stringify(req.body.contents) + timestamp;
+  console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
+  console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
+
+  const contentsStr = JSON.stringify(req.body.contents);
+  const payload = contentsStr + timestamp;
+
+  console.log('[Debug] Contents string length:', contentsStr.length);
   console.log('[Debug] Payload length:', payload.length);
   console.log('[Debug] Payload preview (first 100 chars):', payload.substring(0, 100));
+  console.log('[Debug] Payload end (last 30 chars):', payload.substring(payload.length - 30));
 
   const expectedSignature = crypto.createHmac('sha256', signingKey)
     .update(payload)
