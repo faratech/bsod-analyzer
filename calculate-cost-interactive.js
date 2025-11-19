@@ -6,8 +6,8 @@
  */
 
 const PRICING = {
-  inputTokensPerM: 0.30,    // Updated Dec 2024 pricing
-  outputTokensPerM: 2.50,   // Updated Dec 2024 pricing
+  inputTokensPerM: 2.00,    // Updated Nov 2025 pricing (Gemini 3 Pro)
+  outputTokensPerM: 12.00,  // Updated Nov 2025 pricing (Gemini 3 Pro)
   groundingPer1K: 35.0
 };
 

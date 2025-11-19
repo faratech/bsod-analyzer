@@ -2,9 +2,9 @@
 
 /**
  * Gemini API Cost Calculator for BSOD Analyzer
- * 
- * Pricing as of Dec 2024:
- * - Gemini 2.5 Pro: $2.50 per 1M input tokens, $10.00 per 1M output tokens
+ *
+ * Pricing as of Nov 2025:
+ * - Gemini 3 Pro: $2.00 per 1M input tokens, $12.00 per 1M output tokens (≤200K context)
  * - Grounding: $35 per 1000 grounded queries (only for advanced tools)
  */
 
@@ -32,10 +32,10 @@ const AVERAGE_TOKENS = {
   }
 };
 
-// Pricing per 1M tokens (Gemini 2.5 Pro) - Updated Dec 2024
+// Pricing per 1M tokens (Gemini 3 Pro) - Updated Nov 2025
 const PRICING = {
-  inputTokens: 2.50,    // $2.50 per 1M input tokens (text)
-  outputTokens: 10.00,  // $10.00 per 1M output tokens
+  inputTokens: 2.00,    // $2.00 per 1M input tokens (≤200K context)
+  outputTokens: 12.00,  // $12.00 per 1M output tokens (≤200K context)
   grounding: 35.0       // $35 per 1000 grounded queries
 };
 
@@ -97,7 +97,7 @@ function printCostBreakdown(title, costData) {
 // Main calculation
 console.log('BSOD Analyzer - Gemini API Cost Calculator');
 console.log('==========================================');
-console.log(`\nPricing (Gemini 2.5 Pro):`);
+console.log(`\nPricing (Gemini 3 Pro):`);
 console.log(`- Input:     $${PRICING.inputTokens} per 1M tokens`);
 console.log(`- Output:    $${PRICING.outputTokens} per 1M tokens`);
 console.log(`- Grounding: $${PRICING.grounding} per 1000 queries`);
@@ -157,4 +157,4 @@ console.log('\n\nNotes:');
 console.log('- Token counts are estimates based on typical BSOD dump analysis');
 console.log('- Actual costs may vary based on dump file complexity');
 console.log('- Grounding is only used for advanced debugging tools');
-console.log('- Prices current as of December 2024');
+console.log('- Prices current as of November 2025');
