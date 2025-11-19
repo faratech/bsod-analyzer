@@ -53,7 +53,7 @@ The application can be deployed to Google Cloud Run. The `README.md` provides de
 *   **Technology Stack:**
     *   **Frontend:** React 19, TypeScript, Vite
     *   **Backend:** Express.js with ES modules
-    *   **AI Service:** Google Gemini 2.5 Flash with grounding via `@google/generative-ai` SDK
+    *   **AI Service:** Google Gemini 3 Pro with grounding via `@google/generative-ai` SDK
     *   **Styling:** Custom CSS
     *   **Deployment:** Docker, Google Cloud Run, Secret Manager
 *   **Secret Management:**

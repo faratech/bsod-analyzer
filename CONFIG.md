@@ -43,7 +43,7 @@ analytics: {
 Configure Gemini API settings:
 ```typescript
 api: {
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: 'gemini-3-pro',
     maxFileSize: 100 * 1024 * 1024, // 100MB
     minidumpThreshold: 5 * 1024 * 1024 // 5MB
 }

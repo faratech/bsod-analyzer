@@ -1,14 +1,14 @@
-# Gemini 2.5 Pro Enhanced Features
+# Gemini 3 Pro Enhanced Features
 
 ## Overview
 
-This document describes the enhanced features implemented for the BSOD Analyzer using Gemini 2.5 Pro, including Google Search grounding and optimized parameters.
+This document describes the enhanced features implemented for the BSOD Analyzer using Gemini 3 Pro, including Google Search grounding and optimized parameters.
 
 ## Features
 
-### 1. Gemini 2.5 Pro Model
+### 1. Gemini 3 Pro Model
 
-The BSOD analyzer now uses Gemini 2.5 Pro, which includes:
+The BSOD analyzer now uses Gemini 3 Pro, which includes:
 
 **Current Configuration:**
 ```javascript
@@ -25,7 +25,7 @@ config: {
 - Enhanced ability to trace through stack traces and identify culprits
 
 **Note on Thinking Mode:**
-According to Google's documentation, Gemini 2.5 Pro comes with thinking capabilities enabled by default. The `thinkingConfig` parameter with `thinkingBudget` appears to be available in some contexts but may not be fully supported through all API endpoints yet.
+According to Google's documentation, Gemini 3 Pro comes with thinking capabilities enabled by default. The `thinkingConfig` parameter with `thinkingBudget` appears to be available in some contexts but may not be fully supported through all API endpoints yet.
 
 ### 2. Google Search Grounding
 
@@ -71,9 +71,9 @@ The client includes:
 
 ## Cost Implications
 
-With Gemini 2.5 Pro:
-- Input: $2.50 per 1M tokens
-- Output: $10.00 per 1M tokens
+With Gemini 3 Pro:
+- Input: $2.00 per 1M tokens (≤200K context)
+- Output: $12.00 per 1M tokens (≤200K context)
 - Grounding: $35 per 1,000 queries (only for advanced tools)
 
 ## Future Enhancements
