@@ -357,7 +357,7 @@ app.use(express.static(path.join(__dirname, 'dist'), {
     // HTML files
     else if (filePath.endsWith('.html')) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Cache-Control', 'public, max-age=300'); // 5 minutes
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate'); // Always revalidate HTML
       res.setHeader('X-Content-Type-Options', 'nosniff');
     }
 
@@ -399,8 +399,8 @@ app.use(express.static(path.join(__dirname, 'dist'), {
 
     // Set cache headers AFTER MIME types
     if (filePath.endsWith('.html')) {
-      // HTML files - short cache to allow updates
-      res.setHeader('Cache-Control', 'public, max-age=300'); // 5 minutes
+      // HTML files - always revalidate to ensure users get latest bundle references
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     } else if (filePath.match(/\.(js|mjs|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico)$/)) {
       // Static assets - long cache with fingerprinting
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year
