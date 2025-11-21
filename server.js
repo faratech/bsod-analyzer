@@ -215,7 +215,7 @@ app.use((req, res, next) => {
     // - sha256-...: Hashes for inline scripts (Google Analytics, AdSense loaders)
     // - Third-party: Google services (Analytics, Ads, Tag Manager, Turnstile)
     // - NO 'unsafe-inline' or 'unsafe-eval' - all scripts must be hashed or from trusted sources
-    "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI=' 'sha256-GAVaxQGyKWkldj7+n6XRhsA3WjpwIO+/Vewq1C7lfTc=' 'sha256-3CMhv2AbxODcOkB5dDhR/BTBGDxQOnv8Qc1YmEL+DaM=' 'sha256-PWKXFgzrQYSOn3jRZb2OlyjzeoZK3sa1CcIZ9RnmI9Y=' 'sha256-me1i51FS09qb/X4uaCHk6VKRTqSr0EKnfDZoiPT0N1A=' 'sha256-521egSjV9HKQ2VMe8ahbWM9G8rBENua1sCEQz/g9zUE=' 'sha256-W+VIrieLRSdYAaPoj09MAUbWwXmqEw57m8wKTLGv9/c=' 'sha256-l4IeWwtnTt9ej8tGLYWF39QkFp4JqfMoTnT9z8tq0Qw=' 'sha256-FO99L+LSIx06md/wQ/GSHJPAhhMBE7pYl3CJ0nF+L8Q=' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com",
+    "script-src 'self' 'unsafe-inline' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com",
     // Styles: Allow inline for React/Tailwind (future: move to hash-based)
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
