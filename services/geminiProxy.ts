@@ -85,8 +85,10 @@ async function signRequest(contents: any, timestamp: number): Promise<string> {
     const signingKey = await getSigningKey();
 
     // Create payload: contents + timestamp
-    // CRITICAL: Use stable stringify to ensure consistent key ordering with server
-    const payload = stableStringify(contents) + timestamp;
+    // For strings, use directly without JSON.stringify to avoid browser/Node.js differences
+    // For objects/arrays, use stableStringify for consistent key ordering
+    const contentsStr = typeof contents === 'string' ? contents : stableStringify(contents);
+    const payload = contentsStr + timestamp;
 
     // Use SubtleCrypto for HMAC-SHA256
     const encoder = new TextEncoder();
