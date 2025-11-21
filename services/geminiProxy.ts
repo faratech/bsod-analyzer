@@ -80,15 +80,26 @@ async function getSigningKey(): Promise<string> {
     }
 }
 
+// Hash content for signing (avoids encoding differences between browser/Node.js)
+async function hashContents(contents: any): Promise<string> {
+    const encoder = new TextEncoder();
+    // For strings, use directly; for objects/arrays, use stableStringify
+    const contentsStr = typeof contents === 'string' ? contents : stableStringify(contents);
+    const data = encoder.encode(contentsStr);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
 // Sign request with HMAC
 async function signRequest(contents: any, timestamp: number): Promise<string> {
     const signingKey = await getSigningKey();
 
-    // Create payload: contents + timestamp
-    // For strings, use directly without JSON.stringify to avoid browser/Node.js differences
-    // For objects/arrays, use stableStringify for consistent key ordering
-    const contentsStr = typeof contents === 'string' ? contents : stableStringify(contents);
-    const payload = contentsStr + timestamp;
+    // Create payload: hash of contents + timestamp
+    // Using hash avoids any encoding differences between browser and Node.js
+    const contentsHash = await hashContents(contents);
+    const payload = contentsHash + timestamp;
 
     // Use SubtleCrypto for HMAC-SHA256
     const encoder = new TextEncoder();
