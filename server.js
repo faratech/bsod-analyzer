@@ -808,6 +808,18 @@ app.get('/api/auth/session', async (req, res) => {
   }
 });
 
+// Helper function to hash contents (matches client-side implementation)
+function hashContents(contents) {
+  // For strings, use directly; for objects/arrays, use stableStringify
+  const contentsStr = typeof contents === 'string'
+    ? contents
+    : stableStringify(contents);
+
+  return crypto.createHash('sha256')
+    .update(contentsStr)
+    .digest('hex');
+}
+
 // Helper function to validate request signature (prevent tampering and replay attacks)
 function validateRequestSignature(req) {
   const { signature, timestamp } = req.body;
@@ -847,22 +859,16 @@ function validateRequestSignature(req) {
   console.log('[Debug] Signing key (first 20 chars):', signingKey.substring(0, 20) + '...');
 
   // Compute expected signature
-  // CRITICAL: Use canonical JSON to ensure consistent key ordering
-  // Sign: contents + timestamp to prevent replay with different data
+  // CRITICAL: Use hash of contents to avoid encoding differences between browser/Node.js
   console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
   console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
 
-  // For strings, use directly without JSON.stringify to avoid browser/Node.js differences
-  // For objects/arrays, use stableStringify for consistent key ordering
-  const contentsStr = typeof req.body.contents === 'string'
-    ? req.body.contents
-    : stableStringify(req.body.contents);
-  const payload = contentsStr + timestamp;
+  // Hash the contents to avoid any string encoding differences
+  const contentsHash = hashContents(req.body.contents);
+  const payload = contentsHash + timestamp;
 
-  console.log('[Debug] Canonical JSON length:', contentsStr.length);
-  console.log('[Debug] Payload length:', payload.length);
-  console.log('[Debug] Payload preview (first 100 chars):', payload.substring(0, 100));
-  console.log('[Debug] Payload end (last 30 chars):', payload.substring(payload.length - 30));
+  console.log('[Debug] Contents hash:', contentsHash);
+  console.log('[Debug] Payload:', payload);
 
   const expectedSignature = crypto.createHmac('sha256', signingKey)
     .update(payload)
