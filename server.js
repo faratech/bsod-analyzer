@@ -852,7 +852,11 @@ function validateRequestSignature(req) {
   console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
   console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
 
-  const contentsStr = stableStringify(req.body.contents); // Stable JSON with sorted keys
+  // For strings, use directly without JSON.stringify to avoid browser/Node.js differences
+  // For objects/arrays, use stableStringify for consistent key ordering
+  const contentsStr = typeof req.body.contents === 'string'
+    ? req.body.contents
+    : stableStringify(req.body.contents);
   const payload = contentsStr + timestamp;
 
   console.log('[Debug] Canonical JSON length:', contentsStr.length);
@@ -978,9 +982,8 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     const sessionId = req.cookies.bsod_session_id;
 
     // SECURITY: Validate request signature (prevent tampering and replay attacks)
-    // TEMPORARILY DISABLED: Debugging signature mismatch issue
-    // TODO: Re-enable after fixing stableStringify differences
-    const SIGNATURE_VALIDATION_ENABLED = process.env.ENABLE_SIGNATURE_VALIDATION === 'true';
+    // Fixed: Now using raw strings instead of JSON.stringify to avoid browser/Node.js differences
+    const SIGNATURE_VALIDATION_ENABLED = true;
 
     if (SIGNATURE_VALIDATION_ENABLED) {
       const signatureValidation = validateRequestSignature(req);
