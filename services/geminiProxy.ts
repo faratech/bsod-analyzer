@@ -171,11 +171,13 @@ const createGeminiProxy = () => {
                             retryCount++;
                             console.log(`[GeminiProxy] Auth error (${errorData.code}), retrying... (attempt ${retryCount}/${MAX_RETRIES})`);
 
-                            // Try to re-initialize session
-                            const sessionSuccess = await initializeSession();
+                            // Force re-initialize session (don't use cached state)
+                            const sessionSuccess = await initializeSession(true);
                             if (sessionSuccess) {
                                 // Retry the request after session refresh
                                 return makeRequest();
+                            } else {
+                                console.error('[GeminiProxy] Failed to reinitialize session');
                             }
                         }
                     }
