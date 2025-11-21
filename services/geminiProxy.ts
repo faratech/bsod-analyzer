@@ -112,6 +112,9 @@ async function signRequest(contents: any, timestamp: number): Promise<string> {
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
 const createGeminiProxy = () => {
     const generateContent = async (params: GenerateContentParams): Promise<GenerateContentResponse> => {
+        let retryCount = 0;
+        const MAX_RETRIES = 2;
+
         const makeRequest = async (): Promise<any> => {
             try {
                 // Generate timestamp and signature
@@ -144,7 +147,7 @@ const createGeminiProxy = () => {
                 if (!response.ok) {
                     let errorMessage = `API request failed with status ${response.status}`;
                     let errorData: any = {};
-                    
+
                     try {
                         errorData = await response.json();
                         console.error('[GeminiProxy] Error response:', errorData);
@@ -158,22 +161,25 @@ const createGeminiProxy = () => {
                             console.error('[GeminiProxy] Could not read error response');
                         }
                     }
-                    
+
                     // Check if it's a session or signature error
-                    if (response.status === 401) {
+                    if (response.status === 401 && retryCount < MAX_RETRIES) {
                         // Clear cached signing key on auth errors
                         cachedSigningKey = null;
 
                         if (handleSessionError(errorData)) {
+                            retryCount++;
+                            console.log(`[GeminiProxy] Auth error (${errorData.code}), retrying... (attempt ${retryCount}/${MAX_RETRIES})`);
+
                             // Try to re-initialize session
                             const sessionSuccess = await initializeSession();
                             if (sessionSuccess) {
-                                // Retry the request once after session refresh
+                                // Retry the request after session refresh
                                 return makeRequest();
                             }
                         }
                     }
-                    
+
                     // Check for specific error codes
                     if (response.status === 500) {
                         errorMessage = 'Server error - the Gemini API key may not be configured';
@@ -182,7 +188,7 @@ const createGeminiProxy = () => {
                     } else if (response.status === 429) {
                         errorMessage = 'Rate limit exceeded - too many requests';
                     }
-                    
+
                     throw new Error(errorData.error || errorMessage);
                 }
 
