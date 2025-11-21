@@ -712,11 +712,6 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
       // Don't set domain - let browser handle it to work with any domain
     };
 
-    // Add partitioned attribute for CHIPS in production (consistent with session endpoint)
-    if (process.env.NODE_ENV === 'production') {
-      cookieOptions.partitioned = true;
-    }
-
     res.cookie('bsod_session_id', sessionId, cookieOptions);
     res.cookie('bsod_session_hash', sessionHash, cookieOptions);
     res.cookie('bsod_turnstile_verified', 'true', { ...cookieOptions, maxAge: 2 * 60 * 60 * 1000 }); // 2 hours
@@ -802,11 +797,6 @@ app.get('/api/auth/session', async (req, res) => {
       path: '/', // Ensure cookies are available for all paths
       // Don't set domain - let browser handle it to work with any domain
     };
-    
-    // Add partitioned attribute for CHIPS (Cookies Having Independent Partitioned State)
-    if (process.env.NODE_ENV === 'production') {
-      cookieOptions.partitioned = true;
-    }
     
     res.cookie('bsod_session_id', sessionId, cookieOptions);
     res.cookie('bsod_session_hash', sessionHash, cookieOptions);
