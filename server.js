@@ -710,8 +710,12 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
       maxAge: SESSION_EXPIRY,
       path: '/', // Ensure cookies are available for all paths
       // Don't set domain - let browser handle it to work with any domain
-      // Don't use 'partitioned' - these are first-party cookies, not third-party
     };
+
+    // Add partitioned attribute for CHIPS in production (consistent with session endpoint)
+    if (process.env.NODE_ENV === 'production') {
+      cookieOptions.partitioned = true;
+    }
 
     res.cookie('bsod_session_id', sessionId, cookieOptions);
     res.cookie('bsod_session_hash', sessionHash, cookieOptions);
