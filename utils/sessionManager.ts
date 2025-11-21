@@ -1,12 +1,14 @@
 // Session management for analyzer page
 let sessionInitialized = false;
 
-export async function initializeSession(): Promise<boolean> {
-  if (sessionInitialized) {
+export async function initializeSession(force: boolean = false): Promise<boolean> {
+  if (sessionInitialized && !force) {
+    console.log('[Session] Already initialized, skipping');
     return true;
   }
 
   try {
+    console.log('[Session] Initializing session...');
     const response = await fetch('/api/auth/session', {
       method: 'GET',
       credentials: 'include' // Important: include cookies
@@ -14,6 +16,7 @@ export async function initializeSession(): Promise<boolean> {
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
+      console.error('[Session] Init failed:', response.status, data);
       if (data.code === 'TURNSTILE_REQUIRED') {
         // This is expected - user needs to complete Turnstile first
         return false;
@@ -24,12 +27,14 @@ export async function initializeSession(): Promise<boolean> {
     const data = await response.json();
     if (data.success) {
       sessionInitialized = true;
+      console.log('[Session] Initialized successfully');
       return true;
     }
-    
+
+    console.error('[Session] Init returned success=false');
     return false;
   } catch (error) {
-    console.error('Session initialization error:', error);
+    console.error('[Session] Initialization error:', error);
     return false;
   }
 }
