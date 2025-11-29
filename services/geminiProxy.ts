@@ -13,18 +13,6 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { SymbolResolver } from '../utils/symbolResolver';
 import { extractStackFramesWithSymbols } from '../utils/stackExtractor';
-// Manual stable stringify to avoid bundling issues with Vite
-function stableStringify(obj: any): string {
-    if (obj === null) return 'null';
-    if (typeof obj !== 'object') return JSON.stringify(obj);
-    if (Array.isArray(obj)) {
-        return '[' + obj.map(stableStringify).join(',') + ']';
-    }
-    const keys = Object.keys(obj).sort();
-    const pairs = keys.map(key => JSON.stringify(key) + ':' + stableStringify(obj[key]));
-    return '{' + pairs.join(',') + '}';
-}
-
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -52,76 +40,6 @@ interface GenerateContentParams {
     tools?: any[];
 }
 
-// Cache signing key for session
-let cachedSigningKey: string | null = null;
-
-// Get signing key for request authentication
-async function getSigningKey(): Promise<string> {
-    if (cachedSigningKey) {
-        return cachedSigningKey;
-    }
-
-    try {
-        const response = await fetch('/api/auth/signing-key', {
-            method: 'GET',
-            credentials: 'include'
-        });
-
-        if (!response.ok) {
-            throw new Error('Failed to get signing key');
-        }
-
-        const data = await response.json();
-        cachedSigningKey = data.signingKey;
-        return cachedSigningKey;
-    } catch (error) {
-        console.error('[Security] Failed to get signing key:', error);
-        throw error;
-    }
-}
-
-// Hash content for signing (avoids encoding differences between browser/Node.js)
-async function hashContents(contents: any): Promise<string> {
-    const encoder = new TextEncoder();
-    // For strings, use directly; for objects/arrays, use stableStringify
-    const contentsStr = typeof contents === 'string' ? contents : stableStringify(contents);
-    const data = encoder.encode(contentsStr);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(hashBuffer))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-}
-
-// Sign request with HMAC
-async function signRequest(contents: any, timestamp: number): Promise<string> {
-    const signingKey = await getSigningKey();
-
-    // Create payload: hash of contents + timestamp
-    // Using hash avoids any encoding differences between browser and Node.js
-    const contentsHash = await hashContents(contents);
-    const payload = contentsHash + timestamp;
-
-    // Use SubtleCrypto for HMAC-SHA256
-    const encoder = new TextEncoder();
-    const keyData = encoder.encode(signingKey);
-    const messageData = encoder.encode(payload);
-
-    const cryptoKey = await crypto.subtle.importKey(
-        'raw',
-        keyData,
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign']
-    );
-
-    const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
-
-    // Convert to hex string
-    return Array.from(new Uint8Array(signature))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-}
-
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
 const createGeminiProxy = () => {
     const generateContent = async (params: GenerateContentParams): Promise<GenerateContentResponse> => {
@@ -130,19 +48,8 @@ const createGeminiProxy = () => {
 
         const makeRequest = async (): Promise<any> => {
             try {
-                // Generate timestamp and signature
-                const timestamp = Date.now();
-                const signature = await signRequest(params.contents, timestamp);
-
-                // Add signature and timestamp to request
-                const signedParams = {
-                    ...params,
-                    signature,
-                    timestamp
-                };
-
                 // Log the request size for debugging
-                const requestBody = JSON.stringify(signedParams);
+                const requestBody = JSON.stringify(params);
                 console.log('[GeminiProxy] Request size:', requestBody.length, 'bytes');
                 if (requestBody.length > 1000000) {
                     console.warn('[GeminiProxy] Large request size may cause issues');
@@ -153,7 +60,7 @@ const createGeminiProxy = () => {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    credentials: 'include', // Important: include cookies
+                    credentials: 'include', // Important: include cookies for session
                     body: requestBody
                 });
 
@@ -175,19 +82,15 @@ const createGeminiProxy = () => {
                         }
                     }
 
-                    // Check if it's a session or signature error
+                    // Check if it's a session error - retry with fresh session
                     if (response.status === 401 && retryCount < MAX_RETRIES) {
-                        // Clear cached signing key on auth errors
-                        cachedSigningKey = null;
-
                         if (handleSessionError(errorData)) {
                             retryCount++;
-                            console.log(`[GeminiProxy] Auth error (${errorData.code}), retrying... (attempt ${retryCount}/${MAX_RETRIES})`);
+                            console.log(`[GeminiProxy] Session error (${errorData.code}), retrying... (attempt ${retryCount}/${MAX_RETRIES})`);
 
-                            // Force re-initialize session (don't use cached state)
+                            // Force re-initialize session
                             const sessionSuccess = await initializeSession(true);
                             if (sessionSuccess) {
-                                // Retry the request after session refresh
                                 return makeRequest();
                             } else {
                                 console.error('[GeminiProxy] Failed to reinitialize session');

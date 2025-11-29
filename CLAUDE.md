@@ -36,8 +36,8 @@ npm run optimize-css     # Apply CSS purging
 
 ### Key Files
 
-- **`server.js`** - Express backend with all security middleware, session management, HMAC validation, rate limiting, and Gemini API proxy
-- **`services/geminiProxy.ts`** - Client-side service that signs requests with HMAC and routes API calls through backend
+- **`server.js`** - Express backend with security middleware, session management, rate limiting, and Gemini API proxy
+- **`services/geminiProxy.ts`** - Client-side service that routes API calls through backend with session cookies
 - **`utils/sessionManager.ts`** - Client-side session initialization and error handling
 - **`serverConfig.js`** - Security configuration constants
 
@@ -46,36 +46,19 @@ npm run optimize-css     # Apply CSS purging
 1. User uploads .dmp/.zip files
 2. Files categorized as 'minidump' (<5MB) or 'kernel' (≥5MB)
 3. Client extracts ASCII/UTF-16LE strings and hex dumps
-4. Client signs request with HMAC-SHA256 using session-specific key
-5. Backend validates signature, session, rate limits, and prompt content
+4. Client sends request with session cookies
+5. Backend validates session, rate limits, and prompt content
 6. Backend proxies to Gemini API with server-side API key
 7. AI analysis returned to client
 
-### Security Architecture (7 Layers)
+### Security Architecture (6 Layers)
 
-1. **HMAC Request Signatures** - Client/server HMAC-SHA256 with 5-minute timestamp window
-2. **Content Security Policy** - Hash-based script validation, no unsafe-inline/eval
-3. **Subresource Integrity** - SHA-384 hashes for all assets via `generate-sri.js`
-4. **Prompt Validation** - BSOD keyword requirements, abuse pattern blocking
-5. **Session Management** - XXHash session IDs, HttpOnly/Secure/SameSite cookies
-6. **Rate Limiting** - 10 requests/hour, 100K tokens/hour per session
-7. **Cloudflare Turnstile** - Bot protection on session creation
-
-### Request Signing Flow
-
-Client (`geminiProxy.ts`):
-```typescript
-const payload = stableStringify(contents) + timestamp;
-const signature = HMAC-SHA256(payload, signingKey);
-```
-
-Server (`server.js`):
-```javascript
-const signingKey = HMAC-SHA256(sessionId, SESSION_SECRET);
-const expectedSignature = HMAC-SHA256(payload, signingKey);
-```
-
-Both use identical `stableStringify()` for canonical JSON serialization with sorted keys.
+1. **Content Security Policy** - Script validation, no unsafe-eval
+2. **Subresource Integrity** - SHA-384 hashes for all assets via `generate-sri.js`
+3. **Prompt Validation** - BSOD keyword requirements, abuse pattern blocking
+4. **Session Management** - XXHash session IDs, HttpOnly/Secure/SameSite cookies
+5. **Rate Limiting** - 50 requests/hour, 100K tokens/hour per session
+6. **Cloudflare Turnstile** - Bot protection on session creation
 
 ## Environment Variables
 
@@ -106,8 +89,7 @@ Pushes to `main` automatically deploy to Cloud Run. Secrets managed via Google S
 
 1. Add route in `server.js`
 2. Apply `requireSession` middleware for protected routes
-3. Use `validateRequestSignature()` for signed requests
-4. Update client in `services/geminiProxy.ts`
+3. Update client in `services/geminiProxy.ts`
 
 ### Modifying Security
 
@@ -115,9 +97,8 @@ Pushes to `main` automatically deploy to Cloud Run. Secrets managed via Google S
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
 
-### Session/Signature Errors
+### Session Errors
 
-When users see "Invalid request signature":
+When users see session errors:
 1. Check `handleSessionError()` in `utils/sessionManager.ts` handles the error code
-2. Verify `stableStringify()` implementations match in client and server
-3. Check cookie `partitioned` attribute consistency across endpoints
+2. Check cookie attributes are consistent across endpoints

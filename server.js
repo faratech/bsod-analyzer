@@ -12,18 +12,6 @@ import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
 
-// Manual stable stringify to ensure consistent key ordering (matches client implementation)
-function stableStringify(obj) {
-  if (obj === null) return 'null';
-  if (typeof obj !== 'object') return JSON.stringify(obj);
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(stableStringify).join(',') + ']';
-  }
-  const keys = Object.keys(obj).sort();
-  const pairs = keys.map(key => JSON.stringify(key) + ':' + stableStringify(obj[key]));
-  return '{' + pairs.join(',') + '}';
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -732,26 +720,7 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
   }
 });
 
-// Endpoint to get signing key for request authentication (one per session)
-app.get('/api/auth/signing-key', requireSession, (req, res) => {
-  try {
-    const sessionId = req.cookies.bsod_session_id;
-
-    // Generate session-specific signing key using HMAC
-    const signingKey = crypto.createHmac('sha256', ACTUAL_SESSION_SECRET)
-      .update(sessionId)
-      .digest('hex');
-
-    console.log('[Security] Signing key generated for session:', {
-      sessionId: sessionId?.substring(0, 10) + '...'
-    });
-
-    res.json({ signingKey });
-  } catch (error) {
-    console.error('Signing key generation error:', error);
-    res.status(500).json({ error: 'Failed to generate signing key' });
-  }
-});
+// Signing key endpoint removed - signature validation simplified
 
 // Endpoint to get session cookie (called when user visits analyzer page)
 app.get('/api/auth/session', async (req, res) => {
@@ -808,83 +777,6 @@ app.get('/api/auth/session', async (req, res) => {
   }
 });
 
-// Helper function to hash contents (matches client-side implementation)
-function hashContents(contents) {
-  // For strings, use directly; for objects/arrays, use stableStringify
-  const contentsStr = typeof contents === 'string'
-    ? contents
-    : stableStringify(contents);
-
-  return crypto.createHash('sha256')
-    .update(contentsStr)
-    .digest('hex');
-}
-
-// Helper function to validate request signature (prevent tampering and replay attacks)
-function validateRequestSignature(req) {
-  const { signature, timestamp } = req.body;
-  const sessionId = req.cookies.bsod_session_id;
-
-  // Check required fields
-  if (!signature || !timestamp) {
-    console.log('[Debug] Missing signature or timestamp:', { hasSignature: !!signature, hasTimestamp: !!timestamp });
-    return { valid: false, reason: 'Missing signature or timestamp' };
-  }
-
-  // Verify timestamp is recent (within 5 minutes)
-  const now = Date.now();
-  const requestAge = now - timestamp;
-
-  console.log('[Debug] Timestamp validation:', {
-    now,
-    timestamp,
-    requestAge,
-    maxAge: 5 * 60 * 1000
-  });
-
-  if (requestAge > 5 * 60 * 1000) {
-    return { valid: false, reason: 'Request expired (timestamp too old)' };
-  }
-
-  if (requestAge < -60 * 1000) {
-    return { valid: false, reason: 'Request from future (clock skew detected)' };
-  }
-
-  // Generate session-specific signing key
-  const signingKey = crypto.createHmac('sha256', ACTUAL_SESSION_SECRET)
-    .update(sessionId)
-    .digest('hex');
-
-  console.log('[Debug] Session ID:', sessionId?.substring(0, 10) + '...');
-  console.log('[Debug] Signing key (first 20 chars):', signingKey.substring(0, 20) + '...');
-
-  // Compute expected signature
-  // CRITICAL: Use hash of contents to avoid encoding differences between browser/Node.js
-  console.log('[Debug] Timestamp type:', typeof timestamp, 'Value:', timestamp);
-  console.log('[Debug] Contents type:', typeof req.body.contents, 'IsArray:', Array.isArray(req.body.contents));
-
-  // Hash the contents to avoid any string encoding differences
-  const contentsHash = hashContents(req.body.contents);
-  const payload = contentsHash + timestamp;
-
-  console.log('[Debug] Contents hash:', contentsHash);
-  console.log('[Debug] Payload:', payload);
-
-  const expectedSignature = crypto.createHmac('sha256', signingKey)
-    .update(payload)
-    .digest('hex');
-
-  console.log('[Debug] Expected signature:', expectedSignature);
-  console.log('[Debug] Received signature:', signature);
-  console.log('[Debug] Signatures match:', signature === expectedSignature);
-
-  // Constant-time comparison to prevent timing attacks
-  if (signature !== expectedSignature) {
-    return { valid: false, reason: 'Invalid signature' };
-  }
-
-  return { valid: true };
-}
 
 // Helper function to validate that prompts are BSOD-related (prevent API abuse)
 // SIMPLIFIED: Focus on blocking obvious abuse, allow all BSOD-related content
@@ -987,26 +879,8 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     const { contents, generationConfig, safetySettings, config } = req.body;
     const sessionId = req.cookies.bsod_session_id;
 
-    // SECURITY: Validate request signature (prevent tampering and replay attacks)
-    // Fixed: Now using raw strings instead of JSON.stringify to avoid browser/Node.js differences
-    const SIGNATURE_VALIDATION_ENABLED = true;
-
-    if (SIGNATURE_VALIDATION_ENABLED) {
-      const signatureValidation = validateRequestSignature(req);
-      if (!signatureValidation.valid) {
-        console.warn('[Security] Invalid request signature:', {
-          sessionId: sessionId?.substring(0, 10) + '...',
-          ip: req.ip,
-          reason: signatureValidation.reason
-        });
-        return res.status(401).json({
-          error: 'Invalid request signature. Please refresh and try again.',
-          code: 'INVALID_SIGNATURE'
-        });
-      }
-    } else {
-      console.log('[Security] Signature validation is disabled (development mode)');
-    }
+    // Security: Session validation is handled by requireSession middleware
+    // Additional security layers: rate limiting, prompt validation, system instruction
 
     // SECURITY: Check per-session rate limiting (prevent abuse even with valid prompts)
     const now = Date.now();

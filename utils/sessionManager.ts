@@ -41,8 +41,8 @@ export async function initializeSession(force: boolean = false): Promise<boolean
 
 // Handle session errors in API responses
 export function handleSessionError(error: { code?: string; [key: string]: unknown }): boolean {
-  if (error.code === 'NO_SESSION' || error.code === 'INVALID_SESSION' || error.code === 'INVALID_SIGNATURE') {
-    // Session expired, invalid, or signature mismatch - need to re-initialize
+  if (error.code === 'NO_SESSION' || error.code === 'INVALID_SESSION') {
+    // Session expired or invalid - need to re-initialize
     sessionInitialized = false;
     return true;
   }
