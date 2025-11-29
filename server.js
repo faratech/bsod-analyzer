@@ -73,7 +73,7 @@ setInterval(() => {
 }, 10 * 60 * 1000); // Clean every 10 minutes
 
 // Read model name from config file
-let DEFAULT_MODEL_NAME = 'gemini-3-pro';
+let DEFAULT_MODEL_NAME = 'gemini-2.5-flash-lite';
 try {
   const modelConfig = fs.readFileSync(path.join(__dirname, 'model.cfg'), 'utf8').trim();
   if (modelConfig) {
