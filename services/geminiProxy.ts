@@ -2,18 +2,14 @@
 import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
-import { getStructuredDumpInfo, BUG_CHECK_CODES, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
-import { parseDumpFile as parseKernelDump, toJsonSafe as kernelDumpToJson, KernelDumpResult } from '../utils/kernelDumpModuleParser';
-import { extractStackFrames } from '../utils/stackExtractor.js';
+import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
+import { parseDumpFile as parseKernelDump, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
-// AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
-import { CRASH_PATTERN_DATABASE, getParameterExplanation, getAnalysisStrategy } from '../utils/crashPatternDatabase';
+import { getParameterExplanation } from '../utils/crashPatternDatabase';
 import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { SymbolResolver } from '../utils/symbolResolver';
-import { extractStackFramesWithSymbols } from '../utils/stackExtractor';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -155,8 +151,6 @@ const reportSchema = {
         probableCause: { type: Type.STRING, description: "A detailed but easy-to-understand explanation of the likely cause of the blue screen error, based on the provided data." },
         culprit: { type: Type.STRING, description: "The driver or system file causing the crash. Use ONLY the verified culprit from VERIFIED CRASH LOCATION if provided." },
         recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of actionable steps the user should take to fix the issue." },
-        stackTrace: { type: Type.ARRAY, items: { type: Type.STRING }, description: "ONLY include modules that appear in the provided module list. Small memory dumps do not contain stack traces - list the culprit module and a few related modules from the VERIFIED module list. Do NOT invent module names." },
-        bugCheckCode: { type: Type.STRING, description: "The bug check code in format '0x00000XXX (NAME)' - MUST match the one provided in the analysis requirements." },
     },
     required: ["summary", "probableCause", "culprit", "recommendations"],
 };
@@ -294,26 +288,6 @@ function extractWindowsVersion(strings: string): string | null {
     return null;
 }
 
-function extractCPUInfo(strings: string): string | null {
-    // CPU patterns
-    const patterns = [
-        /(AMD Ryzen[^,\n]+)/,
-        /(Intel\(R\) Core\(TM\)[^,\n]+)/,
-        /(Intel\(R\) Xeon\(R\)[^,\n]+)/,
-        /(AuthenticAMD[^,\n]+)/,
-        /(GenuineIntel[^,\n]+)/,
-    ];
-    
-    for (const pattern of patterns) {
-        const match = strings.match(pattern);
-        if (match) {
-            return match[1].trim();
-        }
-    }
-    
-    return null;
-}
-
 function isKnownBugCheck(code: number): boolean {
     // List of known valid Windows bug check codes
     const knownBugChecks = [
@@ -424,11 +398,6 @@ function isKnownBugCheck(code: number): boolean {
     return knownBugChecks.includes(code);
 }
 
-interface DriverInfo {
-    name: string;
-    type: string;
-}
-
 function extractCrashTime(buffer: ArrayBuffer): string | null {
     // Look for timestamp patterns in first 4KB
     const header = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 4096));
@@ -457,340 +426,6 @@ function extractCrashTime(buffer: ArrayBuffer): string | null {
     }
     
     return null;
-}
-
-interface MemoryInfo {
-    physicalMemory?: string;
-    pageFile?: string;
-}
-
-function extractMemoryInfo(strings: string): MemoryInfo {
-    const info: MemoryInfo = {};
-    
-    // Physical memory
-    const memMatch = strings.match(/Physical Memory:\s*(\d+)\s*([KMGT]B)/i);
-    if (memMatch) {
-        info.physicalMemory = `${memMatch[1]} ${memMatch[2]}`;
-    }
-    
-    // Page file
-    const pageMatch = strings.match(/Page File:\s*(\d+)\s*([KMGT]B)/i);
-    if (pageMatch) {
-        info.pageFile = `${pageMatch[1]} ${pageMatch[2]}`;
-    }
-    
-    return info;
-}
-
-function extractDriverInfo(strings: string): DriverInfo[] {
-    const drivers: DriverInfo[] = [];
-    const seen = new Set<string>();
-    
-    // Enhanced driver patterns to catch more variations
-    const patterns = [
-        new RegExp('([a-zA-Z0-9_\\-]+\\.sys)', 'g'),
-        new RegExp('\\\\SystemRoot\\\\system32\\\\DRIVERS\\\\([^\\\\]+\\.sys)', 'g'),
-        new RegExp('\\\\Windows\\\\system32\\\\DRIVERS\\\\([^\\\\]+\\.sys)', 'g'),
-        new RegExp('\\\\Device\\\\([a-zA-Z0-9_\\-]+)', 'g'),
-        new RegExp('([a-zA-Z0-9_\\-]+)![A-Za-z0-9_]+', 'g'), // module!function pattern
-    ];
-    
-    for (const pattern of patterns) {
-        const matches = strings.matchAll(pattern);
-        for (const match of matches) {
-            let driverName = match[1];
-            
-            // Clean up driver name - extract from module!function pattern
-            if (driverName.includes('!')) {
-                driverName = driverName.split('!')[0];
-            }
-            
-            // Skip if not a valid driver name
-            if (!driverName.match(/^[a-zA-Z][a-zA-Z0-9_\-]+$/)) {
-                continue;
-            }
-            
-            // Add .sys extension if missing
-            if (!driverName.endsWith('.sys') && !driverName.includes('.')) {
-                driverName += '.sys';
-            }
-            
-            driverName = driverName.toLowerCase();
-            
-            if (!seen.has(driverName)) {
-                seen.add(driverName);
-                
-                let type = 'Unknown';
-                if (driverName.includes('nvidia') || driverName.includes('nvlddmkm')) {
-                    type = 'Graphics (NVIDIA)';
-                } else if (driverName.includes('amd') || driverName.includes('ati')) {
-                    type = 'Graphics (AMD)';
-                } else if (driverName.includes('intel')) {
-                    type = 'Intel Device';
-                } else if (driverName.includes('usb')) {
-                    type = 'USB';
-                } else if (driverName.includes('network') || driverName.includes('lan') || driverName.includes('wifi')) {
-                    type = 'Network';
-                } else if (driverName.includes('audio') || driverName.includes('sound')) {
-                    type = 'Audio';
-                } else if (driverName.includes('flt') || driverName.includes('filter')) {
-                    type = 'File System Filter';
-                } else if (driverName.includes('stor') || driverName.includes('disk') || driverName.includes('scsi')) {
-                    type = 'Storage';
-                }
-                
-                drivers.push({ name: driverName, type });
-                
-                if (drivers.length >= 30) break; // Limit to 30 drivers
-            }
-        }
-    }
-    
-    return drivers;
-}
-
-function extractStackTrace(buffer: ArrayBuffer, strings: string, symbolResolver?: SymbolResolver, moduleList?: any[], threadContext?: any): string[] {
-    const stackTrace: string[] = [];
-    const foundPatterns = new Set<string>();
-    
-    // Extended list of Windows kernel function prefixes
-    const prefixes = ['nt!', 'hal!', 'win32k!', 'NDIS!', 'tcpip!', 'afd!', 
-                     'http!', 'fltmgr!', 'ntfs!', 'volsnap!', 'storport!',
-                     'ataport!', 'disk!', 'partmgr!', 'volmgr!', 'mountmgr!',
-                     'Wdf01000!', 'ndis!', 'netio!', 'tcpip!', 'afd!',
-                     'rdbss!', 'mrxsmb!', 'srv!', 'srv2!', 'srvnet!',
-                     'cng!', 'ksecdd!', 'msrpc!', 'pci!', 'acpi!',
-                     'intelppm!', 'dxgkrnl!', 'dxgmms2!', 'nvlddmkm!',
-                     'atikmdag!', 'igdkmd64!'];
-    
-    // More comprehensive patterns
-    const stackPatterns = [
-        // Standard module!function+offset
-        /([a-zA-Z][a-zA-Z0-9_\-\.]+)!([a-zA-Z_][a-zA-Z0-9_]+)(?:\+0x[0-9a-fA-F]+)?/g,
-        // Driver.sys+offset
-        /([a-zA-Z][a-zA-Z0-9_\-]+\.sys)(?:\+0x[0-9a-fA-F]+)?/g,
-        // Hex addresses that look like code pointers
-        /0x[fF]{4}[0-9a-fA-F]{12}/g,
-        // Function names with common prefixes
-        /(Ke|Ki|Kx|Nt|Zw|Ex|Io|Mm|Ob|Ps|Se|Cm|Po|Cc|Fs|Ldr|Rtl)[A-Z][a-zA-Z0-9]+/g,
-        // Common crash functions with module prefix
-        /([a-zA-Z][a-zA-Z0-9_\-\.]+)!(KeBugCheck|BugCheck|PageFault|Exception|Trap|Fault|Error|Crash|Fatal)[a-zA-Z0-9]*/gi
-    ];
-    
-    // First, scan the extracted strings
-    const lines = strings.split(/[\r\n]+/);
-    for (const line of lines) {
-        // Apply all patterns to each line
-        for (const pattern of stackPatterns) {
-            const matches = line.matchAll(pattern);
-            for (const match of matches) {
-                const frame = match[0];
-                // Filter out standalone generic words
-                const isGenericWord = /^(trap|fault|error|crash|fatal|exception)$/i.test(frame);
-                const hasModulePrefix = frame.includes('!') || frame.includes('.sys');
-                const isValidFunction = /^(Ke|Ki|Kx|Nt|Zw|Ex|Io|Mm|Ob|Ps|Se|Cm|Po|Cc|Fs|Ldr|Rtl)[A-Z]/.test(frame);
-                
-                if (frame.length >= 3 && frame.length <= 200 && !foundPatterns.has(frame) && 
-                    !isGenericWord && (hasModulePrefix || isValidFunction)) {
-                    foundPatterns.add(frame);
-                    stackTrace.push(frame);
-                }
-            }
-        }
-    }
-    
-    // Scan binary data for additional patterns
-    try {
-        const view = new DataView(buffer);
-        const textDecoder = new TextDecoder('utf-8', { fatal: false });
-        
-        // Look for stack-like structures in memory
-        // Search for areas with high concentration of kernel addresses
-        const kernelAddressRanges = [
-            { start: 0xFFFFF800_00000000n, end: 0xFFFFF8FF_FFFFFFFFn }, // Kernel space
-            { start: 0xFFFF8000_00000000n, end: 0xFFFF87FF_FFFFFFFFn }, // HAL/Kernel drivers
-        ];
-        
-        // Scan for potential stack regions (aligned addresses)
-        for (let offset = 0; offset < Math.min(buffer.byteLength - 8, 0x100000); offset += 8) {
-            try {
-                const value = view.getBigUint64(offset, true);
-                
-                // Check if this looks like a kernel address
-                for (const range of kernelAddressRanges) {
-                    if (value >= range.start && value <= range.end) {
-                        // Found potential return address, look around for symbols
-                        const searchStart = Math.max(0, offset - 0x1000);
-                        const searchEnd = Math.min(buffer.byteLength, offset + 0x1000);
-                        const searchData = new Uint8Array(buffer, searchStart, searchEnd - searchStart);
-                        const searchText = textDecoder.decode(searchData);
-                        
-                        // Look for function names near this address
-                        for (const pattern of stackPatterns) {
-                            const matches = searchText.matchAll(pattern);
-                            for (const match of matches) {
-                                const frame = match[0];
-                                // Apply same filtering as above
-                                const isGenericWord = /^(trap|fault|error|crash|fatal|exception|MmLk|MmSd|MmSdt|NtStatus|NtS8)$/i.test(frame);
-                                const hasModulePrefix = frame.includes('!') || frame.includes('.sys');
-                                const isValidFunction = /^(Ke|Ki|Kx|Nt|Zw|Ex|Io|Mm|Ob|Ps|Se|Cm|Po|Cc|Fs|Ldr|Rtl)[A-Z]/.test(frame);
-                                
-                                if (frame.length >= 3 && !foundPatterns.has(frame) && 
-                                    !isGenericWord && (hasModulePrefix || isValidFunction)) {
-                                    foundPatterns.add(frame);
-                                    // Add address context if we found a symbol
-                                    const addrStr = `0x${value.toString(16).padStart(16, '0')}`;
-                                    if (hasModulePrefix) {
-                                        stackTrace.push(`${frame} (${addrStr})`);
-                                    } else {
-                                        stackTrace.push(frame);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch {
-                // Continue on error
-            }
-        }
-        
-        // Also try to find RSDS debug info and extract symbols
-        const rsdsPattern = new Uint8Array([0x52, 0x53, 0x44, 0x53]); // 'RSDS'
-        for (let i = 0; i < buffer.byteLength - 100; i++) {
-            if (view.getUint32(i, false) === 0x52534453) { // 'RSDS'
-                // Found RSDS, look for PDB path and nearby symbols
-                const pdbData = new Uint8Array(buffer, i, Math.min(256, buffer.byteLength - i));
-                const pdbText = textDecoder.decode(pdbData);
-                const pdbMatch = pdbText.match(/([a-zA-Z0-9_\-]+\.pdb)/);
-                if (pdbMatch) {
-                    const moduleName = pdbMatch[1].replace('.pdb', '');
-                    // Look for function names after the PDB
-                    const symbolArea = new Uint8Array(buffer, i, Math.min(0x10000, buffer.byteLength - i));
-                    const symbolText = textDecoder.decode(symbolArea);
-                    const funcMatches = symbolText.matchAll(/([A-Z][a-zA-Z0-9_]+)/g);
-                    for (const funcMatch of funcMatches) {
-                        const funcName = funcMatch[1];
-                        if (funcName.length >= 4 && funcName.length <= 50) {
-                            const fullName = `${moduleName}!${funcName}`;
-                            if (!foundPatterns.has(fullName)) {
-                                foundPatterns.add(fullName);
-                                stackTrace.push(fullName);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-    } catch (error) {
-        console.error('Error during binary stack extraction:', error);
-    }
-    
-    // Sort and prioritize the stack trace
-    const prioritizedTrace = stackTrace.sort((a, b) => {
-        // Prioritize crash-related functions
-        const crashKeywords = ['BugCheck', 'Fault', 'Exception', 'Trap', 'Error'];
-        const aHasCrash = crashKeywords.some(k => a.toLowerCase().includes(k.toLowerCase()));
-        const bHasCrash = crashKeywords.some(k => b.toLowerCase().includes(k.toLowerCase()));
-        if (aHasCrash && !bHasCrash) return -1;
-        if (!aHasCrash && bHasCrash) return 1;
-        
-        // Prioritize kernel core functions
-        const aIsKernel = a.startsWith('nt!') || a.startsWith('hal!');
-        const bIsKernel = b.startsWith('nt!') || b.startsWith('hal!');
-        if (aIsKernel && !bIsKernel) return -1;
-        if (!aIsKernel && bIsKernel) return 1;
-        
-        // Prioritize functions with offsets (more specific)
-        const aHasOffset = a.includes('+0x');
-        const bHasOffset = b.includes('+0x');
-        if (aHasOffset && !bHasOffset) return -1;
-        if (!aHasOffset && bHasOffset) return 1;
-        
-        return 0;
-    });
-    
-    // If we have a symbol resolver and module list, try enhanced resolution
-    if (symbolResolver && moduleList && moduleList.length > 0) {
-        console.log('[Analyzer] Using symbol resolver with', moduleList.length, 'modules');
-        
-        // Register modules with symbol resolver
-        for (const module of moduleList) {
-            if (module.baseAddress && module.size) {
-                symbolResolver.registerModule(
-                    module.baseAddress,
-                    module.size,
-                    module.name
-                );
-            }
-        }
-        
-        // Try to extract additional frames using enhanced stack walking
-        const context = threadContext || {
-            rsp: undefined,
-            rbp: undefined,
-            cr3: undefined
-        };
-        
-        if (context.rsp || context.rbp) {
-            const enhancedFrames = extractStackFramesWithSymbols(
-                buffer,
-                context,
-                symbolResolver,
-                moduleList
-            );
-            
-            // Merge enhanced frames with existing ones
-            for (const frame of enhancedFrames) {
-                if (!foundPatterns.has(frame)) {
-                    stackTrace.push(frame);
-                }
-            }
-        }
-        
-        // Also try to resolve any raw addresses in the existing stack trace
-        // Note: This is synchronous for now, downloads happen separately
-        const resolvedTrace = stackTrace.map(frame => {
-            // If it's a raw address, try to resolve it
-            const addrMatch = frame.match(/^0x([0-9a-fA-F]+)$/);
-            if (addrMatch) {
-                const address = parseInt(addrMatch[1], 16);
-                const resolved = symbolResolver.resolve(address);
-                console.log(`[StackTrace] Resolved 0x${address.toString(16)} to ${resolved.formatted}`);
-                return resolved.formatted;
-            }
-            return frame;
-        });
-        
-        return [...new Set(resolvedTrace)].slice(0, 20);
-    }
-    
-    // Return unique entries, limited to 20 frames
-    return [...new Set(prioritizedTrace)].slice(0, 20);
-}
-
-// Helper function to find pattern in Uint8Array
-function findPattern(data: Uint8Array, pattern: Uint8Array, start = 0): number {
-    for (let i = start; i <= data.length - pattern.length; i++) {
-        let found = true;
-        for (let j = 0; j < pattern.length; j++) {
-            if (data[i + j] !== pattern[j]) {
-                found = false;
-                break;
-            }
-        }
-        if (found) return i;
-    }
-    return -1;
-}
-
-// Helper function to check if byte is alphanumeric or underscore
-function isAlphaNumeric(byte: number): boolean {
-    return (byte >= 65 && byte <= 90) || // A-Z
-           (byte >= 97 && byte <= 122) || // a-z
-           (byte >= 48 && byte <= 57) || // 0-9
-           byte === 95; // underscore
 }
 
 function extractPrintableStrings(buffer: ArrayBuffer, minLength = 4): string {
@@ -965,8 +600,7 @@ const generateInitialAnalysis = async (fileName: string, prompt: string): Promis
                     'Try analyzing a smaller dump file',
                     'Check that the Gemini API key is properly configured',
                     'Ensure the dump file is not corrupted'
-                ],
-                stackTrace: ['Analysis could not extract stack trace due to API error']
+                ]
             };
         }
     } catch (error) {
@@ -1004,9 +638,7 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             console.log('[Analyzer] Extracted strings length:', rawExtractedStrings.length);
             
             const extractedStrings = sanitizeExtractedContent(rawExtractedStrings).substring(0, MAX_STRINGS_LENGTH);
-            
-            const hexDump = sanitizeHexDump(fileBuffer);
-            
+
             // Get structured dump information
             console.log('[Analyzer] Getting structured dump info...');
             const structuredInfo = getStructuredDumpInfo(fileBuffer, rawExtractedStrings);
@@ -1027,97 +659,12 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
                 console.log('[Analyzer] Kernel dump parsing not applicable:', kernelParseError);
             }
 
-            // Extract additional information (keep legacy for compatibility)
-            const bugCheckCode = structuredInfo.bugCheckInfo ? 
+            // Extract additional information
+            const bugCheckCode = structuredInfo.bugCheckInfo ?
                 `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})` :
                 extractBugCheckCode(fileBuffer);
             const windowsVersion = extractWindowsVersion(rawExtractedStrings);
-            const cpuInfo = extractCPUInfo(rawExtractedStrings);
-            const drivers = extractDriverInfo(rawExtractedStrings);
             const crashTime = extractCrashTime(fileBuffer);
-            const memoryInfo = extractMemoryInfo(rawExtractedStrings);
-            
-            // Create symbol resolver for better stack trace analysis
-            const symbolResolver = new SymbolResolver();
-            
-            // Enhanced stack trace extraction with multiple strategies
-            let realStackTrace: string[] = [];
-            
-            // Try strategy 1: Use thread context if available
-            if (structuredInfo.threadContext) {
-                realStackTrace = extractStackFrames(fileBuffer, structuredInfo.threadContext, symbolResolver);
-                console.log('[Analyzer] Stack frames from thread context:', realStackTrace.length);
-            }
-            
-            // Try strategy 2: Extract from dump using our improved function with symbol resolution
-            if (realStackTrace.length === 0) {
-                console.log('[Analyzer] Attempting stack extraction with symbol resolution...');
-                console.log('[Analyzer] Module list:', structuredInfo.moduleList?.length || 0, 'modules');
-                realStackTrace = extractStackTrace(fileBuffer, rawExtractedStrings, symbolResolver, structuredInfo.moduleList, structuredInfo.threadContext);
-                console.log('[Analyzer] Stack frames from pattern extraction:', realStackTrace.length);
-                if (realStackTrace.length > 0) {
-                    console.log('[Analyzer] First 3 stack frames:', realStackTrace.slice(0, 3));
-                }
-            }
-            
-            // Try strategy 3: Use MinidumpParser directly for minidumps
-            if (realStackTrace.length === 0 && structuredInfo.dumpHeader?.signature === 'MDMP') {
-                try {
-                    const MinidumpParser = (await import('../utils/minidumpStreams.js')).MinidumpParser;
-                    const parser = new MinidumpParser(fileBuffer);
-                    const threads = parser.getThreads();
-                    const modules = parser.getModules();
-                    
-                    if (threads.length > 0) {
-                        // Get stack data from first thread (usually the crashing thread)
-                        const thread = threads[0];
-                        const stackMemory = parser.getThreadStack(thread.threadId);
-                        
-                        if (stackMemory && stackMemory.byteLength > 0) {
-                            // Extract potential return addresses from stack
-                            const view = new DataView(stackMemory);
-                            const addresses: bigint[] = [];
-                            
-                            for (let i = 0; i < Math.min(stackMemory.byteLength - 8, 0x1000); i += 8) {
-                                const addr = view.getBigUint64(i, true);
-                                // Check if it looks like a code address
-                                if ((addr >= 0xFFFF800000000000n && addr <= 0xFFFFFFFFFFFFFFFFn) ||
-                                    (addr >= 0x00007FF000000000n && addr <= 0x00007FFFFFFFFFFFn)) {
-                                    addresses.push(addr);
-                                }
-                            }
-                            
-                            // Register modules with symbol resolver
-                            for (const module of modules) {
-                                symbolResolver.registerModule(
-                                    Number(module.baseAddress),
-                                    module.sizeOfImage,
-                                    module.name
-                                );
-                            }
-                            
-                            // Resolve addresses to symbols
-                            for (const addr of addresses.slice(0, 20)) {
-                                const resolved = symbolResolver.resolve(Number(addr));
-                                realStackTrace.push(resolved.formatted);
-                            }
-                        }
-                    }
-                    console.log('[Analyzer] Stack frames from minidump parser:', realStackTrace.length);
-                } catch (error) {
-                    console.error('[Analyzer] MinidumpParser stack extraction failed:', error);
-                }
-            }
-            
-            // Log symbol resolution summary
-            if (realStackTrace.length > 0 && symbolResolver) {
-                console.log('[Analyzer] Symbol resolution summary:');
-                console.log(symbolResolver.getSymbolSummary());
-                console.log('[Analyzer] Resolved stack trace:');
-                realStackTrace.slice(0, 5).forEach((frame, idx) => {
-                    console.log(`  ${idx}: ${frame}`);
-                });
-            }
             
             // Analyze crash context
             const crashContext = structuredInfo.bugCheckInfo ? 
@@ -1138,11 +685,11 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             }
             
             // Extract driver versions and check for outdated drivers
-            let outdatedDrivers = [];
+            let outdatedDrivers: Array<{ name: string; version: string; status: string }> = [];
             try {
                 const moduleInfo = structuredInfo.moduleList.map(m => ({
                     name: m.name,
-                    baseAddress: BigInt(m.baseAddress || 0),
+                    baseAddress: BigInt(m.base || 0n),
                     sizeOfImage: m.size || 0
                 }));
                 const driverVersions = extractDriverVersions(fileBuffer, moduleInfo);
@@ -1160,8 +707,8 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             let threadInfo = '';
             
             try {
-                // Get more stack data if available
-                if (structuredInfo.dumpHeader?.signature === 'MDMP' && realStackTrace.length > 0) {
+                // Get more stack data if available (for MDMP minidumps only)
+                if (structuredInfo.dumpHeader?.signature === 'MDMP') {
                     const MinidumpParser = (await import('../utils/minidumpStreams.js')).MinidumpParser;
                     const parser = new MinidumpParser(fileBuffer);
                     const threads = parser.getThreads();
@@ -1215,7 +762,7 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             currentTokens += estimateTokens(essentialPrefix);
             
             // Add sections in priority order, checking token count
-            const addSection = (name: string, content: string, priority: number) => {
+            const addSection = (name: string, content: string, _priority: number) => {
                 const tokens = estimateTokens(content);
                 if (currentTokens + tokens < TARGET_TOKENS) {
                     promptSections[name] = content;
@@ -1261,21 +808,11 @@ Bug Check Information:
 ` : ''}`;
             
             addSection('structured', structuredDumpInfo, 2);
-            
-            // Priority 3: Stack trace
-            if (realStackTrace.length > 0) {
-                const stackSection = `\n\n**Stack Trace (${realStackTrace.length} frames extracted):**
-${realStackTrace.map((frame, idx) => `${idx.toString().padStart(2, '0')}: ${frame}`).join('\n')}`;
-                addSection('stack', stackSection, 3);
-                console.log('[Analyzer] Stack trace being sent to AI:', realStackTrace.slice(0, 5));
-            } else {
-                console.log('[Analyzer] WARNING: No stack trace extracted!');
-                const fallbackStack = `\n\n**Stack Trace:**
-No stack frames could be extracted from this dump file.`;
-                addSection('stack', fallbackStack, 3);
-            }
-            
-            // Priority 4: Hex dump (adjust size based on remaining tokens)
+
+            // Note: Stack traces removed - small memory dumps don't contain real stack data
+            // The crash location and loaded modules from accurateModuleInfo are more reliable
+
+            // Priority 3: Hex dump (adjust size based on remaining tokens)
             const remainingTokens = TARGET_TOKENS - currentTokens;
             const hexDumpSize = Math.min(
                 PROCESSING_LIMITS.HEX_DUMP_LENGTH,
@@ -1346,7 +883,7 @@ ${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
             // This will match things like "65F4", "0x65F4", etc.
             const confusingHexPattern = /\b(0x)?([0-9A-Fa-f]{4,8})\b/g;
             
-            adjustedStrings = adjustedStrings.replace(confusingHexPattern, (match, prefix, hex) => {
+            adjustedStrings = adjustedStrings.replace(confusingHexPattern, (match, _prefix, hex) => {
                 // Keep the real bug check code
                 if (hex.toUpperCase() === realBugCheckHex || 
                     hex.toUpperCase() === realBugCheckHex.substring(4)) { // Last 4 digits
@@ -1471,13 +1008,8 @@ The extracted bug check from this dump is: ${structuredInfo.bugCheckInfo ? '0x' 
 - Common REAL bug checks: 0x1E, 0x50, 0x7E, 0x8E, 0xA, 0x124, 0xD1, 0x9F, 0xF5
 - FAKE bug checks to NEVER use: 0x65F4, 0x1234, any custom codes
 
-### STACK TRACE VALIDATION:
-${realStackTrace.length > 0 ? 'The REAL stack trace from the dump includes:\n' + realStackTrace.slice(0, 5).map(frame => `- ${frame}`).join('\n') : 'No stack trace available'}
-
-You MUST use frames from the actual stack trace above. Do NOT invent frames like:
-- wXr.sys, wEB.sys, vS.sys (these are NOT real drivers)
-- Obfuscated names like "wXr!nD9" or "vS!m6"
-- Generic names unless they appear in the extracted data
+### DRIVER VALIDATION:
+Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention drivers that appear in the module list.
 `;
             
             // Log final token usage
@@ -1517,149 +1049,69 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
                 }
             }
             
-            // Merge real stack trace with AI-generated one if we found real traces
-            if (realStackTrace.length > 0 && report) {
-                console.log(`[Analyzer] Found ${realStackTrace.length} real stack trace entries`);
-                console.log('[Analyzer] Real stack trace samples:', realStackTrace.slice(0, 3));
-                // Combine real traces with AI analysis, preferring real ones
-                const aiStack = report.stackTrace || [];
-                console.log('[Analyzer] AI stack trace entries:', aiStack.length);
-                const combinedStack: string[] = [...realStackTrace.slice(0, 10)]; // Start with real traces
-                
-                // Add AI traces that aren't duplicates
-                for (const trace of aiStack) {
-                    if (!combinedStack.includes(trace) && combinedStack.length < 15) {
-                        combinedStack.push(trace);
+            // Use verified culprit from accurate kernel dump parsing
+            if (report && accurateModuleInfo?.culpritModule) {
+                if (report.culprit !== accurateModuleInfo.culpritModule) {
+                    console.log(`[Analyzer] Using VERIFIED culprit from kernel dump: '${accurateModuleInfo.culpritModule}' (was: '${report.culprit}')`);
+                    report.culprit = accurateModuleInfo.culpritModule;
+                }
+            }
+
+            // Validate bug check code - AI must not change it
+            if (report && structuredInfo.bugCheckInfo) {
+                const correctBugCheckCode = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})`;
+                const correctBugCheckHex = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()}`;
+
+                // Check if report has bugCheckCode field
+                if ('bugCheckCode' in report && report.bugCheckCode !== correctBugCheckCode) {
+                    console.warn(`[Analyzer] AI returned incorrect bug check code: ${report.bugCheckCode}, correcting to: ${correctBugCheckCode}`);
+                    report.bugCheckCode = correctBugCheckCode;
+                }
+
+                // Fix any hallucinated bug check codes
+                const fakeBugCheckPattern = /0x[0-9A-Fa-f]{4,8}/g;
+
+                // Fix summary
+                if (report.summary) {
+                    const summaryMatches = report.summary.match(fakeBugCheckPattern) || [];
+                    for (const match of summaryMatches) {
+                        if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') {
+                            console.warn(`[Analyzer] Replacing fake bug check ${match} in summary`);
+                            report.summary = report.summary.replace(new RegExp(match, 'gi'), correctBugCheckHex);
+                        }
+                    }
+                    report.summary = report.summary.replace(/UNKNOWN_BUG_CHECK_[0-9A-Fx]+/gi, structuredInfo.bugCheckInfo.name);
+                }
+
+                // Fix probable cause
+                const fakeDrivers = ['wXr.sys', 'wEB.sys', 'vS.sys', 'wXr', 'wEB', 'vS'];
+                if (report.probableCause) {
+                    const causeMatches = report.probableCause.match(fakeBugCheckPattern) || [];
+                    for (const match of causeMatches) {
+                        if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') {
+                            console.warn(`[Analyzer] Replacing fake bug check ${match} in probable cause`);
+                            report.probableCause = report.probableCause.replace(new RegExp(match, 'gi'), correctBugCheckHex);
+                        }
+                    }
+
+                    for (const fakeDriver of fakeDrivers) {
+                        if (report.probableCause.includes(fakeDriver)) {
+                            console.warn(`[Analyzer] Removing fake driver ${fakeDriver} from probable cause`);
+                            report.probableCause = report.probableCause.replace(new RegExp(fakeDriver + '[^\\s]*', 'gi'), '[driver name could not be determined]');
+                        }
                     }
                 }
-                
-                console.log('[Analyzer] Combined stack trace:', combinedStack.length, 'entries');
-                report.stackTrace = combinedStack;
-                
-                // PRIORITY: Use verified culprit from accurate kernel dump parsing
-                if (accurateModuleInfo?.culpritModule) {
-                    if (report.culprit !== accurateModuleInfo.culpritModule) {
-                        console.log(`[Analyzer] Using VERIFIED culprit from kernel dump: '${accurateModuleInfo.culpritModule}' (was: '${report.culprit}')`);
+
+                // Fix culprit if it's a fake driver
+                const fakeCulprits = ['wXr.sys', 'wEB.sys', 'vS.sys'];
+                if (fakeCulprits.includes(report.culprit)) {
+                    console.warn(`[Analyzer] Detected fake culprit ${report.culprit}`);
+                    // Use verified culprit from module info, or indicate unknown
+                    if (accurateModuleInfo?.culpritModule) {
                         report.culprit = accurateModuleInfo.culpritModule;
-                    }
-                }
-                // Fallback: Validate and correct the culprit based on stack trace (only if no verified culprit)
-                else if (combinedStack.length > 0) {
-                    // Look for the first non-kernel driver in the stack
-                    for (const frame of combinedStack) {
-                        // Extract driver name from frame (e.g., "bindflt!BfGetMappingList" -> "bindflt.sys")
-                        const driverMatch = frame.match(/^([^!]+)!/);
-                        if (driverMatch) {
-                            const driverName = driverMatch[1];
-                            // Skip kernel components
-                            if (!['nt', 'hal', 'FLTMGR', 'win32k'].includes(driverName)) {
-                                const correctedCulprit = driverName.includes('.sys') ? driverName : driverName + '.sys';
-                                if (report.culprit !== correctedCulprit) {
-                                    console.log(`[Analyzer] Correcting culprit from '${report.culprit}' to '${correctedCulprit}' based on stack trace`);
-                                    report.culprit = correctedCulprit;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                // CRITICAL: Validate bug check code - AI must not change it
-                if (structuredInfo.bugCheckInfo) {
-                    const correctBugCheckCode = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})`;
-                    const correctBugCheckHex = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()}`;
-                    
-                    // Check if report has bugCheckCode field
-                    if ('bugCheckCode' in report && report.bugCheckCode !== correctBugCheckCode) {
-                        console.warn(`[Analyzer] AI returned incorrect bug check code: ${report.bugCheckCode}, correcting to: ${correctBugCheckCode}`);
-                        report.bugCheckCode = correctBugCheckCode;
-                    }
-                    
-                    // Aggressively fix any hallucinated bug check codes
-                    const fakeBugCheckPattern = /0x[0-9A-Fa-f]{4,8}/g;
-                    
-                    // Fix summary
-                    if (report.summary) {
-                        const summaryMatches = report.summary.match(fakeBugCheckPattern) || [];
-                        for (const match of summaryMatches) {
-                            if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') { // Don't replace exception codes
-                                console.warn(`[Analyzer] Replacing fake bug check ${match} in summary`);
-                                report.summary = report.summary.replace(new RegExp(match, 'gi'), correctBugCheckHex);
-                            }
-                        }
-                        // Also fix any UNKNOWN_BUG_CHECK references
-                        report.summary = report.summary.replace(/UNKNOWN_BUG_CHECK_[0-9A-Fx]+/gi, structuredInfo.bugCheckInfo.name);
-                    }
-                    
-                    // Define fake drivers list at the beginning
-                    const fakeDrivers = ['wXr.sys', 'wEB.sys', 'vS.sys', 'wXr', 'wEB', 'vS'];
-                    
-                    // Fix probable cause
-                    if (report.probableCause) {
-                        const causeMatches = report.probableCause.match(fakeBugCheckPattern) || [];
-                        for (const match of causeMatches) {
-                            if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') {
-                                console.warn(`[Analyzer] Replacing fake bug check ${match} in probable cause`);
-                                report.probableCause = report.probableCause.replace(new RegExp(match, 'gi'), correctBugCheckHex);
-                            }
-                        }
-                        
-                        // Remove any mentions of fake drivers
-                        for (const fakeDriver of fakeDrivers) {
-                            if (report.probableCause.includes(fakeDriver)) {
-                                console.warn(`[Analyzer] Removing fake driver ${fakeDriver} from probable cause`);
-                                // Simply remove the fake driver mention rather than replacing with a guess
-                                report.probableCause = report.probableCause.replace(new RegExp(fakeDriver + '[^\\s]*', 'gi'), '[driver name could not be determined]');
-                            }
-                        }
-                    }
-                    
-                    // Fix culprit if it's a fake driver
-                    const fakeCulprits = ['wXr.sys', 'wEB.sys', 'vS.sys'];
-                    if (fakeCulprits.includes(report.culprit)) {
-                        console.warn(`[Analyzer] Detected fake culprit ${report.culprit}`);
-                        // Try to find the real culprit from stack trace
-                        let realCulprit = null;
-                        
-                        // First try to get from stack trace
-                        if (combinedStack.length > 0) {
-                            for (const frame of combinedStack) {
-                                const driverMatch = frame.match(/^([^!]+)!/);
-                                if (driverMatch) {
-                                    const driverName = driverMatch[1];
-                                    // Look for the first driver in the stack
-                                    realCulprit = driverName.includes('.sys') ? driverName : driverName + '.sys';
-                                    console.log(`[Analyzer] Found real culprit from stack: ${realCulprit}`);
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // If we found a real culprit, use it; otherwise indicate unknown
-                        if (realCulprit) {
-                            report.culprit = realCulprit;
-                        } else {
-                            report.culprit = 'Could not determine culprit driver';
-                            console.warn('[Analyzer] Could not determine real culprit from available data');
-                        }
-                    }
-                    
-                    // Fix stack trace - remove any fake entries
-                    if (report.stackTrace && Array.isArray(report.stackTrace)) {
-                        report.stackTrace = report.stackTrace.filter(frame => {
-                            const hasFakeDriver = fakeDrivers.some(fake => frame.includes(fake));
-                            if (hasFakeDriver) {
-                                console.warn(`[Analyzer] Removing fake stack frame: ${frame}`);
-                                return false;
-                            }
-                            return true;
-                        });
-                        
-                        // If stack trace is now too short, use the real one
-                        if (report.stackTrace.length < 3 && combinedStack.length > 0) {
-                            console.warn('[Analyzer] Stack trace too short after cleanup, using real stack');
-                            report.stackTrace = combinedStack;
-                        }
+                    } else {
+                        report.culprit = 'Could not determine culprit driver';
+                        console.warn('[Analyzer] Could not determine real culprit from available data');
                     }
                 }
             }
@@ -1679,14 +1131,12 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
                 ];
 
                 // Get parameter explanations from crash database
-                const paramExplanations = getParameterExplanation(bugCode, params);
-
                 report.bugCheck = {
                     code: `0x${bugCode.toString(16).padStart(8, '0').toUpperCase()}`,
                     name: bugName,
                     parameters: params.map((p, i) => ({
                         value: `0x${p.toString(16)}`,
-                        meaning: paramExplanations[i] || `Parameter ${i + 1}`
+                        meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
                     }))
                 };
             }
@@ -1710,18 +1160,10 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
             if (structuredInfo.threadContext) {
                 const ctx = structuredInfo.threadContext;
                 report.registers = {};
-                // x64 registers
+                // x64 registers available in ThreadContext
                 if (ctx.rip !== undefined) report.registers.rip = `0x${ctx.rip.toString(16)}`;
                 if (ctx.rsp !== undefined) report.registers.rsp = `0x${ctx.rsp.toString(16)}`;
                 if (ctx.rbp !== undefined) report.registers.rbp = `0x${ctx.rbp.toString(16)}`;
-                if (ctx.rax !== undefined) report.registers.rax = `0x${ctx.rax.toString(16)}`;
-                if (ctx.rbx !== undefined) report.registers.rbx = `0x${ctx.rbx.toString(16)}`;
-                if (ctx.rcx !== undefined) report.registers.rcx = `0x${ctx.rcx.toString(16)}`;
-                if (ctx.rdx !== undefined) report.registers.rdx = `0x${ctx.rdx.toString(16)}`;
-                // x86 registers
-                if (ctx.eip !== undefined) report.registers.eip = `0x${ctx.eip.toString(16)}`;
-                if (ctx.esp !== undefined) report.registers.esp = `0x${ctx.esp.toString(16)}`;
-                if (ctx.ebp !== undefined) report.registers.ebp = `0x${ctx.ebp.toString(16)}`;
             }
 
             // Loaded Modules (prefer accurate parser)
@@ -1729,23 +1171,13 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
             if (modules.length > 0) {
                 report.loadedModules = modules
                     .slice(0, 50)
-                    .filter(m => m && m.name) // Filter out undefined/null entries
-                    .map(m => {
-                        // Handle both accurate parser (bigint) and legacy parser (number) formats
-                        let baseAddr: string | undefined;
-                        if (m.base !== undefined && m.base !== null) {
-                            baseAddr = typeof m.base === 'bigint' ? `0x${m.base.toString(16)}` : `0x${m.base.toString(16)}`;
-                        } else if (m.baseAddress !== undefined && m.baseAddress !== null) {
-                            baseAddr = `0x${m.baseAddress.toString(16)}`;
-                        }
-
-                        return {
-                            name: m.name,
-                            base: baseAddr,
-                            size: m.size ? (typeof m.size === 'bigint' ? `0x${m.size.toString(16)}` : undefined) : undefined,
-                            isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
-                        };
-                    });
+                    .filter(m => m && m.name)
+                    .map(m => ({
+                        name: m.name,
+                        base: m.base !== undefined ? `0x${m.base.toString(16)}` : undefined,
+                        size: m.size ? `0x${m.size.toString(16)}` : undefined,
+                        isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
+                    }));
             }
 
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED };

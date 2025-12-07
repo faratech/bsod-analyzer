@@ -15,7 +15,7 @@ interface AdProps {
 }
 
 // Hook to check if element has sufficient width
-const useElementWidth = (ref: React.RefObject<HTMLElement>, minWidth: number = 100) => {
+const useElementWidth = (ref: React.RefObject<HTMLElement | null>, minWidth: number = 100) => {
   const [hasWidth, setHasWidth] = useState(false);
   
   useEffect(() => {
@@ -67,7 +67,7 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
       } catch (err) {
         console.error('[AdSense] Error pushing ad:', err);
         // Check if it's the "No slot size" error
-        if (err && err.message && err.message.includes('No slot size')) {
+        if (err instanceof Error && err.message.includes('No slot size')) {
           console.log('[AdSense] Retrying after delay due to slot size error');
           setTimeout(() => {
             try {
