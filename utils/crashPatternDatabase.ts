@@ -1493,6 +1493,23 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
     }
 };
 
+// Common NTSTATUS codes for inline decoding (AI handles full decoding)
+const COMMON_NTSTATUS: Record<number, string> = {
+    0xC0000005: 'STATUS_ACCESS_VIOLATION',
+    0xC0000094: 'STATUS_INTEGER_DIVIDE_BY_ZERO',
+    0xC0000096: 'STATUS_PRIVILEGED_INSTRUCTION',
+    0xC000001D: 'STATUS_ILLEGAL_INSTRUCTION',
+    0xC0000006: 'STATUS_IN_PAGE_ERROR',
+    0xC00000FD: 'STATUS_STACK_OVERFLOW',
+    0xC0000008: 'STATUS_INVALID_HANDLE',
+    0xC0000017: 'STATUS_NO_MEMORY',
+    0xC000009A: 'STATUS_INSUFFICIENT_RESOURCES',
+};
+
+function getSimpleNtStatus(code: number): string {
+    return COMMON_NTSTATUS[code] || `NTSTATUS 0x${code.toString(16).toUpperCase()}`;
+}
+
 // Helper function to get detailed parameter explanation
 export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2 | 3 | 4, value: bigint): string {
     const pattern = CRASH_PATTERN_DATABASE[bugCheckCode];
@@ -1500,7 +1517,7 @@ export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2
 
     const paramName = `param${paramNumber}` as keyof typeof pattern.parameters;
     const paramInfo = pattern.parameters[paramName];
-    
+
     let explanation = `${paramInfo.name}: ${paramInfo.description}\n`;
     explanation += `Value: 0x${value.toString(16)}\n`;
 
@@ -1512,6 +1529,20 @@ export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2
                 explanation += `IRQL Level: ${getIrqlName(Number(value))}`;
             } else if (paramNumber === 3) {
                 explanation += `Access Type: ${value === 0n ? 'Read' : value === 1n ? 'Write' : 'Execute'}`;
+            }
+            break;
+
+        case 0x0000001E: // KMODE_EXCEPTION_NOT_HANDLED
+        case 0x0000007E: // SYSTEM_THREAD_EXCEPTION_NOT_HANDLED
+        case 0x0000003B: // SYSTEM_SERVICE_EXCEPTION
+            if (paramNumber === 1) {
+                // Parameter 1 is the exception code (NTSTATUS)
+                explanation += `Exception: ${getSimpleNtStatus(Number(value))}`;
+            } else if (paramNumber === 3) {
+                // For 0x1E, param3 is access type (0=read, 1=write)
+                if (bugCheckCode === 0x1E) {
+                    explanation += `Access Type: ${value === 0n ? 'Read' : value === 1n ? 'Write' : 'Unknown'}`;
+                }
             }
             break;
 
@@ -1534,6 +1565,21 @@ export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2
         case 0x00000139: // KERNEL_SECURITY_CHECK_FAILURE
             if (paramNumber === 1) {
                 explanation += getSecurityCheckType(Number(value));
+            }
+            break;
+
+        case 0x0000007A: // KERNEL_DATA_INPAGE_ERROR
+        case 0x00000077: // KERNEL_STACK_INPAGE_ERROR
+            if (paramNumber === 2) {
+                // Parameter 2 is the I/O status code (NTSTATUS)
+                explanation += `I/O Status: ${getSimpleNtStatus(Number(value))}`;
+            }
+            break;
+
+        case 0x000000ED: // UNMOUNTABLE_BOOT_VOLUME
+            if (paramNumber === 2) {
+                // Parameter 2 is NTSTATUS
+                explanation += `Status: ${getSimpleNtStatus(Number(value))}`;
             }
             break;
     }
