@@ -5,7 +5,7 @@ import { extractStackFrames as extractStackFramesEnhanced } from './stackExtract
 import { MinidumpParser } from './minidumpStreams.js';
 import { validateBugCheckParameters, analyzeBugCheckParameters, DumpValidator } from './dumpValidator.js';
 import { parseContext, ParsedContext } from './contextParser.js';
-import { parseKernelDumpHeader } from './kernelDumpParser.js';
+import { parseKernelDumpHeader } from './kernelDumpModuleParser.js';
 
 export interface FileValidationResult {
     isValid: boolean;

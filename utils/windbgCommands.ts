@@ -5,7 +5,7 @@
 import { MinidumpParser } from './minidumpStreams.js';
 import { parseContext, formatContext } from './contextParser.js';
 import { DumpValidator } from './dumpValidator.js';
-import { parseKernelDumpHeader } from './kernelDumpParser.js';
+import { parseKernelDumpHeader } from './kernelDumpModuleParser.js';
 
 interface WinDbgCommandResult {
     command: string;

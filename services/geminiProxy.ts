@@ -3,9 +3,10 @@ import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, BUG_CHECK_CODES, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
+import { parseDumpFile as parseKernelDump, toJsonSafe as kernelDumpToJson, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { extractStackFrames } from '../utils/stackExtractor.js';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
-import { AdvancedDumpParser } from '../utils/advancedDumpParser';
+// AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
 import { CRASH_PATTERN_DATABASE, getParameterExplanation, getAnalysisStrategy } from '../utils/crashPatternDatabase';
 import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
@@ -995,21 +996,7 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
             console.log('[Analyzer] File buffer loaded, size:', fileBuffer.byteLength);
 
-            // Use advanced parser for deeper analysis
-            let advancedReport;
-            let advancedParser;
-            try {
-                console.log('[Analyzer] Creating AdvancedDumpParser...');
-                advancedParser = new AdvancedDumpParser(fileBuffer);
-                console.log('[Analyzer] AdvancedDumpParser created');
-                advancedReport = advancedParser.generateDetailedReport();
-                console.log('[Analyzer] Advanced report generated');
-            } catch (parserError) {
-                console.error('[Analyzer] AdvancedDumpParser error:', parserError);
-                // Continue without advanced report
-                advancedReport = null;
-                advancedParser = null;
-            }
+            // AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
 
             const MAX_STRINGS_LENGTH = PROCESSING_LIMITS.MAX_STRINGS_LENGTH;
             console.log('[Analyzer] Extracting printable strings...');
@@ -1024,7 +1011,22 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             console.log('[Analyzer] Getting structured dump info...');
             const structuredInfo = getStructuredDumpInfo(fileBuffer, rawExtractedStrings);
             console.log('[Analyzer] Structured info obtained');
-            
+
+            // Use accurate kernel dump parser for PAGEDU64 files
+            let accurateModuleInfo: KernelDumpResult | null = null;
+            try {
+                console.log('[Analyzer] Attempting accurate kernel dump parsing...');
+                accurateModuleInfo = parseKernelDump(fileBuffer);
+                if (accurateModuleInfo) {
+                    console.log('[Analyzer] Accurate kernel dump parsed successfully');
+                    console.log('[Analyzer] Bug check:', accurateModuleInfo.bugCheck.name);
+                    console.log('[Analyzer] Culprit module:', accurateModuleInfo.culpritModule);
+                    console.log('[Analyzer] Module count:', accurateModuleInfo.modules.length);
+                }
+            } catch (kernelParseError) {
+                console.log('[Analyzer] Kernel dump parsing not applicable:', kernelParseError);
+            }
+
             // Extract additional information (keep legacy for compatibility)
             const bugCheckCode = structuredInfo.bugCheckInfo ? 
                 `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})` :
@@ -1107,22 +1109,6 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
                 }
             }
             
-            // Try strategy 4: Look for stack patterns in advanced dump parser output
-            if (realStackTrace.length === 0 && advancedReport) {
-                try {
-                    const reportText = JSON.stringify(advancedReport);
-                    const stackMatches = reportText.matchAll(/([a-zA-Z][a-zA-Z0-9_\-\.]+)!([a-zA-Z_][a-zA-Z0-9_]+)(?:\+0x[0-9a-fA-F]+)?/g);
-                    for (const match of stackMatches) {
-                        if (!realStackTrace.includes(match[0])) {
-                            realStackTrace.push(match[0]);
-                        }
-                    }
-                    console.log('[Analyzer] Stack frames from advanced report:', realStackTrace.length);
-                } catch (error) {
-                    console.error('[Analyzer] Advanced report stack extraction failed:', error);
-                }
-            }
-
             // Log symbol resolution summary
             if (realStackTrace.length > 0 && symbolResolver) {
                 console.log('[Analyzer] Symbol resolution summary:');
@@ -1141,21 +1127,6 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
                     rawExtractedStrings
                 ) : null;
 
-            // Get advanced analysis data
-            const advancedData = advancedParser ? {
-                exceptions: advancedParser.findAndParseAllExceptions(),
-                memoryCorruption: advancedParser.analyzeMemoryCorruption(),
-                driverSignatures: advancedParser.extractDriverSignatures(),
-                poolHeaders: advancedParser.parsePoolHeaders(),
-                irqlViolations: advancedParser.analyzeIrqlTransitions().filter(t => t.violation)
-            } : {
-                exceptions: [],
-                memoryCorruption: [],
-                driverSignatures: [],
-                poolHeaders: [],
-                irqlViolations: []
-            };
-            
             // Analyze memory patterns for additional corruption detection
             let memoryPatternAnalysis;
             try {
@@ -1227,26 +1198,18 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
             const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
             
-            // Target to use 90% of available tokens (900k tokens)
-            const TARGET_TOKENS = 900000;
-            const MAX_TOKENS = 1000000;
+            // Reduced token target - with accurate kernel dump parsing, we need less data
+            const TARGET_TOKENS = 50000;
+            const MAX_TOKENS = 100000;
             
             // Build prompt sections with token tracking
             let currentTokens = 0;
             const promptSections: { [key: string]: string } = {};
             
-            // Essential sections (always include)
-            const essentialPrefix = `You are analyzing a Windows crash dump file as an expert kernel debugger. Your analysis must be based ENTIRELY on the data provided below. Do not make assumptions beyond what the data shows.
+            // Essential sections (always include) - simplified with accurate parsing
+            const essentialPrefix = `Analyze this Windows crash dump. Use ONLY the verified data provided.
 
-## CRITICAL RULES - YOU MUST FOLLOW THESE EXACTLY:
-1. **USE ONLY THE BUG CHECK CODE PROVIDED** - Do NOT change it or suggest alternatives
-2. **USE ONLY MODULE NAMES FOUND IN THE DUMP** - Do NOT invent driver names like "wXr.sys"
-3. **If you see 0x65F4 as bug check, REJECT IT** - This is a parsing error, not a real code
-4. **Base analysis on Microsoft documentation** for the SPECIFIC bug check code shown
-5. **DO NOT HALLUCINATE** - If data is missing, say "insufficient data" instead of guessing
-
-## CRASH CONTEXT
-**File:** ${dumpFile.file.name} (${dumpFile.dumpType} dump, ${dumpFile.file.size} bytes)`;
+**File:** ${dumpFile.file.name} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)`;
             
             promptSections.essential = essentialPrefix;
             currentTokens += estimateTokens(essentialPrefix);
@@ -1267,6 +1230,15 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             
             // Priority 1: Core crash information
             if (bugCheckCode) addSection('bugcheck', `\n**Bug Check:** ${bugCheckCode}`, 1);
+
+            // Add VERIFIED culprit module from accurate kernel dump parsing
+            if (accurateModuleInfo?.culpritModule) {
+                const culpritInfo = `\n**⚠️ VERIFIED CRASH LOCATION (from exception address matching):**
+The exception occurred at address ${accurateModuleInfo.exception.address ? `0x${accurateModuleInfo.exception.address.toString(16)}` : 'unknown'} which is INSIDE the module: **${accurateModuleInfo.culpritModule}**
+This is the DEFINITIVE crash location - do NOT guess a different driver.`;
+                addSection('verified_culprit', culpritInfo, 1);
+            }
+
             if (windowsVersion) addSection('windows', `\n**Windows Version:** ${windowsVersion}`, 1);
             if (crashTime) addSection('time', `\n**Crash Time:** ${crashTime}`, 1);
             
@@ -1557,8 +1529,15 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
                 console.log('[Analyzer] Combined stack trace:', combinedStack.length, 'entries');
                 report.stackTrace = combinedStack;
                 
-                // Validate and correct the culprit based on stack trace
-                if (combinedStack.length > 0) {
+                // PRIORITY: Use verified culprit from accurate kernel dump parsing
+                if (accurateModuleInfo?.culpritModule) {
+                    if (report.culprit !== accurateModuleInfo.culpritModule) {
+                        console.log(`[Analyzer] Using VERIFIED culprit from kernel dump: '${accurateModuleInfo.culpritModule}' (was: '${report.culprit}')`);
+                        report.culprit = accurateModuleInfo.culpritModule;
+                    }
+                }
+                // Fallback: Validate and correct the culprit based on stack trace (only if no verified culprit)
+                else if (combinedStack.length > 0) {
                     // Look for the first non-kernel driver in the stack
                     for (const frame of combinedStack) {
                         // Extract driver name from frame (e.g., "bindflt!BfGetMappingList" -> "bindflt.sys")
