@@ -1,5 +1,5 @@
 import React, { useState, Suspense, lazy } from 'react';
-import { DumpFile, FileStatus } from '../types';
+import { DumpFile, FileStatus, BugCheckInfo, CrashLocation, RegisterContext, LoadedModule } from '../types';
 import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
@@ -68,14 +68,55 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
     const generateMarkdownReport = (): string => {
         if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses } = dumpFile.report;
+        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules } = dumpFile.report;
 
         let report = `# BSOD Analysis Report for ${dumpFile.file.name}\n\n`;
+
+        // Bug Check Info
+        if (bugCheck) {
+            report += `## Bug Check\n`;
+            report += `**${bugCheck.code}** - ${bugCheck.name}\n\n`;
+            if (bugCheck.parameters && bugCheck.parameters.length > 0) {
+                report += `| Parameter | Value | Meaning |\n|-----------|-------|--------|\n`;
+                bugCheck.parameters.forEach((p, i) => {
+                    report += `| Param ${i + 1} | \`${p.value}\` | ${p.meaning} |\n`;
+                });
+                report += `\n`;
+            }
+        }
+
+        // Crash Location
+        if (crashLocation) {
+            report += `## Crash Location\n`;
+            report += `**Module:** \`${crashLocation.module}\`\n`;
+            report += `**Address:** \`${crashLocation.address}\`${crashLocation.offset ? ` (${crashLocation.offset})` : ''}\n\n`;
+        }
+
         report += `## Summary\n${summary}\n\n`;
         report += `## Probable Cause\n**Culprit:** \`${culprit}\`\n\n${probableCause}\n\n`;
         report += `## Recommendations\n${recommendations.map(r => `- ${r}`).join('\n')}\n\n`;
-        report += `## Stack Trace\n\`\`\`\n${stackTrace.join('\n')}\n\`\`\`\n\n`;
-        
+
+        // CPU Registers
+        if (registers && Object.keys(registers).length > 0) {
+            report += `## CPU Registers at Crash\n\`\`\`\n`;
+            Object.entries(registers).forEach(([reg, val]) => {
+                if (val) report += `${reg.toUpperCase()}: ${val}\n`;
+            });
+            report += `\`\`\`\n\n`;
+        }
+
+        // Loaded Modules
+        if (loadedModules && loadedModules.length > 0) {
+            report += `## Loaded Modules (${loadedModules.length})\n`;
+            loadedModules.forEach(mod => {
+                const marker = mod.isCulprit ? '**[CRASH]** ' : '';
+                report += `- ${marker}\`${mod.name}\`${mod.base ? ` @ ${mod.base}` : ''}\n`;
+            });
+            report += `\n`;
+        } else if (stackTrace && stackTrace.length > 0) {
+            report += `## Loaded Modules\n\`\`\`\n${stackTrace.join('\n')}\n\`\`\`\n\n`;
+        }
+
         if (advancedAnalyses && advancedAnalyses.length > 0) {
             report += `## Advanced Analysis Results\n`;
             advancedAnalyses.forEach(analysis => {
@@ -167,6 +208,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             case FileStatus.ANALYZED:
                 if (!dumpFile.report) return null;
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
+                const { bugCheck, crashLocation, registers, loadedModules } = dumpFile.report;
+
                 return (
                     <div style={{padding: '1.5rem'}}>
 
@@ -192,16 +235,98 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                             </button>
                         </div>
 
+                        {/* Bug Check Header */}
+                        {bugCheck && (
+                            <div style={{
+                                backgroundColor: 'var(--status-error-bg, #fee2e2)',
+                                border: '1px solid var(--status-error, #ef4444)',
+                                borderRadius: '0.5rem',
+                                padding: '1rem',
+                                marginBottom: '1.5rem'
+                            }}>
+                                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap'}}>
+                                    <span style={{
+                                        fontFamily: 'Jetbrains Mono, monospace',
+                                        fontSize: '1.25rem',
+                                        fontWeight: 'bold',
+                                        color: 'var(--status-error, #dc2626)'
+                                    }}>{bugCheck.code}</span>
+                                    <span style={{
+                                        fontSize: '1.1rem',
+                                        fontWeight: '600',
+                                        color: 'var(--text-primary)'
+                                    }}>{bugCheck.name}</span>
+                                </div>
+                                {bugCheck.parameters && bugCheck.parameters.length > 0 && (
+                                    <div style={{marginTop: '0.75rem', fontSize: '0.875rem'}}>
+                                        {bugCheck.parameters.map((param, i) => (
+                                            <div key={i} style={{
+                                                display: 'flex',
+                                                gap: '0.5rem',
+                                                marginTop: '0.25rem',
+                                                color: 'var(--text-secondary)'
+                                            }}>
+                                                <span style={{fontFamily: 'Jetbrains Mono, monospace', minWidth: '140px'}}>{param.value}</span>
+                                                <span style={{color: 'var(--text-tertiary)'}}>→</span>
+                                                <span>{param.meaning}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
-                        <p style={{fontStyle: 'italic', marginBottom: '1.5rem'}}>"...{dumpFile.report.summary}"</p>
-                        
-                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem'}}>
+                        {/* Crash Location */}
+                        {crashLocation && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderRadius: '0.5rem',
+                                padding: '1rem',
+                                marginBottom: '1.5rem',
+                                border: '1px solid var(--border-primary)'
+                            }}>
+                                <h3 style={{margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: 'var(--text-secondary)'}}>Crash Location</h3>
+                                <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap'}}>
+                                    <span style={{
+                                        backgroundColor: 'var(--brand-primary)',
+                                        color: 'white',
+                                        padding: '0.25rem 0.75rem',
+                                        borderRadius: '0.25rem',
+                                        fontWeight: '600',
+                                        fontSize: '0.95rem'
+                                    }}>{crashLocation.module}</span>
+                                    <span style={{fontFamily: 'Jetbrains Mono, monospace', fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
+                                        at {crashLocation.address}{crashLocation.offset && ` (${crashLocation.offset})`}
+                                    </span>
+                                    <button
+                                        onClick={() => navigator.clipboard.writeText(crashLocation.module)}
+                                        style={{
+                                            background: 'none',
+                                            border: 'none',
+                                            cursor: 'pointer',
+                                            padding: '0.25rem',
+                                            color: 'var(--text-tertiary)'
+                                        }}
+                                        title="Copy driver name"
+                                    >
+                                        <ClipboardIcon />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Summary */}
+                        <p style={{fontStyle: 'italic', marginBottom: '1.5rem', color: 'var(--text-secondary)'}}>"...{dumpFile.report.summary}"</p>
+
+                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem'}}>
                             <div>
                                 <h3>Probable Cause</h3>
                                 <p>{dumpFile.report.probableCause}</p>
-                                <div style={{ marginTop: '1rem' }}>
-                                    <span className="code-block" style={{display: 'inline-block', padding: '0.25rem 0.75rem', fontSize: '0.8rem'}}>Culprit: {dumpFile.report.culprit}</span>
-                                </div>
+                                {!crashLocation && (
+                                    <div style={{ marginTop: '1rem' }}>
+                                        <span className="code-block" style={{display: 'inline-block', padding: '0.25rem 0.75rem', fontSize: '0.8rem'}}>Culprit: {dumpFile.report.culprit}</span>
+                                    </div>
+                                )}
                             </div>
                             <div>
                                 <h3>Recommendations</h3>
@@ -211,13 +336,84 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                             </div>
                         </div>
 
-                        <div style={{marginTop: '1.5rem'}}>
-                             <h3>Stack Trace</h3>
-                             <pre className="code-block">
-                                 {dumpFile.report.stackTrace.join('\n')}
-                             </pre>
-                        </div>
-                        
+                        {/* Register Context */}
+                        {registers && Object.keys(registers).length > 0 && (
+                            <div style={{marginTop: '1.5rem'}}>
+                                <h3>CPU Registers at Crash</h3>
+                                <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                                    gap: '0.5rem',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    padding: '1rem',
+                                    borderRadius: '0.5rem',
+                                    fontFamily: 'Jetbrains Mono, monospace',
+                                    fontSize: '0.85rem'
+                                }}>
+                                    {Object.entries(registers).map(([reg, val]) => val && (
+                                        <div key={reg} style={{display: 'flex', justifyContent: 'space-between'}}>
+                                            <span style={{color: 'var(--brand-primary)', fontWeight: '600'}}>{reg.toUpperCase()}:</span>
+                                            <span style={{color: 'var(--text-secondary)'}}>{val}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Loaded Modules */}
+                        {loadedModules && loadedModules.length > 0 && (
+                            <div style={{marginTop: '1.5rem'}}>
+                                <h3>Loaded Modules ({loadedModules.length})</h3>
+                                <div style={{
+                                    maxHeight: '200px',
+                                    overflowY: 'auto',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    padding: '0.75rem',
+                                    borderRadius: '0.5rem',
+                                    fontSize: '0.85rem'
+                                }}>
+                                    {loadedModules.map((mod, i) => (
+                                        <div key={i} style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '0.5rem',
+                                            padding: '0.25rem 0',
+                                            borderBottom: i < loadedModules.length - 1 ? '1px solid var(--border-primary)' : 'none'
+                                        }}>
+                                            {mod.isCulprit && (
+                                                <span style={{
+                                                    backgroundColor: 'var(--status-error, #ef4444)',
+                                                    color: 'white',
+                                                    padding: '0.1rem 0.4rem',
+                                                    borderRadius: '0.2rem',
+                                                    fontSize: '0.7rem',
+                                                    fontWeight: '600'
+                                                }}>CRASH</span>
+                                            )}
+                                            <span style={{
+                                                fontFamily: 'Jetbrains Mono, monospace',
+                                                color: mod.isCulprit ? 'var(--status-error, #ef4444)' : 'var(--text-primary)',
+                                                fontWeight: mod.isCulprit ? '600' : '400'
+                                            }}>{mod.name}</span>
+                                            {mod.base && (
+                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem'}}>{mod.base}</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Legacy Stack Trace - only show if no enhanced data */}
+                        {(!loadedModules || loadedModules.length === 0) && dumpFile.report.stackTrace && dumpFile.report.stackTrace.length > 0 && (
+                            <div style={{marginTop: '1.5rem'}}>
+                                <h3>Loaded Modules</h3>
+                                <pre className="code-block">
+                                    {dumpFile.report.stackTrace.join('\n')}
+                                </pre>
+                            </div>
+                        )}
+
                         <div style={{marginTop: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderRadius: '0.5rem'}}>
                             <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>
                                 * You can verify this AI analysis with <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/getting-started-with-windbg" target="_blank" rel="noopener noreferrer" style={{color: 'var(--brand-primary)'}}>Microsoft WinDbg</a>
