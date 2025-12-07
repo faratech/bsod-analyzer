@@ -1663,7 +1663,78 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
                     }
                 }
             }
-            
+
+            // === ENHANCED REPORT DATA ===
+            // Add structured data for improved UI display
+
+            // Bug Check with parameter meanings
+            if (structuredInfo.bugCheckInfo || accurateModuleInfo?.bugCheck) {
+                const bugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code ?? 0;
+                const bugName = accurateModuleInfo?.bugCheck?.name ?? structuredInfo.bugCheckInfo?.name ?? 'UNKNOWN';
+                const params = accurateModuleInfo?.bugCheck?.parameters ?? [
+                    BigInt(structuredInfo.bugCheckInfo?.parameter1 ?? 0),
+                    BigInt(structuredInfo.bugCheckInfo?.parameter2 ?? 0),
+                    BigInt(structuredInfo.bugCheckInfo?.parameter3 ?? 0),
+                    BigInt(structuredInfo.bugCheckInfo?.parameter4 ?? 0)
+                ];
+
+                // Get parameter explanations from crash database
+                const paramExplanations = getParameterExplanation(bugCode, params);
+
+                report.bugCheck = {
+                    code: `0x${bugCode.toString(16).padStart(8, '0').toUpperCase()}`,
+                    name: bugName,
+                    parameters: params.map((p, i) => ({
+                        value: `0x${p.toString(16)}`,
+                        meaning: paramExplanations[i] || `Parameter ${i + 1}`
+                    }))
+                };
+            }
+
+            // Crash Location with module offset
+            if (accurateModuleInfo?.culpritModule && accurateModuleInfo?.exception) {
+                const excAddr = accurateModuleInfo.exception.address;
+                const culpritMod = accurateModuleInfo.modules.find(m => m.name === accurateModuleInfo.culpritModule);
+                let offset: string | undefined;
+                if (culpritMod && excAddr >= culpritMod.base) {
+                    offset = `+0x${(excAddr - culpritMod.base).toString(16)}`;
+                }
+                report.crashLocation = {
+                    module: accurateModuleInfo.culpritModule,
+                    address: `0x${excAddr.toString(16)}`,
+                    offset
+                };
+            }
+
+            // Register Context
+            if (structuredInfo.threadContext) {
+                const ctx = structuredInfo.threadContext;
+                report.registers = {};
+                // x64 registers
+                if (ctx.rip !== undefined) report.registers.rip = `0x${ctx.rip.toString(16)}`;
+                if (ctx.rsp !== undefined) report.registers.rsp = `0x${ctx.rsp.toString(16)}`;
+                if (ctx.rbp !== undefined) report.registers.rbp = `0x${ctx.rbp.toString(16)}`;
+                if (ctx.rax !== undefined) report.registers.rax = `0x${ctx.rax.toString(16)}`;
+                if (ctx.rbx !== undefined) report.registers.rbx = `0x${ctx.rbx.toString(16)}`;
+                if (ctx.rcx !== undefined) report.registers.rcx = `0x${ctx.rcx.toString(16)}`;
+                if (ctx.rdx !== undefined) report.registers.rdx = `0x${ctx.rdx.toString(16)}`;
+                // x86 registers
+                if (ctx.eip !== undefined) report.registers.eip = `0x${ctx.eip.toString(16)}`;
+                if (ctx.esp !== undefined) report.registers.esp = `0x${ctx.esp.toString(16)}`;
+                if (ctx.ebp !== undefined) report.registers.ebp = `0x${ctx.ebp.toString(16)}`;
+            }
+
+            // Loaded Modules (prefer accurate parser)
+            const modules = accurateModuleInfo?.modules ?? structuredInfo.moduleList ?? [];
+            if (modules.length > 0) {
+                report.loadedModules = modules.slice(0, 50).map(m => ({
+                    name: m.name,
+                    base: m.base ? (typeof m.base === 'bigint' ? `0x${m.base.toString(16)}` : m.baseAddress ? `0x${m.baseAddress.toString(16)}` : undefined) : undefined,
+                    size: m.size ? (typeof m.size === 'bigint' ? `0x${m.size.toString(16)}` : undefined) : undefined,
+                    isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
+                }));
+            }
+
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED };
         } catch (error) {
             console.error(`Analysis failed for ${dumpFile.file.name}:`, error);
