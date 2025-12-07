@@ -153,12 +153,12 @@ const reportSchema = {
     properties: {
         summary: { type: Type.STRING, description: "A brief, one-sentence summary of the crash." },
         probableCause: { type: Type.STRING, description: "A detailed but easy-to-understand explanation of the likely cause of the blue screen error, based on the provided data." },
-        culprit: { type: Type.STRING, description: "The most likely driver or system file causing the crash (e.g., 'ntoskrnl.exe', 'nvlddmkm.sys', 'atikmdag.sys'), identified from the extracted strings or file patterns." },
+        culprit: { type: Type.STRING, description: "The driver or system file causing the crash. Use ONLY the verified culprit from VERIFIED CRASH LOCATION if provided." },
         recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of actionable steps the user should take to fix the issue." },
-        stackTrace: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A plausible kernel-mode stack trace with at least 5 levels, reconstructed from function names or patterns found in the EXTRACTED STRINGS. This should not be a generic simulation but based on evidence in the data." },
+        stackTrace: { type: Type.ARRAY, items: { type: Type.STRING }, description: "ONLY include modules that appear in the provided module list. Small memory dumps do not contain stack traces - list the culprit module and a few related modules from the VERIFIED module list. Do NOT invent module names." },
         bugCheckCode: { type: Type.STRING, description: "The bug check code in format '0x00000XXX (NAME)' - MUST match the one provided in the analysis requirements." },
     },
-    required: ["summary", "probableCause", "culprit", "recommendations", "stackTrace"],
+    required: ["summary", "probableCause", "culprit", "recommendations"],
 };
 
 // --- Binary Processing Helpers ---
@@ -1306,19 +1306,26 @@ ${adjustedHexDump}
                 addSection('threads', `\n\n**Additional Thread Information:**\n${threadInfo}`, 6);
             }
             
-            // Priority 7: Module list (include as many as possible)
-            // Filter modules to only include legitimate ones
-            const legitimateModules = structuredInfo.moduleList.filter(m => isLegitimateModuleName(m.name));
-            const moduleCount = Math.min(
-                legitimateModules.length,
-                Math.floor((remainingTokens - currentTokens) * 0.05 * 4 / 100) // Estimate ~100 chars per module
-            );
-            if (moduleCount > 0) {
-                const moduleSection = `\n\n**Module List from Dump (${moduleCount} of ${legitimateModules.length}):**
-${legitimateModules.slice(0, moduleCount).map(m => 
-    `- ${m.name}${m.size ? ` (Size: ${m.size} bytes)` : ''}${m.timestamp ? ` [Timestamp: ${new Date(m.timestamp * 1000).toISOString()}]` : ''}${m.baseAddress ? ` [Base: 0x${m.baseAddress.toString(16)}]` : ''}`
-).join('\n')}`;
+            // Priority 7: Module list - prefer accurate parser when available
+            // Use accurate module list from kernelDumpModuleParser if we have it
+            if (accurateModuleInfo?.modules && accurateModuleInfo.modules.length > 0) {
+                const moduleCount = Math.min(accurateModuleInfo.modules.length, 50); // Limit to 50 modules
+                const moduleSection = `\n\n**VERIFIED Module List (${moduleCount} of ${accurateModuleInfo.modules.length}):**
+IMPORTANT: Only these modules were loaded at crash time. Do NOT reference any module not in this list.
+${accurateModuleInfo.modules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
                 addSection('modules', moduleSection, 7);
+            } else {
+                // Fallback to old parser's module list
+                const legitimateModules = structuredInfo.moduleList.filter(m => isLegitimateModuleName(m.name));
+                const moduleCount = Math.min(
+                    legitimateModules.length,
+                    Math.floor((remainingTokens - currentTokens) * 0.05 * 4 / 100)
+                );
+                if (moduleCount > 0) {
+                    const moduleSection = `\n\n**Module List from Dump (${moduleCount} of ${legitimateModules.length}):**
+${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
+                    addSection('modules', moduleSection, 7);
+                }
             }
             
             // Priority 8: Extracted strings (use remaining tokens)
