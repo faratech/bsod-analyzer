@@ -1727,12 +1727,25 @@ You MUST use frames from the actual stack trace above. Do NOT invent frames like
             // Loaded Modules (prefer accurate parser)
             const modules = accurateModuleInfo?.modules ?? structuredInfo.moduleList ?? [];
             if (modules.length > 0) {
-                report.loadedModules = modules.slice(0, 50).map(m => ({
-                    name: m.name,
-                    base: m.base ? (typeof m.base === 'bigint' ? `0x${m.base.toString(16)}` : m.baseAddress ? `0x${m.baseAddress.toString(16)}` : undefined) : undefined,
-                    size: m.size ? (typeof m.size === 'bigint' ? `0x${m.size.toString(16)}` : undefined) : undefined,
-                    isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
-                }));
+                report.loadedModules = modules
+                    .slice(0, 50)
+                    .filter(m => m && m.name) // Filter out undefined/null entries
+                    .map(m => {
+                        // Handle both accurate parser (bigint) and legacy parser (number) formats
+                        let baseAddr: string | undefined;
+                        if (m.base !== undefined && m.base !== null) {
+                            baseAddr = typeof m.base === 'bigint' ? `0x${m.base.toString(16)}` : `0x${m.base.toString(16)}`;
+                        } else if (m.baseAddress !== undefined && m.baseAddress !== null) {
+                            baseAddr = `0x${m.baseAddress.toString(16)}`;
+                        }
+
+                        return {
+                            name: m.name,
+                            base: baseAddr,
+                            size: m.size ? (typeof m.size === 'bigint' ? `0x${m.size.toString(16)}` : undefined) : undefined,
+                            isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
+                        };
+                    });
             }
 
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED };
