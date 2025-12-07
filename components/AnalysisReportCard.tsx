@@ -1,5 +1,5 @@
 import React, { useState, Suspense, lazy } from 'react';
-import { DumpFile, FileStatus, BugCheckInfo, CrashLocation, RegisterContext, LoadedModule } from '../types';
+import { DumpFile, FileStatus } from '../types';
 import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
@@ -22,7 +22,10 @@ const LazyMarkdown: React.FC<{ children: string }> = ({ children }) => {
                 remarkPlugins={remarkGfm ? [remarkGfm] : []}
                 components={{
                     pre: ({node, ...props}) => <pre className="code-block" style={{margin: 0}} {...props} />,
-                    code: ({ node, inline, className, children, ...props }) => <code style={{fontFamily: 'Jetbrains Mono, monospace', backgroundColor: inline ? 'var(--bg-secondary)' : 'transparent', padding: inline ? '0.2em 0.4em' : 0, borderRadius: '3px'}} className={className} {...props}>{children}</code>,
+                    code: ({ node, className, children, ...props }) => {
+                        const isInline = !className?.includes('language-');
+                        return <code style={{fontFamily: 'Jetbrains Mono, monospace', backgroundColor: isInline ? 'var(--bg-secondary)' : 'transparent', padding: isInline ? '0.2em 0.4em' : 0, borderRadius: '3px'}} className={className} {...props}>{children}</code>;
+                    },
                     a: ({node, ...props}) => <a style={{color: 'var(--brand-primary)'}} target="_blank" rel="noopener noreferrer" {...props} />,
                 }}
             >
@@ -238,8 +241,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                         {/* Bug Check Header */}
                         {bugCheck && (
                             <div style={{
-                                backgroundColor: 'var(--status-error-bg, #fee2e2)',
-                                border: '1px solid var(--status-error, #ef4444)',
+                                backgroundColor: 'var(--status-error-bg)',
+                                border: '1px solid var(--status-error)',
                                 borderRadius: '0.5rem',
                                 padding: '1rem',
                                 marginBottom: '1.5rem'
@@ -249,7 +252,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                         fontFamily: 'Jetbrains Mono, monospace',
                                         fontSize: '1.25rem',
                                         fontWeight: 'bold',
-                                        color: 'var(--status-error, #dc2626)'
+                                        color: 'var(--status-error)'
                                     }}>{bugCheck.code}</span>
                                     <span style={{
                                         fontSize: '1.1rem',
@@ -382,7 +385,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                         }}>
                                             {mod.isCulprit && (
                                                 <span style={{
-                                                    backgroundColor: 'var(--status-error, #ef4444)',
+                                                    backgroundColor: 'var(--status-error)',
                                                     color: 'white',
                                                     padding: '0.1rem 0.4rem',
                                                     borderRadius: '0.2rem',
@@ -392,7 +395,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                             )}
                                             <span style={{
                                                 fontFamily: 'Jetbrains Mono, monospace',
-                                                color: mod.isCulprit ? 'var(--status-error, #ef4444)' : 'var(--text-primary)',
+                                                color: mod.isCulprit ? 'var(--status-error)' : 'var(--text-primary)',
                                                 fontWeight: mod.isCulprit ? '600' : '400'
                                             }}>{mod.name}</span>
                                             {mod.base && (
