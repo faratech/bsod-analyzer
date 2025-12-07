@@ -71,7 +71,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
     const generateMarkdownReport = (): string => {
         if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings } = dumpFile.report;
+        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis } = dumpFile.report;
 
         let report = `# BSOD Analysis Report for ${dumpFile.file.name}\n\n`;
 
@@ -83,6 +83,38 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                 report += `| Parameter | Value | Meaning |\n|-----------|-------|--------|\n`;
                 bugCheck.parameters.forEach((p, i) => {
                     report += `| Param ${i + 1} | \`${p.value}\` | ${p.meaning} |\n`;
+                });
+                report += `\n`;
+            }
+        }
+
+        // Parameter Analysis
+        if (parameterAnalysis && parameterAnalysis.length > 0) {
+            report += `## Parameter Analysis\n\n`;
+            report += `| Parameter | Value | Decoded | Significance |\n|-----------|-------|---------|---------------|\n`;
+            parameterAnalysis.forEach(param => {
+                report += `| ${param.parameter} | \`${param.rawValue}\` | ${param.decoded} | ${param.significance} |\n`;
+            });
+            report += `\n`;
+        }
+
+        // Hardware Error Info
+        if (hardwareError && hardwareError.isHardwareError) {
+            report += `## 🔥 Hardware Error Detected\n\n`;
+            report += `**Severity:** ${hardwareError.severity.toUpperCase()}\n`;
+            report += `**Error Type:** ${hardwareError.errorType}\n`;
+            report += `**Component:** ${hardwareError.component}\n\n`;
+            if (hardwareError.details.length > 0) {
+                report += `### Technical Details\n\`\`\`\n`;
+                hardwareError.details.forEach(detail => {
+                    report += `${detail}\n`;
+                });
+                report += `\`\`\`\n\n`;
+            }
+            if (hardwareError.recommendations.length > 0) {
+                report += `### Hardware-Specific Recommendations\n`;
+                hardwareError.recommendations.forEach(rec => {
+                    report += `- ${rec}\n`;
                 });
                 report += `\n`;
             }
@@ -233,7 +265,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             case FileStatus.ANALYZED:
                 if (!dumpFile.report) return null;
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
-                const { bugCheck, crashLocation, registers, loadedModules, driverWarnings } = dumpFile.report;
+                const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis } = dumpFile.report;
 
                 return (
                     <div style={{padding: '1.5rem'}}>
@@ -298,6 +330,118 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                         ))}
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* Parameter Analysis from AI */}
+                        {parameterAnalysis && parameterAnalysis.length > 0 && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderRadius: '0.5rem',
+                                padding: '1rem',
+                                marginBottom: '1.5rem',
+                                border: '1px solid var(--border-primary)'
+                            }}>
+                                <h3 style={{
+                                    margin: '0 0 0.75rem 0',
+                                    fontSize: '0.9rem',
+                                    color: 'var(--text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    🔍 Parameter Analysis
+                                </h3>
+                                <div style={{display: 'flex', flexDirection: 'column', gap: '0.5rem'}}>
+                                    {parameterAnalysis.map((param, i) => (
+                                        <div key={i} style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'auto 1fr',
+                                            gap: '0.5rem 1rem',
+                                            padding: '0.5rem',
+                                            backgroundColor: 'var(--bg-primary)',
+                                            borderRadius: '0.375rem',
+                                            fontSize: '0.85rem'
+                                        }}>
+                                            <span style={{
+                                                fontFamily: 'Jetbrains Mono, monospace',
+                                                color: 'var(--brand-primary)',
+                                                fontWeight: '600'
+                                            }}>{param.rawValue}</span>
+                                            <span style={{color: 'var(--text-primary)', fontWeight: '500'}}>{param.decoded}</span>
+                                            <span style={{color: 'var(--text-tertiary)', fontSize: '0.8rem'}}>{param.parameter}</span>
+                                            <span style={{color: 'var(--text-secondary)', fontSize: '0.8rem'}}>{param.significance}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Hardware Error Alert */}
+                        {hardwareError && hardwareError.isHardwareError && (
+                            <div style={{
+                                backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                                border: '2px solid #dc2626',
+                                borderRadius: '0.5rem',
+                                padding: '1rem',
+                                marginBottom: '1.5rem'
+                            }}>
+                                <h3 style={{
+                                    margin: '0 0 0.75rem 0',
+                                    fontSize: '1rem',
+                                    color: '#dc2626',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    <span style={{fontSize: '1.25rem'}}>🔥</span>
+                                    Hardware Error Detected
+                                    <span style={{
+                                        backgroundColor: '#dc2626',
+                                        color: 'white',
+                                        padding: '0.15rem 0.5rem',
+                                        borderRadius: '0.25rem',
+                                        fontSize: '0.7rem',
+                                        fontWeight: '600',
+                                        textTransform: 'uppercase'
+                                    }}>{hardwareError.severity}</span>
+                                </h3>
+                                <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'auto 1fr',
+                                    gap: '0.5rem 1rem',
+                                    fontSize: '0.875rem',
+                                    marginBottom: '0.75rem'
+                                }}>
+                                    <span style={{color: 'var(--text-tertiary)'}}>Error Type:</span>
+                                    <span style={{color: 'var(--text-primary)', fontWeight: '500'}}>{hardwareError.errorType}</span>
+                                    <span style={{color: 'var(--text-tertiary)'}}>Component:</span>
+                                    <span style={{color: 'var(--text-primary)', fontWeight: '500'}}>{hardwareError.component}</span>
+                                </div>
+                                {hardwareError.details.length > 0 && (
+                                    <div style={{
+                                        backgroundColor: 'var(--bg-primary)',
+                                        padding: '0.75rem',
+                                        borderRadius: '0.375rem',
+                                        fontSize: '0.8rem',
+                                        fontFamily: 'Jetbrains Mono, monospace',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '0.75rem',
+                                        maxHeight: '120px',
+                                        overflowY: 'auto'
+                                    }}>
+                                        {hardwareError.details.slice(0, 5).map((detail, i) => (
+                                            <div key={i}>{detail}</div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div style={{
+                                    fontSize: '0.8rem',
+                                    color: '#dc2626',
+                                    fontWeight: '500'
+                                }}>
+                                    This error indicates a likely hardware problem. See recommendations below.
+                                </div>
                             </div>
                         )}
 

@@ -58,6 +58,22 @@ export interface DriverWarning {
   isAssociatedWithBugCheck: boolean;
 }
 
+export interface HardwareErrorInfo {
+  isHardwareError: boolean;
+  errorType: string;
+  component: string;
+  severity: string;  // AI returns: 'fatal', 'recoverable', 'corrected', 'deferred'
+  details: string[];
+  recommendations: string[];
+}
+
+export interface ParameterAnalysis {
+  parameter: string;   // e.g., "Parameter 1"
+  rawValue: string;    // e.g., "0xC0000005"
+  decoded: string;     // e.g., "STATUS_ACCESS_VIOLATION - Invalid memory access"
+  significance: string; // What this tells us about the crash
+}
+
 export interface AnalysisReportData {
   summary: string;
   probableCause: string;
@@ -69,9 +85,13 @@ export interface AnalysisReportData {
   registers?: RegisterContext;
   loadedModules?: LoadedModule[];
   driverWarnings?: DriverWarning[];
+  hardwareError?: HardwareErrorInfo;
+  parameterAnalysis?: ParameterAnalysis[];  // AI-decoded bug check parameters
   // Legacy field - module list fallback when loadedModules is empty
   stackTrace?: string[];
   advancedAnalyses?: AdvancedAnalysisResult[];
+  // Legacy field for bug check code (deprecated, use bugCheck instead)
+  bugCheckCode?: string;
 }
 
 export interface DumpFile {

@@ -1,16 +1,14 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
-import { DumpFile, AnalysisReportData, FileStatus, DriverWarning } from '../types';
+import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
 import { parseDumpFile as parseKernelDump, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
-import { getParameterExplanation } from '../utils/crashPatternDatabase';
 import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { findProblematicDriver, findProblematicDriversInModules, getDriversForBugCheck, type ProblematicDriver } from '../utils/knownProblematicDrivers';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -152,6 +150,50 @@ const reportSchema = {
         probableCause: { type: Type.STRING, description: "A detailed but easy-to-understand explanation of the likely cause of the blue screen error, based on the provided data." },
         culprit: { type: Type.STRING, description: "The driver or system file causing the crash. Use ONLY the verified culprit from VERIFIED CRASH LOCATION if provided." },
         recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of actionable steps the user should take to fix the issue." },
+        driverWarnings: {
+            type: Type.ARRAY,
+            description: "Warnings about problematic third-party drivers found in the loaded modules list. Only include drivers that ARE present in the loaded modules. Microsoft drivers (ntoskrnl.exe, win32k.sys, etc.) should NOT be included.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    driverName: { type: Type.STRING, description: "Driver filename (e.g., nvlddmkm.sys)" },
+                    displayName: { type: Type.STRING, description: "Human-readable name of the driver" },
+                    manufacturer: { type: Type.STRING, description: "Driver manufacturer (e.g., NVIDIA, AMD, Realtek)" },
+                    category: { type: Type.STRING, description: "Driver category: graphics, audio, network, storage, security, virtualization, or other" },
+                    issues: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Known issues with this driver" },
+                    recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Specific recommendations to fix issues with this driver" },
+                    isAssociatedWithBugCheck: { type: Type.BOOLEAN, description: "True if this driver commonly causes this specific bug check code" }
+                },
+                required: ["driverName", "displayName", "manufacturer", "category", "issues", "recommendations", "isAssociatedWithBugCheck"]
+            }
+        },
+        hardwareError: {
+            type: Type.OBJECT,
+            description: "Hardware error details for bug checks 0x124 (WHEA), 0x9C (MCE), 0x7F (TRAP), or other hardware-related crashes. Only include if this is a hardware error.",
+            properties: {
+                isHardwareError: { type: Type.BOOLEAN, description: "True if this crash indicates a hardware problem" },
+                errorType: { type: Type.STRING, description: "Type of hardware error (e.g., 'CPU Cache Error', 'Memory Controller Error', 'PCIe Error', 'Machine Check Exception')" },
+                component: { type: Type.STRING, description: "Hardware component involved (e.g., 'CPU', 'RAM', 'GPU', 'Motherboard', 'Storage')" },
+                severity: { type: Type.STRING, description: "Severity level: fatal, recoverable, corrected, or deferred" },
+                details: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Technical details about the hardware error decoded from bug check parameters" },
+                recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Hardware-specific recommendations (e.g., 'Run MemTest86', 'Check CPU temperatures', 'Update BIOS')" }
+            },
+            required: ["isHardwareError", "errorType", "component", "severity", "details", "recommendations"]
+        },
+        parameterAnalysis: {
+            type: Type.ARRAY,
+            description: "Decoded bug check parameters with NTSTATUS codes, IRQL levels, and other technical details explained.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    parameter: { type: Type.STRING, description: "Parameter name (e.g., 'Parameter 1')" },
+                    rawValue: { type: Type.STRING, description: "Raw hex value (e.g., '0xC0000005')" },
+                    decoded: { type: Type.STRING, description: "Human-readable interpretation (e.g., 'STATUS_ACCESS_VIOLATION - Invalid memory access')" },
+                    significance: { type: Type.STRING, description: "What this parameter tells us about the crash" }
+                },
+                required: ["parameter", "rawValue", "decoded", "significance"]
+            }
+        }
     },
     required: ["summary", "probableCause", "culprit", "recommendations"],
 };
@@ -421,89 +463,11 @@ function getBugCheckDescription(code: number): string {
     return descriptions[code] || 'a critical system error requiring analysis';
 }
 
-/**
- * Convert ProblematicDriver to DriverWarning for UI display
- */
-function toDriverWarning(driver: ProblematicDriver, bugCheckCode?: number): DriverWarning {
-    return {
-        driverName: driver.name,
-        displayName: driver.displayName,
-        manufacturer: driver.manufacturer,
-        category: driver.category,
-        issues: driver.issues,
-        recommendations: driver.recommendations,
-        isAssociatedWithBugCheck: bugCheckCode !== undefined ?
-            driver.commonBugChecks.includes(bugCheckCode) : false
-    };
-}
-
-/**
- * Get driver warnings for all problematic drivers found in modules
- */
-function getDriverWarnings(
-    moduleNames: string[],
-    culpritModule: string | undefined,
-    bugCheckCode: number | undefined
-): DriverWarning[] {
-    const warnings: DriverWarning[] = [];
-    const seen = new Set<string>();
-
-    // Check culprit first (highest priority)
-    if (culpritModule) {
-        const culpritDriver = findProblematicDriver(culpritModule);
-        if (culpritDriver) {
-            warnings.push(toDriverWarning(culpritDriver, bugCheckCode));
-            seen.add(culpritDriver.name.toLowerCase());
-        }
-    }
-
-    // Check all loaded modules
-    const problematicDrivers = findProblematicDriversInModules(moduleNames);
-    for (const driver of problematicDrivers) {
-        if (!seen.has(driver.name.toLowerCase())) {
-            warnings.push(toDriverWarning(driver, bugCheckCode));
-            seen.add(driver.name.toLowerCase());
-        }
-    }
-
-    // If bug check code is known, also include drivers commonly associated with it
-    // (even if not in loaded modules - they might be relevant)
-    if (bugCheckCode !== undefined) {
-        const associatedDrivers = getDriversForBugCheck(bugCheckCode);
-        for (const driver of associatedDrivers) {
-            if (!seen.has(driver.name.toLowerCase())) {
-                // Only add if this is a "highly associated" driver (in commonBugChecks)
-                const warning = toDriverWarning(driver, bugCheckCode);
-                if (warning.isAssociatedWithBugCheck) {
-                    // Mark that this is a suggestion, not found in modules
-                    warnings.push({
-                        ...warning,
-                        issues: [`[Not found in loaded modules but commonly causes this error]`, ...warning.issues]
-                    });
-                    seen.add(driver.name.toLowerCase());
-                }
-            }
-        }
-    }
-
-    // Sort: culprit first, then by association with bug check, then alphabetically
-    return warnings.sort((a, b) => {
-        if (a.driverName === culpritModule) return -1;
-        if (b.driverName === culpritModule) return 1;
-        if (a.isAssociatedWithBugCheck && !b.isAssociatedWithBugCheck) return -1;
-        if (!a.isAssociatedWithBugCheck && b.isAssociatedWithBugCheck) return 1;
-        return a.driverName.localeCompare(b.driverName);
-    });
-}
-
 function getBasicRecommendations(bugCode: number, culprit: string): string[] {
     const recs: string[] = [];
 
-    // Check if culprit is a known problematic driver and add specific recommendations
-    const problematicDriver = findProblematicDriver(culprit);
-    if (problematicDriver) {
-        recs.push(...problematicDriver.recommendations);
-    } else if (culprit !== 'Unknown driver' && culprit !== 'ntoskrnl.exe') {
+    // Generic driver recommendations
+    if (culprit !== 'Unknown driver' && culprit !== 'ntoskrnl.exe') {
         recs.push(`Update or reinstall the ${culprit} driver`);
     }
 
@@ -920,26 +884,6 @@ This is the DEFINITIVE crash location - do NOT guess a different driver.`;
             if (windowsVersion) addSection('windows', `\n**Windows Version:** ${windowsVersion}`, 1);
             if (crashTime) addSection('time', `\n**Crash Time:** ${crashTime}`, 1);
 
-            // Priority 1.5: Known problematic driver info for AI context
-            const preAnalysisModules = accurateModuleInfo?.modules ?? structuredInfo.moduleList ?? [];
-            const preAnalysisModuleNames = preAnalysisModules.map(m => m.name);
-            const preBugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code;
-            const preCulprit = accurateModuleInfo?.culpritModule ?? undefined;
-            const preDriverWarnings = getDriverWarnings(preAnalysisModuleNames, preCulprit, preBugCode);
-
-            if (preDriverWarnings.length > 0) {
-                const driverWarningsSection = `\n**⚠️ KNOWN PROBLEMATIC DRIVERS DETECTED:**
-${preDriverWarnings.slice(0, 5).map(w => `
-**${w.displayName}** (${w.driverName})
-- Manufacturer: ${w.manufacturer}
-- Category: ${w.category}
-- Known Issues: ${w.issues.slice(0, 2).join('; ')}
-${w.isAssociatedWithBugCheck ? `- **COMMONLY CAUSES THIS BUG CHECK**` : ''}`).join('\n')}
-
-Consider these known driver issues when analyzing the crash.`;
-                addSection('driver_warnings', driverWarningsSection, 1);
-            }
-
             // Priority 2: Structured dump analysis
             const structuredDumpInfo = `\n\n**Structured Dump Analysis:**
 ${structuredInfo.dumpHeader ? `
@@ -1161,6 +1105,113 @@ The extracted bug check from this dump is: ${structuredInfo.bugCheckInfo ? '0x' 
 
 ### DRIVER VALIDATION:
 Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention drivers that appear in the module list.
+
+### DRIVER WARNINGS (driverWarnings field):
+Analyze the loaded modules list and identify any third-party drivers that:
+1. Are known to have stability issues (NVIDIA nvlddmkm.sys, AMD atikmdag.sys, Realtek rtkvhd64.sys, etc.)
+2. Are security software with deep system hooks (Avast asw*.sys, Norton sym*.sys, Kaspersky kl*.sys)
+3. Are commonly associated with this specific bug check code
+4. Are third-party (non-Microsoft) drivers in the call stack or near the crash
+
+For each problematic driver found IN THE LOADED MODULES:
+- Provide the exact driver filename
+- Identify the manufacturer
+- Explain known issues with this driver
+- Give specific recommendations (update, remove, or configure)
+- Set isAssociatedWithBugCheck to true if this driver commonly causes this type of crash
+
+**ONLY include drivers that are ACTUALLY in the loaded modules list. Do NOT speculate about drivers that might be installed.**
+
+### MICROSOFT VS THIRD-PARTY DRIVER IDENTIFICATION:
+Microsoft drivers (do NOT flag as problematic unless actually crashing):
+- Kernel: ntoskrnl.exe, ntkrnlmp.exe, ntkrnlpa.exe, hal.dll
+- File System: ntfs.sys, fastfat.sys, fltmgr.sys, fileinfo.sys
+- Networking: tcpip.sys, ndis.sys, netio.sys, http.sys, afd.sys
+- Storage: storport.sys, disk.sys, partmgr.sys, volsnap.sys
+- Graphics: dxgkrnl.sys, dxgmms1.sys, win32k.sys, win32kfull.sys
+- USB: usbhub.sys, usbport.sys, usbehci.sys, usbxhci.sys
+- Power: acpi.sys, intelppm.sys, processr.sys
+- Security: ci.dll, ksecdd.sys, ksecpkg.sys
+
+Third-party (flag if problematic):
+- Graphics: nvlddmkm.sys (NVIDIA), atikmdag.sys/amdkmdag.sys (AMD), igdkmd64.sys (Intel)
+- Audio: rtkvhd64.sys (Realtek), cmudaxp.sys (C-Media)
+- Network: netwtw*.sys (Intel WiFi), e1i*.sys (Intel Ethernet), athw*.sys (Qualcomm)
+- Security: aswsp.sys/asw*.sys (Avast), symefasi*.sys/sym*.sys (Norton), klif.sys/kl*.sys (Kaspersky), WdFilter.sys (Defender)
+- Virtualization: vmci.sys (VMware), vmmemctl.sys (VMware), VBoxDrv.sys (VirtualBox)
+- VPN: tap-windows.sys, wintun.sys, ndisimplatform.sys
+
+### HARDWARE ERROR ANALYSIS (hardwareError field):
+For bug checks 0x124 (WHEA_UNCORRECTABLE_ERROR), 0x9C (MACHINE_CHECK_EXCEPTION), 0x7F (UNEXPECTED_KERNEL_MODE_TRAP), or any hardware-related crash:
+
+**WHEA (0x124) Parameter Decoding:**
+- Param1: Error source type (0=MCE, 1=CMC, 2=NMI, 3=PCIe, 4=Generic, 5=INIT, 6=BOOT)
+- Param2: WHEA_ERROR_RECORD pointer
+- Param3/4: MCi_STATUS register bits (decode MCA error type)
+
+MCi_STATUS Error Types (bits 15:0):
+- 0x0000-0x000F: Compound errors (TLB, memory controller, bus)
+- 0x0010-0x00FF: Internal timer, register file, or microcode errors
+- 0x0100-0x01FF: Cache errors (Level in bits 7:6, Cache type in bits 5:4)
+- 0x0400-0x0FFF: Bus/interconnect errors
+
+**MCE (0x9C) Decoding:**
+- Usually indicates CPU, motherboard, or power supply issues
+- Check for overclocking, overheating, or failing hardware
+
+**Kernel Trap (0x7F) Decoding:**
+Param1 trap codes:
+- 0x00: Divide by zero - software bug or hardware math error
+- 0x04: Overflow - integer overflow in calculation
+- 0x05: Bounds check - array bounds exceeded
+- 0x06: Invalid opcode - corrupted code or incompatible CPU
+- 0x08: Double fault (0x08) - CRITICAL HARDWARE - usually stack overflow, bad RAM, or motherboard failure
+- 0x0C: Stack fault - stack corruption or overflow
+- 0x0D: General protection fault - memory access violation
+
+For hardware errors, always include:
+- isHardwareError: true
+- errorType: specific error name
+- component: CPU, RAM, GPU, Motherboard, or Storage
+- severity: fatal, recoverable, corrected, or deferred
+- details: decoded information from parameters
+- recommendations: hardware-specific fixes (temperatures, memtest, BIOS updates, etc.)
+
+### PARAMETER ANALYSIS (parameterAnalysis field):
+Decode ALL bug check parameters with their specific meanings:
+
+**Common NTSTATUS Codes to decode:**
+- 0xC0000005: STATUS_ACCESS_VIOLATION - Invalid memory read/write
+- 0xC0000094: STATUS_INTEGER_DIVIDE_BY_ZERO
+- 0xC0000096: STATUS_PRIVILEGED_INSTRUCTION
+- 0xC000001D: STATUS_ILLEGAL_INSTRUCTION
+- 0xC0000006: STATUS_IN_PAGE_ERROR - Page file or disk error
+- 0xC00000FD: STATUS_STACK_OVERFLOW
+- 0xC0000008: STATUS_INVALID_HANDLE
+- 0xC0000017: STATUS_NO_MEMORY
+- 0xC000009A: STATUS_INSUFFICIENT_RESOURCES
+- 0xC0000022: STATUS_ACCESS_DENIED
+- 0xC0000043: STATUS_SHARING_VIOLATION
+- 0xC0000034: STATUS_OBJECT_NAME_NOT_FOUND
+- 0xC0000135: STATUS_DLL_NOT_FOUND
+
+**For each parameter, provide:**
+- parameter: "Parameter 1", "Parameter 2", etc.
+- rawValue: The hex value (e.g., "0xC0000005")
+- decoded: Human-readable meaning (e.g., "STATUS_ACCESS_VIOLATION - Invalid memory access")
+- significance: What this tells us about the crash
+
+**IRQL Levels (for IRQL bug checks):**
+- 0: PASSIVE_LEVEL (normal user/kernel code)
+- 1: APC_LEVEL (async procedure calls)
+- 2: DISPATCH_LEVEL (scheduler, DPCs) - cannot access paged memory!
+- 3+: DEVICE_LEVEL/HIGH_LEVEL (interrupts)
+
+**Access Types:**
+- 0: Read operation
+- 1: Write operation
+- 2 or 8: Execute operation
+- 10: Execute DEP violation
 `;
             
             // Log final token usage
@@ -1347,29 +1398,30 @@ Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention dri
                     }));
             }
 
-            // === DRIVER WARNINGS ===
-            // Check for known problematic drivers and generate warnings
-            const moduleNames = modules.map(m => m.name);
-            const bugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code;
-            const culprit = accurateModuleInfo?.culpritModule ?? report.culprit;
+            // Driver warnings and hardware error info come from AI response
+            // Log if AI returned driver warnings
+            if (report.driverWarnings && report.driverWarnings.length > 0) {
+                console.log(`[Analyzer] AI identified ${report.driverWarnings.length} driver warnings`);
+            }
 
-            const driverWarnings = getDriverWarnings(moduleNames, culprit, bugCode);
-            if (driverWarnings.length > 0) {
-                report.driverWarnings = driverWarnings;
-                console.log(`[Analyzer] Found ${driverWarnings.length} driver warnings`);
+            // Log if AI detected hardware error
+            if (report.hardwareError?.isHardwareError) {
+                console.log(`[Analyzer] AI detected hardware error: ${report.hardwareError.errorType} in ${report.hardwareError.component}`);
 
-                // If the culprit is a known problematic driver, enhance the recommendations
-                const culpritWarning = driverWarnings.find(w => w.driverName.toLowerCase() === culprit?.toLowerCase());
-                if (culpritWarning) {
-                    console.log(`[Analyzer] Culprit ${culprit} is a known problematic driver`);
-                    // Add specific recommendations from the driver database if not already present
+                // Add hardware-specific recommendations from AI to the beginning
+                if (report.hardwareError.recommendations?.length > 0) {
                     const existingRecs = new Set(report.recommendations.map(r => r.toLowerCase()));
-                    for (const rec of culpritWarning.recommendations) {
+                    for (const rec of report.hardwareError.recommendations.slice(0, 3)) {
                         if (!existingRecs.has(rec.toLowerCase())) {
-                            report.recommendations.push(rec);
+                            report.recommendations.unshift(rec); // Add at beginning for priority
                         }
                     }
                 }
+            }
+
+            // Log parameter analysis from AI
+            if (report.parameterAnalysis && report.parameterAnalysis.length > 0) {
+                console.log(`[Analyzer] AI provided ${report.parameterAnalysis.length} parameter analyses`);
             }
 
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED };
