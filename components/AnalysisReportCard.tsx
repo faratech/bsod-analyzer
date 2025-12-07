@@ -71,7 +71,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
     const generateMarkdownReport = (): string => {
         if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules } = dumpFile.report;
+        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings } = dumpFile.report;
 
         let report = `# BSOD Analysis Report for ${dumpFile.file.name}\n\n`;
 
@@ -93,6 +93,28 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             report += `## Crash Location\n`;
             report += `**Module:** \`${crashLocation.module}\`\n`;
             report += `**Address:** \`${crashLocation.address}\`${crashLocation.offset ? ` (${crashLocation.offset})` : ''}\n\n`;
+        }
+
+        // Driver Warnings
+        if (driverWarnings && driverWarnings.length > 0) {
+            report += `## Known Problematic Drivers\n\n`;
+            driverWarnings.forEach(warning => {
+                report += `### ${warning.driverName}${warning.isAssociatedWithBugCheck ? ' ⚠️ RELATED TO CRASH' : ''}\n`;
+                report += `- **Display Name:** ${warning.displayName}\n`;
+                report += `- **Manufacturer:** ${warning.manufacturer}\n`;
+                report += `- **Category:** ${warning.category}\n`;
+                report += `- **Known Issues:**\n`;
+                warning.issues.forEach(issue => {
+                    report += `  - ${issue}\n`;
+                });
+                if (warning.recommendations.length > 0) {
+                    report += `- **Recommendations:**\n`;
+                    warning.recommendations.forEach(rec => {
+                        report += `  - ${rec}\n`;
+                    });
+                }
+                report += `\n`;
+            });
         }
 
         report += `## Summary\n${summary}\n\n`;
@@ -211,7 +233,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             case FileStatus.ANALYZED:
                 if (!dumpFile.report) return null;
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
-                const { bugCheck, crashLocation, registers, loadedModules } = dumpFile.report;
+                const { bugCheck, crashLocation, registers, loadedModules, driverWarnings } = dumpFile.report;
 
                 return (
                     <div style={{padding: '1.5rem'}}>
@@ -315,6 +337,95 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                         <ClipboardIcon />
                                     </button>
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Driver Warnings */}
+                        {driverWarnings && driverWarnings.length > 0 && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                border: '1px solid #f59e0b',
+                                borderRadius: '0.5rem',
+                                padding: '1rem',
+                                marginBottom: '1.5rem'
+                            }}>
+                                <h3 style={{
+                                    margin: '0 0 0.75rem 0',
+                                    fontSize: '0.95rem',
+                                    color: '#f59e0b',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    <span style={{fontSize: '1.1rem'}}>⚠</span>
+                                    Known Problematic Drivers Detected
+                                </h3>
+                                <div style={{display: 'flex', flexDirection: 'column', gap: '0.75rem'}}>
+                                    {driverWarnings.slice(0, 3).map((warning, i) => (
+                                        <div key={i} style={{
+                                            backgroundColor: 'var(--bg-primary)',
+                                            padding: '0.75rem',
+                                            borderRadius: '0.375rem',
+                                            border: warning.isAssociatedWithBugCheck ? '1px solid var(--status-error)' : '1px solid var(--border-primary)'
+                                        }}>
+                                            <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem'}}>
+                                                <span style={{
+                                                    fontFamily: 'Jetbrains Mono, monospace',
+                                                    fontWeight: '600',
+                                                    color: warning.isAssociatedWithBugCheck ? 'var(--status-error)' : 'var(--text-primary)'
+                                                }}>{warning.driverName}</span>
+                                                <span style={{
+                                                    backgroundColor: 'var(--bg-secondary)',
+                                                    padding: '0.1rem 0.5rem',
+                                                    borderRadius: '0.25rem',
+                                                    fontSize: '0.7rem',
+                                                    color: 'var(--text-tertiary)'
+                                                }}>{warning.category}</span>
+                                                {warning.isAssociatedWithBugCheck && (
+                                                    <span style={{
+                                                        backgroundColor: 'var(--status-error)',
+                                                        color: 'white',
+                                                        padding: '0.1rem 0.4rem',
+                                                        borderRadius: '0.2rem',
+                                                        fontSize: '0.65rem',
+                                                        fontWeight: '600'
+                                                    }}>RELATED TO CRASH</span>
+                                                )}
+                                            </div>
+                                            <div style={{fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem'}}>
+                                                {warning.displayName} ({warning.manufacturer})
+                                            </div>
+                                            <ul style={{
+                                                margin: 0,
+                                                paddingLeft: '1.25rem',
+                                                fontSize: '0.8rem',
+                                                color: 'var(--text-secondary)'
+                                            }}>
+                                                {warning.issues.slice(0, 2).map((issue, j) => (
+                                                    <li key={j}>{issue}</li>
+                                                ))}
+                                            </ul>
+                                            {warning.recommendations.length > 0 && (
+                                                <div style={{
+                                                    marginTop: '0.5rem',
+                                                    fontSize: '0.75rem',
+                                                    color: 'var(--brand-primary)'
+                                                }}>
+                                                    Tip: {warning.recommendations[0]}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                                {driverWarnings.length > 3 && (
+                                    <div style={{
+                                        marginTop: '0.5rem',
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-tertiary)'
+                                    }}>
+                                        +{driverWarnings.length - 3} more problematic drivers detected
+                                    </div>
+                                )}
                             </div>
                         )}
 

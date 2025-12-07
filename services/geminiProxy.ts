@@ -1,5 +1,5 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
-import { DumpFile, AnalysisReportData, FileStatus } from '../types';
+import { DumpFile, AnalysisReportData, FileStatus, DriverWarning } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
@@ -10,6 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
+import { findProblematicDriver, findProblematicDriversInModules, getDriversForBugCheck, type ProblematicDriver } from '../utils/knownProblematicDrivers';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -420,11 +421,89 @@ function getBugCheckDescription(code: number): string {
     return descriptions[code] || 'a critical system error requiring analysis';
 }
 
+/**
+ * Convert ProblematicDriver to DriverWarning for UI display
+ */
+function toDriverWarning(driver: ProblematicDriver, bugCheckCode?: number): DriverWarning {
+    return {
+        driverName: driver.name,
+        displayName: driver.displayName,
+        manufacturer: driver.manufacturer,
+        category: driver.category,
+        issues: driver.issues,
+        recommendations: driver.recommendations,
+        isAssociatedWithBugCheck: bugCheckCode !== undefined ?
+            driver.commonBugChecks.includes(bugCheckCode) : false
+    };
+}
+
+/**
+ * Get driver warnings for all problematic drivers found in modules
+ */
+function getDriverWarnings(
+    moduleNames: string[],
+    culpritModule: string | undefined,
+    bugCheckCode: number | undefined
+): DriverWarning[] {
+    const warnings: DriverWarning[] = [];
+    const seen = new Set<string>();
+
+    // Check culprit first (highest priority)
+    if (culpritModule) {
+        const culpritDriver = findProblematicDriver(culpritModule);
+        if (culpritDriver) {
+            warnings.push(toDriverWarning(culpritDriver, bugCheckCode));
+            seen.add(culpritDriver.name.toLowerCase());
+        }
+    }
+
+    // Check all loaded modules
+    const problematicDrivers = findProblematicDriversInModules(moduleNames);
+    for (const driver of problematicDrivers) {
+        if (!seen.has(driver.name.toLowerCase())) {
+            warnings.push(toDriverWarning(driver, bugCheckCode));
+            seen.add(driver.name.toLowerCase());
+        }
+    }
+
+    // If bug check code is known, also include drivers commonly associated with it
+    // (even if not in loaded modules - they might be relevant)
+    if (bugCheckCode !== undefined) {
+        const associatedDrivers = getDriversForBugCheck(bugCheckCode);
+        for (const driver of associatedDrivers) {
+            if (!seen.has(driver.name.toLowerCase())) {
+                // Only add if this is a "highly associated" driver (in commonBugChecks)
+                const warning = toDriverWarning(driver, bugCheckCode);
+                if (warning.isAssociatedWithBugCheck) {
+                    // Mark that this is a suggestion, not found in modules
+                    warnings.push({
+                        ...warning,
+                        issues: [`[Not found in loaded modules but commonly causes this error]`, ...warning.issues]
+                    });
+                    seen.add(driver.name.toLowerCase());
+                }
+            }
+        }
+    }
+
+    // Sort: culprit first, then by association with bug check, then alphabetically
+    return warnings.sort((a, b) => {
+        if (a.driverName === culpritModule) return -1;
+        if (b.driverName === culpritModule) return 1;
+        if (a.isAssociatedWithBugCheck && !b.isAssociatedWithBugCheck) return -1;
+        if (!a.isAssociatedWithBugCheck && b.isAssociatedWithBugCheck) return 1;
+        return a.driverName.localeCompare(b.driverName);
+    });
+}
+
 function getBasicRecommendations(bugCode: number, culprit: string): string[] {
     const recs: string[] = [];
 
-    // Common recommendations
-    if (culprit !== 'Unknown driver' && culprit !== 'ntoskrnl.exe') {
+    // Check if culprit is a known problematic driver and add specific recommendations
+    const problematicDriver = findProblematicDriver(culprit);
+    if (problematicDriver) {
+        recs.push(...problematicDriver.recommendations);
+    } else if (culprit !== 'Unknown driver' && culprit !== 'ntoskrnl.exe') {
         recs.push(`Update or reinstall the ${culprit} driver`);
     }
 
@@ -840,7 +919,27 @@ This is the DEFINITIVE crash location - do NOT guess a different driver.`;
 
             if (windowsVersion) addSection('windows', `\n**Windows Version:** ${windowsVersion}`, 1);
             if (crashTime) addSection('time', `\n**Crash Time:** ${crashTime}`, 1);
-            
+
+            // Priority 1.5: Known problematic driver info for AI context
+            const preAnalysisModules = accurateModuleInfo?.modules ?? structuredInfo.moduleList ?? [];
+            const preAnalysisModuleNames = preAnalysisModules.map(m => m.name);
+            const preBugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code;
+            const preCulprit = accurateModuleInfo?.culpritModule ?? undefined;
+            const preDriverWarnings = getDriverWarnings(preAnalysisModuleNames, preCulprit, preBugCode);
+
+            if (preDriverWarnings.length > 0) {
+                const driverWarningsSection = `\n**⚠️ KNOWN PROBLEMATIC DRIVERS DETECTED:**
+${preDriverWarnings.slice(0, 5).map(w => `
+**${w.displayName}** (${w.driverName})
+- Manufacturer: ${w.manufacturer}
+- Category: ${w.category}
+- Known Issues: ${w.issues.slice(0, 2).join('; ')}
+${w.isAssociatedWithBugCheck ? `- **COMMONLY CAUSES THIS BUG CHECK**` : ''}`).join('\n')}
+
+Consider these known driver issues when analyzing the crash.`;
+                addSection('driver_warnings', driverWarningsSection, 1);
+            }
+
             // Priority 2: Structured dump analysis
             const structuredDumpInfo = `\n\n**Structured Dump Analysis:**
 ${structuredInfo.dumpHeader ? `
@@ -1246,6 +1345,31 @@ Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention dri
                         size: m.size ? `0x${m.size.toString(16)}` : undefined,
                         isCulprit: m.name === (accurateModuleInfo?.culpritModule ?? report.culprit)
                     }));
+            }
+
+            // === DRIVER WARNINGS ===
+            // Check for known problematic drivers and generate warnings
+            const moduleNames = modules.map(m => m.name);
+            const bugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code;
+            const culprit = accurateModuleInfo?.culpritModule ?? report.culprit;
+
+            const driverWarnings = getDriverWarnings(moduleNames, culprit, bugCode);
+            if (driverWarnings.length > 0) {
+                report.driverWarnings = driverWarnings;
+                console.log(`[Analyzer] Found ${driverWarnings.length} driver warnings`);
+
+                // If the culprit is a known problematic driver, enhance the recommendations
+                const culpritWarning = driverWarnings.find(w => w.driverName.toLowerCase() === culprit?.toLowerCase());
+                if (culpritWarning) {
+                    console.log(`[Analyzer] Culprit ${culprit} is a known problematic driver`);
+                    // Add specific recommendations from the driver database if not already present
+                    const existingRecs = new Set(report.recommendations.map(r => r.toLowerCase()));
+                    for (const rec of culpritWarning.recommendations) {
+                        if (!existingRecs.has(rec.toLowerCase())) {
+                            report.recommendations.push(rec);
+                        }
+                    }
+                }
             }
 
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED };
