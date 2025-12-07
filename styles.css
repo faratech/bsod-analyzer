@@ -19,9 +19,13 @@
   --border-primary: #2a2a2a;
   --border-secondary: #333333;
   --status-success: #10b981;
+  --status-success-bg: rgba(16, 185, 129, 0.15);
   --status-warning: #f59e0b;
+  --status-warning-bg: rgba(245, 158, 11, 0.15);
   --status-error: #ef4444;
+  --status-error-bg: rgba(239, 68, 68, 0.15);
   --status-info: #3b82f6;
+  --status-info-bg: rgba(59, 130, 246, 0.15);
   --shadow-color: rgba(0, 0, 0, 0.5);
   --glass-bg: rgba(26, 26, 26, 0.6);
   --glass-border: rgba(255, 255, 255, 0.1);
@@ -46,9 +50,13 @@
   --border-primary: #dee2e6;
   --border-secondary: #ced4da;
   --status-success: #059669;
+  --status-success-bg: #d1fae5;
   --status-warning: #d97706;
+  --status-warning-bg: #fef3c7;
   --status-error: #dc2626;
+  --status-error-bg: #fee2e2;
   --status-info: #2563eb;
+  --status-info-bg: #dbeafe;
   --shadow-color: rgba(0, 0, 0, 0.1);
   --glass-bg: rgba(255, 255, 255, 0.7);
   --glass-border: rgba(0, 0, 0, 0.08);
