@@ -398,6 +398,58 @@ function isKnownBugCheck(code: number): boolean {
     return knownBugChecks.includes(code);
 }
 
+function getBugCheckDescription(code: number): string {
+    const descriptions: Record<number, string> = {
+        0x0A: 'an attempt to access memory at an invalid IRQL level',
+        0x19: 'a corrupted pool header, typically caused by a driver writing past its allocated memory',
+        0x1A: 'a memory management error, often indicating RAM issues or driver corruption',
+        0x1E: 'an unhandled kernel exception',
+        0x24: 'a problem with the NTFS file system',
+        0x3B: 'an exception in a system service routine',
+        0x50: 'a page fault in an area of memory that could not be paged in',
+        0x7E: 'a system thread generating an unhandled exception',
+        0x7F: 'an unexpected kernel mode trap',
+        0x9F: 'a driver power state failure',
+        0xC2: 'a bad pool caller error, indicating a driver incorrectly using memory functions',
+        0xD1: 'a driver accessing memory at an invalid IRQL',
+        0xEF: 'a critical process termination',
+        0x116: 'a video driver timeout, typically indicating GPU issues',
+        0x133: 'a DPC watchdog violation, indicating a driver took too long',
+        0x139: 'a kernel data integrity check failure',
+    };
+    return descriptions[code] || 'a critical system error requiring analysis';
+}
+
+function getBasicRecommendations(bugCode: number, culprit: string): string[] {
+    const recs: string[] = [];
+
+    // Common recommendations
+    if (culprit !== 'Unknown driver' && culprit !== 'ntoskrnl.exe') {
+        recs.push(`Update or reinstall the ${culprit} driver`);
+    }
+
+    // Bug-specific recommendations
+    if (bugCode === 0x19 || bugCode === 0xC2) {
+        recs.push('Check for memory corruption - run Windows Memory Diagnostic');
+        recs.push('Update all drivers, especially storage and filter drivers');
+    } else if (bugCode === 0x1A || bugCode === 0x50) {
+        recs.push('Test RAM with Windows Memory Diagnostic or MemTest86');
+        recs.push('Check for disk errors with chkdsk /r');
+    } else if (bugCode === 0x116) {
+        recs.push('Update your graphics driver to the latest version');
+        recs.push('Check GPU temperatures and ensure adequate cooling');
+    } else if (bugCode === 0x9F) {
+        recs.push('Update power management and chipset drivers');
+        recs.push('Check power settings in Device Manager');
+    }
+
+    // Generic recommendations
+    recs.push('Run System File Checker: sfc /scannow');
+    recs.push('Check Windows Event Viewer for related errors');
+
+    return recs;
+}
+
 function extractCrashTime(buffer: ArrayBuffer): string | null {
     // Look for timestamp patterns in first 4KB
     const header = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 4096));
@@ -1017,8 +1069,24 @@ Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention dri
             console.log(`[Analyzer] Final prompt size: ${prompt.length} chars, ~${finalTokens} tokens (${(finalTokens / MAX_TOKENS * 100).toFixed(1)}% of limit)`);
             
             // Generate the analysis
-            const report = await generateInitialAnalysis(dumpFile.file.name, prompt);
-            
+            let report = await generateInitialAnalysis(dumpFile.file.name, prompt);
+
+            // If AI failed but we have accurate structured data, generate a basic analysis
+            if (report.summary.includes('malformed response') && (accurateModuleInfo || structuredInfo.bugCheckInfo)) {
+                console.log('[Analyzer] AI response failed but we have structured data - generating fallback analysis');
+                const bugName = accurateModuleInfo?.bugCheck?.name ?? structuredInfo.bugCheckInfo?.name ?? 'UNKNOWN';
+                const bugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code ?? 0;
+                const bugCodeHex = `0x${bugCode.toString(16).padStart(8, '0').toUpperCase()}`;
+                const culprit = accurateModuleInfo?.culpritModule ?? 'Unknown driver';
+
+                report = {
+                    summary: `${bugName} (${bugCodeHex}) crash detected. The system encountered a critical error in ${culprit}.`,
+                    probableCause: `This ${bugName} error indicates ${getBugCheckDescription(bugCode)}. The crash occurred in or was triggered by ${culprit}.`,
+                    culprit: culprit,
+                    recommendations: getBasicRecommendations(bugCode, culprit)
+                };
+            }
+
             // Enhance report with pattern-based recommendations
             if (report && structuredInfo.bugCheckInfo) {
                 const bugCheckName = structuredInfo.bugCheckInfo.name;
