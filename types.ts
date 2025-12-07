@@ -48,6 +48,16 @@ export interface LoadedModule {
   isCulprit?: boolean;
 }
 
+export interface DriverWarning {
+  driverName: string;
+  displayName: string;
+  manufacturer: string;
+  category: string;
+  issues: string[];
+  recommendations: string[];
+  isAssociatedWithBugCheck: boolean;
+}
+
 export interface AnalysisReportData {
   summary: string;
   probableCause: string;
@@ -58,6 +68,7 @@ export interface AnalysisReportData {
   crashLocation?: CrashLocation;
   registers?: RegisterContext;
   loadedModules?: LoadedModule[];
+  driverWarnings?: DriverWarning[];
   // Legacy field - module list fallback when loadedModules is empty
   stackTrace?: string[];
   advancedAnalyses?: AdvancedAnalysisResult[];
