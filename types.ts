@@ -58,8 +58,8 @@ export interface AnalysisReportData {
   crashLocation?: CrashLocation;
   registers?: RegisterContext;
   loadedModules?: LoadedModule[];
-  // Legacy field - kept for backward compatibility
-  stackTrace: string[];
+  // Legacy field - module list fallback when loadedModules is empty
+  stackTrace?: string[];
   advancedAnalyses?: AdvancedAnalysisResult[];
 }
 
