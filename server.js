@@ -995,7 +995,8 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     }
     
     // Copy any other config properties that might be supported
-    const excludedKeys = ['responseMimeType', 'responseSchema', 'temperature', 'maxOutputTokens', 'topK', 'topP'];
+    // SECURITY: Explicitly exclude 'model' to prevent client from overriding server model selection
+    const excludedKeys = ['responseMimeType', 'responseSchema', 'temperature', 'maxOutputTokens', 'topK', 'topP', 'model'];
     Object.keys(frontendConfig).forEach(key => {
       if (!excludedKeys.includes(key)) {
         sdkGenerationConfig[key] = frontendConfig[key];
