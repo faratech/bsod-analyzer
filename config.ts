@@ -18,7 +18,6 @@ export const config = {
     
     // API Settings
     api: {
-        geminiModel: 'gemini-3-flash',
         maxFileSize: 100 * 1024 * 1024, // 100MB
         minidumpThreshold: FILE_SIZE_THRESHOLDS.MINIDUMP_MAX_SIZE
     }
