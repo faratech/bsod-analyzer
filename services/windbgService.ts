@@ -7,9 +7,9 @@
  * All requests go through our backend to keep the API key secure.
  */
 
-// Polling configuration
-const POLL_INTERVAL_MS = 3000; // Poll every 3 seconds
-const MAX_POLL_ATTEMPTS = 120; // Max 6 minutes of polling (120 * 3s)
+// Polling configuration - increased intervals to reduce server load
+const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
+const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s)
 const UPLOAD_TIMEOUT_MS = 120000; // 2 minute upload timeout (files can be large)
 
 export interface WinDBGUploadResponse {
