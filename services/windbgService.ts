@@ -9,8 +9,9 @@
 
 // Polling configuration - increased intervals to reduce server load
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
-const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s)
+const MAX_POLL_ATTEMPTS = 30; // Max 5 minutes of polling (30 * 10s = 300s), then fallback to local analysis
 const UPLOAD_TIMEOUT_MS = 120000; // 2 minute upload timeout (files can be large)
+const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout for entire WinDBG process
 
 export interface WinDBGUploadResponse {
     success: boolean;
@@ -215,6 +216,14 @@ export async function analyzeWithWinDBG(
     file: File,
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'complete', message: string) => void
 ): Promise<WinDBGAnalysisResult> {
+    // Hard timeout wrapper - 5 minute max for entire WinDBG process
+    const timeoutPromise = new Promise<WinDBGAnalysisResult>((_, reject) => {
+        setTimeout(() => {
+            reject(new Error('WinDBG analysis timed out after 5 minutes'));
+        }, WINDBG_TOTAL_TIMEOUT_MS);
+    });
+
+    const analysisPromise = (async (): Promise<WinDBGAnalysisResult> => {
     try {
         // Stage 1: Upload
         onProgress?.('uploading', `Uploading ${file.name} to WinDBG server...`);
@@ -276,7 +285,7 @@ export async function analyzeWithWinDBG(
         }
 
         if (!statusResult) {
-            throw new Error('Analysis timed out');
+            throw new Error('WinDBG analysis timed out after 5 minutes - falling back to local analysis');
         }
 
         // Stage 3: Download the analysis
@@ -293,6 +302,19 @@ export async function analyzeWithWinDBG(
 
     } catch (error) {
         console.error('[WinDBG] Analysis failed:', error);
+        return {
+            success: false,
+            analysisText: '',
+            error: (error as Error).message
+        };
+    }
+    })();
+
+    // Race between analysis and timeout
+    try {
+        return await Promise.race([analysisPromise, timeoutPromise]);
+    } catch (error) {
+        console.error('[WinDBG] Analysis timed out or failed:', error);
         return {
             success: false,
             analysisText: '',
