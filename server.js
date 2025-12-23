@@ -1049,7 +1049,7 @@ You do NOT provide assistance with any other topics.`
     }
     
     const geminiModel = genAI.getGenerativeModel(modelConfig);
-    
+
     const result = await geminiModel.generateContent(contents);
     const response = await result.response;
 
@@ -1057,10 +1057,14 @@ You do NOT provide assistance with any other topics.`
     const outputTokens = response.usageMetadata?.candidatesTokenCount || Math.ceil(response.text().length / 4);
     sessionTracking.totalTokens += outputTokens;
 
+    // Log finish reason to diagnose truncation issues
+    const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
+
     console.log('[Gemini API] Request completed:', {
       sessionId: sessionId?.substring(0, 10) + '...',
       inputTokens: estimatedInputTokens,
       outputTokens: outputTokens,
+      finishReason: finishReason,
       sessionTotal: sessionTracking.totalTokens,
       requestsRemaining: REQUEST_LIMIT_PER_SESSION - sessionTracking.count
     });
