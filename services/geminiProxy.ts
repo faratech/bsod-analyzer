@@ -734,11 +734,8 @@ async function generateReportFromWinDBG(
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
 
-    // Truncate WinDBG output if too large (reduced to ~40k chars for ~10k tokens to leave room for output)
-    const maxWinDBGLength = 40000;
-    const truncatedAnalysis = windbgAnalysis.length > maxWinDBGLength
-        ? windbgAnalysis.substring(0, maxWinDBGLength) + '\n\n[... output truncated ...]'
-        : windbgAnalysis;
+    // Pass full WinDBG output without truncation
+    const truncatedAnalysis = windbgAnalysis;
 
     const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
 
