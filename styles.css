@@ -2737,3 +2737,432 @@ body.mobile-menu-open {
 .theme-toggle {
   z-index: 100;
 }
+
+/* ============================================
+   Analysis Progress Component Styles
+   ============================================ */
+
+.analysis-progress-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  min-height: 400px;
+}
+
+.analysis-progress-card {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 3rem 2.5rem;
+  max-width: 500px;
+  width: 100%;
+  text-align: center;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+/* Animated background gradient */
+.progress-bg-animation {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  right: -50%;
+  bottom: -50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent,
+    var(--brand-primary) 10%,
+    transparent 20%
+  );
+  animation: rotate-bg 8s linear infinite;
+  opacity: 0.1;
+  z-index: 0;
+}
+
+@keyframes rotate-bg {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Icon with pulse animation */
+.progress-icon-container {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 1.5rem;
+  z-index: 1;
+}
+
+.progress-icon {
+  font-size: 4rem;
+  display: block;
+  animation: bounce-icon 2s ease-in-out infinite;
+}
+
+@keyframes bounce-icon {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.progress-icon-pulse {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: var(--brand-primary);
+  transform: translate(-50%, -50%);
+  animation: pulse-ring 2s ease-out infinite;
+  opacity: 0;
+}
+
+.progress-icon-pulse.delay-1 {
+  animation-delay: 0.5s;
+}
+
+.progress-icon-pulse.delay-2 {
+  animation-delay: 1s;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(0.5);
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.5);
+    opacity: 0;
+  }
+}
+
+/* Title and description */
+.progress-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.progress-description {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: 2rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* Progress stages indicator */
+.progress-stages {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.progress-stage-item {
+  display: flex;
+  align-items: center;
+}
+
+.progress-stage-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 2px solid var(--border-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+}
+
+.progress-stage-dot.completed {
+  background: var(--status-success);
+  border-color: var(--status-success);
+}
+
+.progress-stage-dot.active {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  animation: stage-pulse 1.5s ease-in-out infinite;
+  box-shadow: 0 0 20px var(--brand-primary);
+}
+
+@keyframes stage-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+.progress-stage-line {
+  width: 40px;
+  height: 3px;
+  background: var(--border-secondary);
+  margin: 0 4px;
+  transition: background 0.3s ease;
+}
+
+.progress-stage-line.completed {
+  background: var(--status-success);
+}
+
+.progress-stage-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-bottom: 1.5rem;
+  padding: 0 0.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* Elapsed time */
+.progress-time {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.time-icon {
+  animation: tick 1s steps(1) infinite;
+}
+
+@keyframes tick {
+  50% { opacity: 0.5; }
+}
+
+/* Progress bar */
+.progress-bar-container {
+  margin-bottom: 2rem;
+  position: relative;
+  z-index: 1;
+}
+
+.progress-bar-track {
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(90deg, var(--brand-primary), var(--brand-accent));
+  border-radius: 3px;
+  animation: progress-wave 2s ease-in-out infinite;
+}
+
+@keyframes progress-wave {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
+.progress-bar-shimmer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.2),
+    transparent
+  );
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Fun fact box */
+.progress-fun-fact {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  text-align: left;
+  position: relative;
+  z-index: 1;
+  animation: fade-in-up 0.5s ease;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fun-fact-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
+.fun-fact-content {
+  flex: 1;
+}
+
+.fun-fact-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--brand-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fun-fact-text {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  line-height: 1.5;
+}
+
+/* Floating particles */
+.floating-particles {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.particle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--brand-primary);
+  border-radius: 50%;
+  opacity: 0.3;
+}
+
+.particle-1 {
+  top: 20%;
+  left: 10%;
+  animation: float-particle 6s ease-in-out infinite;
+}
+
+.particle-2 {
+  top: 60%;
+  left: 85%;
+  animation: float-particle 8s ease-in-out infinite reverse;
+  animation-delay: -2s;
+}
+
+.particle-3 {
+  top: 80%;
+  left: 20%;
+  animation: float-particle 7s ease-in-out infinite;
+  animation-delay: -4s;
+}
+
+.particle-4 {
+  top: 30%;
+  left: 90%;
+  animation: float-particle 5s ease-in-out infinite reverse;
+  animation-delay: -1s;
+}
+
+.particle-5 {
+  top: 70%;
+  left: 50%;
+  animation: float-particle 9s ease-in-out infinite;
+  animation-delay: -3s;
+}
+
+.particle-6 {
+  top: 10%;
+  left: 60%;
+  animation: float-particle 6s ease-in-out infinite reverse;
+  animation-delay: -5s;
+}
+
+@keyframes float-particle {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.3;
+  }
+  25% {
+    transform: translate(20px, -30px) scale(1.2);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translate(-10px, -50px) scale(0.8);
+    opacity: 0.2;
+  }
+  75% {
+    transform: translate(30px, -20px) scale(1.1);
+    opacity: 0.4;
+  }
+}
+
+/* Light theme adjustments */
+.light .analysis-progress-card {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+}
+
+.light .progress-bg-animation {
+  opacity: 0.05;
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .analysis-progress-card {
+    padding: 2rem 1.5rem;
+    border-radius: 16px;
+  }
+
+  .progress-icon {
+    font-size: 3rem;
+  }
+
+  .progress-title {
+    font-size: 1.25rem;
+  }
+
+  .progress-stage-line {
+    width: 24px;
+  }
+
+  .progress-stage-dot {
+    width: 24px;
+    height: 24px;
+    font-size: 0.65rem;
+  }
+
+  .progress-stage-labels {
+    font-size: 0.6rem;
+  }
+}

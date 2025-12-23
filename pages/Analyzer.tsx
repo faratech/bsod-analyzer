@@ -4,6 +4,7 @@ import FileUploader from '../components/FileUploader';
 import FilePreview from '../components/FilePreview';
 import ErrorAlert from '../components/ErrorAlert';
 import AnalysisResults from '../components/AnalysisResults';
+import AnalysisProgress from '../components/AnalysisProgress';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
 import { useAnalytics } from '../hooks/useAnalytics';
@@ -18,7 +19,7 @@ const Analyzer: React.FC = () => {
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
     const { processFiles, addFilesToState, error: fileError } = useFileProcessor();
-    const { isAnalyzing, error: analysisError, analyzeFiles, updateAdvancedAnalysis } = useAnalysis();
+    const { isAnalyzing, progress, error: analysisError, analyzeFiles, updateAdvancedAnalysis } = useAnalysis();
     
     const error = fileError || analysisError;
     const [sessionReady, setSessionReady] = useState(false);
@@ -161,6 +162,15 @@ const Analyzer: React.FC = () => {
             
             <div className="container">
                 {error && <ErrorAlert error={error} className="mt-2" />}
+
+                {/* Show fancy progress animation during analysis */}
+                {isAnalyzing && progress && (
+                    <AnalysisProgress
+                        stage={progress.stage}
+                        message={progress.message}
+                        startTime={progress.startTime}
+                    />
+                )}
 
                 <AnalysisResults
                     dumpFiles={dumpFiles}

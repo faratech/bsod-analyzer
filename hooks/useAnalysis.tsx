@@ -3,8 +3,17 @@ import { DumpFile, FileStatus } from '../types';
 import { analyzeDumpFiles } from '../services/geminiProxy';
 import { useError } from './useError';
 
+export type AnalysisStage = 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete';
+
+export interface AnalysisProgress {
+    stage: AnalysisStage;
+    message: string;
+    startTime: number;
+}
+
 export const useAnalysis = () => {
     const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+    const [progress, setProgress] = useState<AnalysisProgress | null>(null);
     const { error, setError, clearError } = useError();
 
     const analyzeFiles = useCallback(async (
@@ -27,12 +36,20 @@ export const useAnalysis = () => {
 
         // Mark files as analyzing
         onUpdate(prevFiles =>
-            prevFiles.map(df => 
-                filesToAnalyze.some(fta => fta.id === df.id) 
-                    ? { ...df, status: FileStatus.ANALYZING } 
+            prevFiles.map(df =>
+                filesToAnalyze.some(fta => fta.id === df.id)
+                    ? { ...df, status: FileStatus.ANALYZING }
                     : df
             )
         );
+
+        // Initialize progress tracking
+        const startTime = Date.now();
+        setProgress({
+            stage: 'uploading',
+            message: 'Preparing analysis...',
+            startTime
+        });
 
         try {
             // Track analysis start for each file
@@ -42,7 +59,16 @@ export const useAnalysis = () => {
                 });
             }
 
-            const analysisResults = await analyzeDumpFiles(filesToAnalyze);
+            // Progress callback for WinDBG stages
+            const onProgress = (stage: AnalysisStage, message: string) => {
+                setProgress({
+                    stage,
+                    message,
+                    startTime
+                });
+            };
+
+            const analysisResults = await analyzeDumpFiles(filesToAnalyze, onProgress);
 
             // Update files with results
             onUpdate(prevFiles =>
@@ -75,6 +101,7 @@ export const useAnalysis = () => {
             );
         } finally {
             setIsAnalyzing(false);
+            setProgress(null);
         }
     }, []);
 
@@ -107,6 +134,7 @@ export const useAnalysis = () => {
 
     return {
         isAnalyzing,
+        progress,
         error,
         setError,
         analyzeFiles,
