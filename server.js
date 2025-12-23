@@ -48,7 +48,7 @@ const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
 const REQUEST_LIMIT_PER_SESSION = 50; // Max 50 requests per hour per session
-const TOKEN_LIMIT_PER_SESSION = 100000; // Max ~100K tokens per hour per session
+const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session (increased for full WinDBG output)
 
 // Clean up expired sessions periodically
 setInterval(() => {
