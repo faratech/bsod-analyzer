@@ -734,8 +734,8 @@ async function generateReportFromWinDBG(
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
 
-    // Truncate WinDBG output if too large (target ~80k chars for ~20k tokens)
-    const maxWinDBGLength = 80000;
+    // Truncate WinDBG output if too large (reduced to ~40k chars for ~10k tokens to leave room for output)
+    const maxWinDBGLength = 40000;
     const truncatedAnalysis = windbgAnalysis.length > maxWinDBGLength
         ? windbgAnalysis.substring(0, maxWinDBGLength) + '\n\n[... output truncated ...]'
         : windbgAnalysis;
@@ -776,15 +776,7 @@ If the WinDBG output identifies problematic third-party drivers, include them in
 If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareError field.
 
 ### PARAMETER ANALYSIS:
-Decode the bug check parameters shown in the WinDBG output.
-
-**IMPORTANT: Respond with ONLY a valid JSON object (no markdown, no code blocks) in this exact format:**
-{
-  "summary": "Brief one-sentence crash summary",
-  "probableCause": "Detailed explanation of the likely cause",
-  "culprit": "The driver or module name responsible",
-  "recommendations": ["Step 1", "Step 2", "Step 3"]
-}`;
+Decode the bug check parameters shown in the WinDBG output.`;
 
     const ai = createGeminiProxy();
 
@@ -792,8 +784,10 @@ Decode the bug check parameters shown in the WinDBG output.
         const response = await ai.models.generateContent({
             contents: prompt,
             config: {
-                temperature: 0.5, // Lower temperature for more factual output
-                maxOutputTokens: 8192 // Increase output limit
+                responseMimeType: 'application/json',
+                responseSchema: reportSchema,
+                temperature: 0.5,
+                maxOutputTokens: 4096
             }
         });
 
