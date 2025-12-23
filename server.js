@@ -1222,6 +1222,13 @@ app.get('/api/windbg/status', requireSession, async (req, res) => {
 
     const result = await response.json();
     console.log('[WinDBG] Status response:', result.data?.status, 'for UID:', uid);
+
+    // CRITICAL: Set no-cache headers on response to prevent browser/CDN caching
+    res.set({
+      'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
     res.json(result);
   } catch (error) {
     console.error('[WinDBG] Status error:', error);
