@@ -879,7 +879,11 @@ export const analyzeDumpFiles = async (
     files: DumpFile[],
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void
 ) => {
-    const analysisPromises = files.map(async (dumpFile) => {
+    // Process files sequentially to avoid overwhelming the WinDBG server
+    const results: Array<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus }> = [];
+
+    for (const dumpFile of files) {
+        const result = await (async () => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
@@ -1628,9 +1632,12 @@ Decode ALL bug check parameters with their specific meanings:
             console.error(`Analysis failed for ${dumpFile.file.name}:`, error);
             return { id: dumpFile.id, error: `Failed to read or analyze file. ${(error as Error).message}`, status: FileStatus.ERROR };
         }
-    });
+        })();
 
-    return Promise.all(analysisPromises);
+        results.push(result);
+    }
+
+    return results;
 };
 
 const getAdvancedPrompt = (tool: string, dumpFile: DumpFile, extractedStrings: string, hexDump: string): string => {
