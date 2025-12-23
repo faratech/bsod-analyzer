@@ -27,6 +27,7 @@
     "dotenv": "latest",
     "express": "latest",
     "express-rate-limit": "latest",
+    "form-data": "^4.0.5",
     "jszip": "latest",
     "react": "latest",
     "react-dom": "latest",
