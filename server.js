@@ -979,19 +979,19 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
       sdkGenerationConfig.temperature = frontendConfig.temperature;
     }
     
-    // Handle maxOutputTokens if provided
+    // Handle maxOutputTokens if provided (use snake_case for SDK consistency)
     if (frontendConfig.maxOutputTokens !== undefined) {
-      sdkGenerationConfig.maxOutputTokens = frontendConfig.maxOutputTokens;
+      sdkGenerationConfig.max_output_tokens = frontendConfig.maxOutputTokens;
     }
     
-    // Handle topK if provided
+    // Handle topK if provided (use snake_case for SDK consistency)
     if (frontendConfig.topK !== undefined) {
-      sdkGenerationConfig.topK = frontendConfig.topK;
+      sdkGenerationConfig.top_k = frontendConfig.topK;
     }
-    
-    // Handle topP if provided  
+
+    // Handle topP if provided (use snake_case for SDK consistency)
     if (frontendConfig.topP !== undefined) {
-      sdkGenerationConfig.topP = frontendConfig.topP;
+      sdkGenerationConfig.top_p = frontendConfig.topP;
     }
     
     // Copy any other config properties that might be supported
