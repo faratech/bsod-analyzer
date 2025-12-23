@@ -235,26 +235,32 @@ export async function analyzeWithWinDBG(
 
         while (attempts < MAX_POLL_ATTEMPTS) {
             attempts++;
+            console.log(`[WinDBG] Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
 
             const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}`, {
                 credentials: 'include'
             });
 
+            console.log(`[WinDBG] Poll response status: ${response.status}`);
             const result: WinDBGStatusResponse = await response.json();
+            console.log(`[WinDBG] Poll result:`, result.data?.status);
 
             if (!result.success) {
+                console.error('[WinDBG] Poll failed:', result.error);
                 throw new Error(result.error || 'Status check failed');
             }
 
             // Update progress if status changed
             if (result.data?.status && result.data.status !== lastStatus) {
                 lastStatus = result.data.status;
+                console.log(`[WinDBG] Status changed to: ${lastStatus}`);
                 if (result.data.status === 'processing') {
                     onProgress?.('processing', 'WinDBG is analyzing the dump file...');
                 }
             }
 
             if (result.data?.status === 'completed') {
+                console.log('[WinDBG] Analysis completed, proceeding to download');
                 statusResult = result;
                 break;
             }
