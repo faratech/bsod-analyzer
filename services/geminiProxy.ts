@@ -875,7 +875,10 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
     return 'Unknown';
 }
 
-export const analyzeDumpFiles = async (files: DumpFile[]) => {
+export const analyzeDumpFiles = async (
+    files: DumpFile[],
+    onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void
+) => {
     const analysisPromises = files.map(async (dumpFile) => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
@@ -888,10 +891,19 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
                 console.log('[Analyzer] Attempting WinDBG server analysis...');
                 windbgResult = await analyzeWithWinDBG(dumpFile.file, (stage, message) => {
                     console.log(`[WinDBG] ${stage}: ${message}`);
+                    // Forward WinDBG progress to the UI
+                    if (onProgress) {
+                        onProgress(stage, message);
+                    }
                 });
 
                 if (windbgResult.success) {
                     console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
+
+                    // Signal that we're now in the AI analysis stage
+                    if (onProgress) {
+                        onProgress('analyzing', 'AI is interpreting the crash analysis...');
+                    }
 
                     // Use WinDBG analysis to generate AI report
                     const windbgReport = await generateReportFromWinDBG(
