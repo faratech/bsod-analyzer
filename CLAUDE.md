@@ -32,12 +32,19 @@ npm run optimize-css     # Apply CSS purging
 │   (React)   │◀────│   Server    │◀────│   (Google)   │
 └─────────────┘     └─────────────┘     └──────────────┘
      Frontend           Backend             AI Service
+                          │
+                          ▼
+                   ┌──────────────┐
+                   │ WinDBG Server│
+                   │  (Optional)  │
+                   └──────────────┘
 ```
 
 ### Key Files
 
-- **`server.js`** - Express backend with security middleware, session management, rate limiting, and Gemini API proxy
+- **`server.js`** - Express backend with security middleware, session management, rate limiting, Gemini API proxy, and WinDBG proxy
 - **`services/geminiProxy.ts`** - Client-side service that routes API calls through backend with session cookies
+- **`services/windbgService.ts`** - Client-side WinDBG integration (upload, poll, download via backend proxy)
 - **`utils/sessionManager.ts`** - Client-side session initialization and error handling
 - **`serverConfig.js`** - Security configuration constants
 
@@ -45,11 +52,17 @@ npm run optimize-css     # Apply CSS purging
 
 1. User uploads .dmp/.zip files
 2. Files categorized as 'minidump' (<5MB) or 'kernel' (≥5MB)
-3. Client extracts ASCII/UTF-16LE strings and hex dumps
-4. Client sends request with session cookies
-5. Backend validates session, rate limits, and prompt content
-6. Backend proxies to Gemini API with server-side API key
-7. AI analysis returned to client
+3. **Primary path (WinDBG):** If `WINDBG_API_KEY` is configured:
+   - Client uploads file to backend → backend proxies to WinDBG server
+   - Backend polls WinDBG status until complete
+   - Backend downloads analysis and returns to client
+   - AI interprets WinDBG output for user-friendly report
+4. **Fallback path:** If WinDBG unavailable or fails:
+   - Client extracts ASCII/UTF-16LE strings and hex dumps locally
+   - Client sends request with session cookies
+   - Backend validates session, rate limits, and prompt content
+   - Backend proxies to Gemini API with server-side API key
+5. AI analysis returned to client
 
 ### Security Architecture (6 Layers)
 
@@ -67,6 +80,7 @@ npm run optimize-css     # Apply CSS purging
 | `GEMINI_API_KEY` | Gemini AI API access | Yes |
 | `TURNSTILE_SECRET_KEY` | Cloudflare verification | Production |
 | `SESSION_SECRET` | Session security | Production |
+| `WINDBG_API_KEY` | WinDBG server API access | No (falls back to local parsing) |
 
 For local development, set in `.env.local` or export directly.
 

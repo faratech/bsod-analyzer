@@ -1080,6 +1080,153 @@ You do NOT provide assistance with any other topics.`
   }
 });
 
+// ============================================================
+// WinDBG Server Proxy Endpoints
+// ============================================================
+
+const WINDBG_API_URL = 'https://windbg.stack-tech.net/api';
+const WINDBG_API_KEY = process.env.WINDBG_API_KEY;
+
+if (!WINDBG_API_KEY) {
+  console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
+}
+
+// Upload dump file to WinDBG server
+app.post('/api/windbg/upload', requireSession, async (req, res) => {
+  try {
+    if (!WINDBG_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'WinDBG service not configured'
+      });
+    }
+
+    const { uid, fileData, fileName } = req.body;
+
+    if (!uid || !fileData || !fileName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: uid, fileData, fileName'
+      });
+    }
+
+    // Convert base64 file data to buffer
+    const fileBuffer = Buffer.from(fileData, 'base64');
+
+    console.log('[WinDBG] Uploading file:', fileName, 'Size:', fileBuffer.length, 'UID:', uid);
+
+    // Create form data for upload
+    const FormData = (await import('form-data')).default;
+    const formData = new FormData();
+    formData.append('APIKEY', WINDBG_API_KEY);
+    formData.append('UID', uid);
+    formData.append('file', fileBuffer, { filename: fileName });
+
+    // Upload to WinDBG server
+    const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
+      method: 'POST',
+      body: formData,
+      headers: formData.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`WinDBG upload failed with status ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log('[WinDBG] Upload response:', result.success ? 'success' : 'failed');
+
+    res.json(result);
+  } catch (error) {
+    console.error('[WinDBG] Upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to upload to WinDBG server'
+    });
+  }
+});
+
+// Poll WinDBG status
+app.get('/api/windbg/status', requireSession, async (req, res) => {
+  try {
+    if (!WINDBG_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'WinDBG service not configured'
+      });
+    }
+
+    const { uid } = req.query;
+
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameter: uid'
+      });
+    }
+
+    const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+
+    const response = await fetch(statusUrl);
+
+    if (!response.ok) {
+      throw new Error(`WinDBG status check failed with status ${response.status}`);
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('[WinDBG] Status error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to check WinDBG status'
+    });
+  }
+});
+
+// Download WinDBG analysis result
+app.get('/api/windbg/download', requireSession, async (req, res) => {
+  try {
+    if (!WINDBG_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'WinDBG service not configured'
+      });
+    }
+
+    const { uid } = req.query;
+
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameter: uid'
+      });
+    }
+
+    const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+
+    const response = await fetch(downloadUrl);
+
+    if (!response.ok) {
+      throw new Error(`WinDBG download failed with status ${response.status}`);
+    }
+
+    const analysisText = await response.text();
+    console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
+
+    res.json({
+      success: true,
+      analysisText
+    });
+  } catch (error) {
+    console.error('[WinDBG] Download error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to download WinDBG analysis'
+    });
+  }
+});
+
 // Handle ?amp=1 parameter for testing AMP pages
 // Use a function instead of '*' to avoid path-to-regexp issues
 app.use((req, res) => {
@@ -1131,4 +1278,5 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Gemini API Key configured: ${process.env.GEMINI_API_KEY ? 'Yes' : 'No'}`);
   console.log(`Turnstile Secret Key configured: ${TURNSTILE_SECRET_KEY ? 'Yes' : 'No'}`);
+  console.log(`WinDBG API Key configured: ${WINDBG_API_KEY ? 'Yes' : 'No'}`);
 });

@@ -10,6 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
+import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -719,6 +720,164 @@ if (typeof window !== 'undefined') {
     });
 }
 
+/**
+ * Generate an AI report from WinDBG server analysis output.
+ * This function takes the raw WinDBG analysis text and asks the AI to
+ * interpret it in a user-friendly format following our standard report schema.
+ */
+async function generateReportFromWinDBG(
+    fileName: string,
+    dumpType: 'minidump' | 'kernel',
+    fileSize: number,
+    windbgAnalysis: string
+): Promise<AnalysisReportData> {
+    console.log('[Analyzer] Generating AI report from WinDBG analysis...');
+    console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
+
+    // Truncate WinDBG output if too large (target ~80k chars for ~20k tokens)
+    const maxWinDBGLength = 80000;
+    const truncatedAnalysis = windbgAnalysis.length > maxWinDBGLength
+        ? windbgAnalysis.substring(0, maxWinDBGLength) + '\n\n[... output truncated ...]'
+        : windbgAnalysis;
+
+    const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
+
+**File Information:**
+- Filename: ${fileName}
+- Dump Type: ${dumpType}
+- File Size: ${fileSize} bytes
+
+**ACTUAL WinDBG Analysis Output:**
+\`\`\`
+${truncatedAnalysis}
+\`\`\`
+
+## ANALYSIS REQUIREMENTS
+
+Based on the WinDBG output above, provide:
+
+1. **Summary**: A brief one-sentence summary of what caused the crash
+2. **Probable Cause**: A detailed but easy-to-understand explanation of the likely cause
+3. **Culprit**: The specific driver or module responsible (extract from WinDBG output)
+4. **Recommendations**: Actionable steps the user should take to fix the issue
+
+### IMPORTANT RULES:
+- Use ONLY the information from the WinDBG output - this is REAL analysis data
+- Extract the actual bug check code, culprit driver, and stack trace from the output
+- Do NOT invent or guess information not present in the WinDBG output
+- If WinDBG identified a specific driver as the cause, use that as the culprit
+- Parse the MODULE_NAME, IMAGE_NAME, and FAILURE_BUCKET_ID from the output
+- Look for STACK_TEXT and FAULTING_MODULE for crash location details
+
+### DRIVER WARNINGS:
+If the WinDBG output identifies problematic third-party drivers, include them in driverWarnings.
+
+### HARDWARE ERRORS:
+If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareError field.
+
+### PARAMETER ANALYSIS:
+Decode the bug check parameters shown in the WinDBG output.`;
+
+    const ai = createGeminiProxy();
+
+    try {
+        const response = await ai.models.generateContent({
+            contents: prompt,
+            config: {
+                responseMimeType: 'application/json',
+                responseSchema: reportSchema,
+                temperature: 0.5, // Lower temperature for more factual output
+                maxOutputTokens: 4096
+            }
+        });
+
+        const responseText = response.text;
+        console.log('[Analyzer] WinDBG AI response length:', responseText.length);
+
+        // Parse the JSON response
+        try {
+            const report = JSON.parse(responseText) as AnalysisReportData;
+            console.log('[Analyzer] Successfully parsed WinDBG-based report');
+            return report;
+        } catch (parseError) {
+            console.error('[Analyzer] Failed to parse WinDBG AI response:', parseError);
+
+            // Try to extract JSON from the response
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    const report = JSON.parse(jsonMatch[0]) as AnalysisReportData;
+                    console.log('[Analyzer] Extracted JSON from WinDBG response');
+                    return report;
+                } catch {
+                    // Continue to fallback
+                }
+            }
+
+            // Return a basic report from WinDBG output
+            return {
+                summary: `Windows crash analyzed via WinDBG for ${fileName}`,
+                probableCause: 'Analysis completed by WinDBG server. See raw output for details.',
+                culprit: extractCulpritFromWinDBG(windbgAnalysis),
+                recommendations: [
+                    'Review the full WinDBG analysis output',
+                    'Update the identified driver if applicable',
+                    'Check for Windows updates',
+                    'Run system file checker (sfc /scannow)'
+                ]
+            };
+        }
+    } catch (error) {
+        console.error('[Analyzer] WinDBG AI analysis error:', error);
+
+        // Return a basic report if AI fails
+        return {
+            summary: `Windows crash in ${fileName} analyzed by WinDBG`,
+            probableCause: 'WinDBG analysis completed but AI interpretation failed.',
+            culprit: extractCulpritFromWinDBG(windbgAnalysis),
+            recommendations: [
+                'Review the raw WinDBG output manually',
+                'Update drivers mentioned in the analysis',
+                'Check Windows Event Viewer for related errors'
+            ]
+        };
+    }
+}
+
+/**
+ * Extract the culprit module name from WinDBG output
+ */
+function extractCulpritFromWinDBG(windbgOutput: string): string {
+    // Try to find MODULE_NAME from WinDBG output
+    const moduleMatch = windbgOutput.match(/MODULE_NAME:\s*(\S+)/i);
+    if (moduleMatch) {
+        return moduleMatch[1];
+    }
+
+    // Try IMAGE_NAME
+    const imageMatch = windbgOutput.match(/IMAGE_NAME:\s*(\S+)/i);
+    if (imageMatch) {
+        return imageMatch[1];
+    }
+
+    // Try FAULTING_MODULE
+    const faultingMatch = windbgOutput.match(/FAULTING_MODULE:\s*\S+\s+(\S+)/i);
+    if (faultingMatch) {
+        return faultingMatch[1];
+    }
+
+    // Try to find from STACK_TEXT - first non-nt module
+    const stackMatch = windbgOutput.match(/STACK_TEXT:[\s\S]*?(\w+![^\s]+)/);
+    if (stackMatch) {
+        const module = stackMatch[1].split('!')[0];
+        if (module && !module.startsWith('nt') && module !== 'UNKNOWN') {
+            return module;
+        }
+    }
+
+    return 'Unknown';
+}
+
 export const analyzeDumpFiles = async (files: DumpFile[]) => {
     const analysisPromises = files.map(async (dumpFile) => {
         try {
@@ -726,6 +885,36 @@ export const analyzeDumpFiles = async (files: DumpFile[]) => {
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
             console.log('[Analyzer] File buffer loaded, size:', fileBuffer.byteLength);
 
+            // Try WinDBG server analysis first
+            let windbgResult: WinDBGAnalysisResult | null = null;
+            try {
+                console.log('[Analyzer] Attempting WinDBG server analysis...');
+                windbgResult = await analyzeWithWinDBG(dumpFile.file, (stage, message) => {
+                    console.log(`[WinDBG] ${stage}: ${message}`);
+                });
+
+                if (windbgResult.success) {
+                    console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
+
+                    // Use WinDBG analysis to generate AI report
+                    const windbgReport = await generateReportFromWinDBG(
+                        dumpFile.file.name,
+                        dumpFile.dumpType,
+                        dumpFile.file.size,
+                        windbgResult.analysisText
+                    );
+
+                    return { id: dumpFile.id, report: windbgReport, status: FileStatus.ANALYZED };
+                } else {
+                    console.log('[Analyzer] WinDBG analysis failed:', windbgResult.error);
+                    console.log('[Analyzer] Falling back to local analysis...');
+                }
+            } catch (windbgError) {
+                console.error('[Analyzer] WinDBG server error:', windbgError);
+                console.log('[Analyzer] Falling back to local analysis...');
+            }
+
+            // Fallback: Use local analysis if WinDBG failed
             // AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
 
             const MAX_STRINGS_LENGTH = PROCESSING_LIMITS.MAX_STRINGS_LENGTH;
