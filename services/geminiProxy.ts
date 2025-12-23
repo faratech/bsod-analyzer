@@ -776,7 +776,15 @@ If the WinDBG output identifies problematic third-party drivers, include them in
 If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareError field.
 
 ### PARAMETER ANALYSIS:
-Decode the bug check parameters shown in the WinDBG output.`;
+Decode the bug check parameters shown in the WinDBG output.
+
+**IMPORTANT: Respond with ONLY a valid JSON object (no markdown, no code blocks) in this exact format:**
+{
+  "summary": "Brief one-sentence crash summary",
+  "probableCause": "Detailed explanation of the likely cause",
+  "culprit": "The driver or module name responsible",
+  "recommendations": ["Step 1", "Step 2", "Step 3"]
+}`;
 
     const ai = createGeminiProxy();
 
@@ -784,10 +792,8 @@ Decode the bug check parameters shown in the WinDBG output.`;
         const response = await ai.models.generateContent({
             contents: prompt,
             config: {
-                responseMimeType: 'application/json',
-                responseSchema: reportSchema,
                 temperature: 0.5, // Lower temperature for more factual output
-                maxOutputTokens: 4096
+                maxOutputTokens: 8192 // Increase output limit
             }
         });
 
