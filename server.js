@@ -1207,14 +1207,21 @@ app.get('/api/windbg/status', requireSession, async (req, res) => {
     }
 
     const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+    console.log('[WinDBG] Checking status for UID:', uid);
 
-    const response = await fetch(statusUrl);
+    const response = await fetch(statusUrl, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        'Pragma': 'no-cache'
+      }
+    });
 
     if (!response.ok) {
       throw new Error(`WinDBG status check failed with status ${response.status}`);
     }
 
     const result = await response.json();
+    console.log('[WinDBG] Status response:', result.data?.status, 'for UID:', uid);
     res.json(result);
   } catch (error) {
     console.error('[WinDBG] Status error:', error);
