@@ -1114,22 +1114,49 @@ app.post('/api/windbg/upload', requireSession, async (req, res) => {
     const fileBuffer = Buffer.from(fileData, 'base64');
 
     console.log('[WinDBG] Uploading file:', fileName, 'Size:', fileBuffer.length, 'UID:', uid);
-    console.log('[WinDBG] API Key length:', WINDBG_API_KEY?.length, 'First 5 chars:', WINDBG_API_KEY?.substring(0, 5));
 
-    // Create form data for upload
-    const FormData = (await import('form-data')).default;
-    const formData = new FormData();
-    formData.append('APIKEY', WINDBG_API_KEY);
-    formData.append('UID', uid);
-    formData.append('file', fileBuffer, { filename: fileName });
+    // Build multipart form data manually for compatibility with Node.js fetch
+    const boundary = '----WinDBGBoundary' + Date.now();
+    const CRLF = '\r\n';
 
-    console.log('[WinDBG] FormData headers:', JSON.stringify(formData.getHeaders()));
+    // Build the multipart body
+    let body = '';
+
+    // APIKEY field
+    body += `--${boundary}${CRLF}`;
+    body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
+    body += `${WINDBG_API_KEY}${CRLF}`;
+
+    // UID field
+    body += `--${boundary}${CRLF}`;
+    body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
+    body += `${uid}${CRLF}`;
+
+    // File field - need to handle binary data
+    const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+    const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
+
+    // Combine all parts into final body
+    const preFileBuffer = Buffer.from(body, 'utf8');
+    const fileHeaderBuffer = Buffer.from(fileHeader, 'utf8');
+    const fileFooterBuffer = Buffer.from(fileFooter, 'utf8');
+
+    const fullBody = Buffer.concat([
+      preFileBuffer,
+      fileHeaderBuffer,
+      fileBuffer,
+      fileFooterBuffer
+    ]);
+
+    console.log('[WinDBG] Request body size:', fullBody.length);
 
     // Upload to WinDBG server
     const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
       method: 'POST',
-      body: formData,
-      headers: formData.getHeaders()
+      body: fullBody,
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`
+      }
     });
 
     // Log response details
