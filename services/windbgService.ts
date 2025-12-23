@@ -237,8 +237,11 @@ export async function analyzeWithWinDBG(
             attempts++;
             console.log(`[WinDBG] Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
 
-            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}`, {
-                credentials: 'include'
+            // Add cache-busting timestamp to prevent browser/CDN caching
+            const cacheBuster = Date.now();
+            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}&_t=${cacheBuster}`, {
+                credentials: 'include',
+                cache: 'no-store'
             });
 
             console.log(`[WinDBG] Poll response status: ${response.status}`);
