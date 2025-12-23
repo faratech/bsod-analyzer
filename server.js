@@ -1114,6 +1114,7 @@ app.post('/api/windbg/upload', requireSession, async (req, res) => {
     const fileBuffer = Buffer.from(fileData, 'base64');
 
     console.log('[WinDBG] Uploading file:', fileName, 'Size:', fileBuffer.length, 'UID:', uid);
+    console.log('[WinDBG] API Key length:', WINDBG_API_KEY?.length, 'First 5 chars:', WINDBG_API_KEY?.substring(0, 5));
 
     // Create form data for upload
     const FormData = (await import('form-data')).default;
@@ -1122,6 +1123,8 @@ app.post('/api/windbg/upload', requireSession, async (req, res) => {
     formData.append('UID', uid);
     formData.append('file', fileBuffer, { filename: fileName });
 
+    console.log('[WinDBG] FormData headers:', JSON.stringify(formData.getHeaders()));
+
     // Upload to WinDBG server
     const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
       method: 'POST',
@@ -1129,11 +1132,22 @@ app.post('/api/windbg/upload', requireSession, async (req, res) => {
       headers: formData.getHeaders()
     });
 
+    // Log response details
+    const responseText = await response.text();
+    console.log('[WinDBG] Response status:', response.status);
+    console.log('[WinDBG] Response body:', responseText.substring(0, 500));
+
     if (!response.ok) {
-      throw new Error(`WinDBG upload failed with status ${response.status}`);
+      throw new Error(`WinDBG upload failed with status ${response.status}: ${responseText}`);
     }
 
-    const result = await response.json();
+    // Parse the response
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (e) {
+      throw new Error(`Failed to parse WinDBG response: ${responseText}`);
+    }
     console.log('[WinDBG] Upload response:', result.success ? 'success' : 'failed');
 
     res.json(result);
