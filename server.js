@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -49,6 +50,33 @@ const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
 const REQUEST_LIMIT_PER_SESSION = 50; // Max 50 requests per hour per session
 const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session (increased for full WinDBG output)
+
+// ============================================================
+// External API Key Authentication
+// ============================================================
+const BSOD_API_KEY = process.env.BSOD_API_KEY;
+if (!BSOD_API_KEY) {
+  console.warn('WARNING: BSOD_API_KEY not configured - external API access disabled');
+}
+
+// Multer configuration for file uploads (memory storage for API endpoint)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB max
+    files: 1 // Single file only
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept dump files and archives
+    const allowedExtensions = ['.dmp', '.mdmp', '.hdmp', '.kdmp', '.zip', '.7z'];
+    const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
+    if (allowedExtensions.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type. Allowed: ${allowedExtensions.join(', ')}`));
+    }
+  }
+});
 
 // Clean up expired sessions periodically
 setInterval(() => {
@@ -602,7 +630,44 @@ const requireSession = (req, res, next) => {
   // Refresh session timestamp
   const sessionData = validSessions.get(sessionId);
   sessionData.timestamp = Date.now();
-  
+
+  next();
+};
+
+// Middleware to validate API key for external service access
+const requireApiKey = (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+
+  if (!BSOD_API_KEY) {
+    console.log('[API Auth] External API access not configured');
+    return res.status(503).json({
+      success: false,
+      error: 'External API access not configured',
+      code: 'API_NOT_CONFIGURED'
+    });
+  }
+
+  if (!apiKey) {
+    console.log('[API Auth] Missing API key in request');
+    return res.status(401).json({
+      success: false,
+      error: 'API key required',
+      code: 'NO_API_KEY'
+    });
+  }
+
+  if (apiKey !== BSOD_API_KEY) {
+    console.log('[API Auth] Invalid API key provided');
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid API key',
+      code: 'INVALID_API_KEY'
+    });
+  }
+
+  // Mark request as API-authenticated (for logging)
+  req.isApiAuthenticated = true;
+  console.log('[API Auth] External API request authenticated');
   next();
 };
 
@@ -1282,6 +1347,376 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to download WinDBG analysis'
+    });
+  }
+});
+
+// ============================================================
+// External API Endpoint for BSOD Analysis
+// ============================================================
+// This endpoint accepts dump files and returns structured analysis
+// Authentication: X-API-Key header with BSOD_API_KEY
+// Used by external services (e.g., XenForo integration)
+
+// Constants for WinDBG analysis
+const WINDBG_POLL_INTERVAL_MS = 10000; // 10 seconds between polls
+const WINDBG_MAX_POLL_ATTEMPTS = 30; // 5 minutes max (30 * 10s)
+const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout
+
+/**
+ * Generate a unique UID for WinDBG uploads
+ */
+function generateWinDBGUID() {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8);
+  return `API-${timestamp}-${random}`;
+}
+
+/**
+ * Upload file buffer to WinDBG server
+ */
+async function uploadBufferToWinDBG(fileBuffer, fileName, uid) {
+  const boundary = '----WinDBGBoundary' + Date.now();
+  const CRLF = '\r\n';
+
+  let body = '';
+  body += `--${boundary}${CRLF}`;
+  body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
+  body += `${WINDBG_API_KEY}${CRLF}`;
+  body += `--${boundary}${CRLF}`;
+  body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
+  body += `${uid}${CRLF}`;
+
+  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+  const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
+
+  const preFileBuffer = Buffer.from(body, 'utf8');
+  const fileHeaderBuffer = Buffer.from(fileHeader, 'utf8');
+  const fileFooterBuffer = Buffer.from(fileFooter, 'utf8');
+
+  const fullBody = Buffer.concat([
+    preFileBuffer,
+    fileHeaderBuffer,
+    fileBuffer,
+    fileFooterBuffer
+  ]);
+
+  const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
+    method: 'POST',
+    body: fullBody,
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`WinDBG upload failed: ${response.status} - ${text}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Poll WinDBG server for analysis completion
+ */
+async function pollWinDBGStatus(uid) {
+  let attempts = 0;
+
+  while (attempts < WINDBG_MAX_POLL_ATTEMPTS) {
+    attempts++;
+    console.log(`[API/WinDBG] Polling status (attempt ${attempts}/${WINDBG_MAX_POLL_ATTEMPTS})...`);
+
+    const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+    const response = await fetch(statusUrl, {
+      headers: { 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`WinDBG status check failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log(`[API/WinDBG] Status: ${result.data?.status}`);
+
+    if (result.data?.status === 'completed') {
+      return result;
+    }
+
+    if (result.data?.status === 'failed') {
+      throw new Error(result.data.error_message || 'WinDBG analysis failed');
+    }
+
+    await new Promise(resolve => setTimeout(resolve, WINDBG_POLL_INTERVAL_MS));
+  }
+
+  throw new Error('WinDBG analysis timed out');
+}
+
+/**
+ * Download analysis result from WinDBG server
+ */
+async function downloadWinDBGAnalysis(uid) {
+  const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+  const response = await fetch(downloadUrl);
+
+  if (!response.ok) {
+    throw new Error(`WinDBG download failed: ${response.status}`);
+  }
+
+  return await response.text();
+}
+
+/**
+ * Extract culprit module from WinDBG output
+ */
+function extractCulpritFromWinDBG(windbgOutput) {
+  const moduleMatch = windbgOutput.match(/MODULE_NAME:\s*(\S+)/i);
+  if (moduleMatch) return moduleMatch[1];
+
+  const imageMatch = windbgOutput.match(/IMAGE_NAME:\s*(\S+)/i);
+  if (imageMatch) return imageMatch[1];
+
+  const faultingMatch = windbgOutput.match(/FAULTING_MODULE:\s*\S+\s+(\S+)/i);
+  if (faultingMatch) return faultingMatch[1];
+
+  return 'Unknown';
+}
+
+/**
+ * Generate AI report from WinDBG analysis
+ */
+async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis) {
+  console.log('[API/AI] Generating AI report from WinDBG analysis...');
+
+  const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
+
+**File Information:**
+- Filename: ${fileName}
+- Dump Type: ${dumpType}
+- File Size: ${fileSize} bytes
+
+**ACTUAL WinDBG Analysis Output:**
+\`\`\`
+${windbgAnalysis}
+\`\`\`
+
+## ANALYSIS REQUIREMENTS
+
+Based on the WinDBG output above, provide:
+
+1. **Summary**: A brief one-sentence summary of what caused the crash
+2. **Probable Cause**: A detailed but easy-to-understand explanation of the likely cause
+3. **Culprit**: The specific driver or module responsible (extract from WinDBG output)
+4. **Recommendations**: Actionable steps the user should take to fix the issue
+
+### IMPORTANT RULES:
+- Use ONLY the information from the WinDBG output - this is REAL analysis data
+- Extract the actual bug check code, culprit driver, and stack trace from the output
+- Do NOT invent or guess information not present in the WinDBG output
+- If WinDBG identified a specific driver as the cause, use that as the culprit
+- Parse the MODULE_NAME, IMAGE_NAME, and FAILURE_BUCKET_ID from the output
+
+Respond with valid JSON matching this schema:
+{
+  "summary": "string - one sentence summary",
+  "probableCause": "string - detailed explanation",
+  "culprit": "string - guilty module/driver",
+  "recommendations": ["array of actionable steps"],
+  "bugCheck": {
+    "code": "string - e.g. 0x0000001A",
+    "name": "string - e.g. MEMORY_MANAGEMENT",
+    "parameters": ["array of 4 parameter values"]
+  },
+  "driverWarnings": [{"name": "string", "description": "string", "severity": "critical|warning|info"}],
+  "hardwareError": {"type": "string", "details": "string"} or null
+}`;
+
+  try {
+    const modelConfig = {
+      model: DEFAULT_MODEL_NAME,
+      generationConfig: {
+        response_mime_type: 'application/json',
+        temperature: 0.5,
+        max_output_tokens: 4096
+      },
+      systemInstruction: {
+        role: "system",
+        parts: [{
+          text: "You are a Windows crash dump analyzer. Provide structured JSON responses only."
+        }]
+      }
+    };
+
+    const geminiModel = genAI.getGenerativeModel(modelConfig);
+    const result = await geminiModel.generateContent(prompt);
+    const response = await result.response;
+    const responseText = response.text();
+
+    try {
+      return JSON.parse(responseText);
+    } catch (parseError) {
+      // Try to extract JSON from response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      throw parseError;
+    }
+  } catch (error) {
+    console.error('[API/AI] AI analysis error:', error);
+    // Return basic report if AI fails
+    return {
+      summary: `Windows crash in ${fileName} analyzed by WinDBG`,
+      probableCause: 'WinDBG analysis completed but AI interpretation failed.',
+      culprit: extractCulpritFromWinDBG(windbgAnalysis),
+      recommendations: [
+        'Review the raw WinDBG output manually',
+        'Update drivers mentioned in the analysis',
+        'Check Windows Event Viewer for related errors'
+      ]
+    };
+  }
+}
+
+/**
+ * Determine dump type from file content
+ */
+function detectDumpType(fileBuffer) {
+  // Check magic bytes
+  const header = fileBuffer.slice(0, 8).toString('ascii');
+
+  // MDMP = Minidump
+  if (header.startsWith('MDMP')) {
+    return 'minidump';
+  }
+
+  // PAGEDU64 = Full/Kernel dump
+  if (header.startsWith('PAGEDU64') || header.startsWith('PAGEDUMP')) {
+    return 'kernel';
+  }
+
+  // Default to kernel for large files
+  if (fileBuffer.length >= 5 * 1024 * 1024) {
+    return 'kernel';
+  }
+
+  return 'minidump';
+}
+
+// Main external API endpoint
+app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    // Validate file upload
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded. Use multipart form with "file" field.',
+        code: 'NO_FILE'
+      });
+    }
+
+    const fileBuffer = req.file.buffer;
+    const fileName = req.file.originalname || 'upload.dmp';
+    const fileSize = fileBuffer.length;
+
+    console.log(`[API/Analyze] Received file: ${fileName} (${fileSize} bytes)`);
+
+    // Detect dump type
+    const dumpType = detectDumpType(fileBuffer);
+    console.log(`[API/Analyze] Detected dump type: ${dumpType}`);
+
+    // Check if WinDBG is configured
+    if (!WINDBG_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'WinDBG analysis service not configured',
+        code: 'WINDBG_NOT_CONFIGURED'
+      });
+    }
+
+    // Check if Gemini AI is configured
+    if (!genAI) {
+      return res.status(503).json({
+        success: false,
+        error: 'AI service not configured',
+        code: 'AI_NOT_CONFIGURED'
+      });
+    }
+
+    // Generate UID for this analysis
+    const uid = generateWinDBGUID();
+    console.log(`[API/Analyze] Starting WinDBG analysis with UID: ${uid}`);
+
+    // Create timeout wrapper
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('Analysis timed out after 5 minutes'));
+      }, WINDBG_TOTAL_TIMEOUT_MS);
+    });
+
+    // Main analysis pipeline
+    const analysisPromise = (async () => {
+      // Step 1: Upload to WinDBG
+      console.log('[API/Analyze] Step 1: Uploading to WinDBG server...');
+      const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName, uid);
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'WinDBG upload failed');
+      }
+      console.log(`[API/Analyze] Upload successful, queue position: ${uploadResult.data?.queue_position}`);
+
+      // Step 2: Poll for completion
+      console.log('[API/Analyze] Step 2: Polling for completion...');
+      await pollWinDBGStatus(uid);
+      console.log('[API/Analyze] WinDBG analysis completed');
+
+      // Step 3: Download results
+      console.log('[API/Analyze] Step 3: Downloading analysis...');
+      const windbgAnalysis = await downloadWinDBGAnalysis(uid);
+      console.log(`[API/Analyze] Downloaded ${windbgAnalysis.length} bytes of analysis`);
+
+      // Step 4: Generate AI report
+      console.log('[API/Analyze] Step 4: Generating AI report...');
+      const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis);
+
+      return {
+        report,
+        windbgAnalysis,
+        analysisMethod: 'windbg'
+      };
+    })();
+
+    // Race between analysis and timeout
+    const result = await Promise.race([analysisPromise, timeoutPromise]);
+
+    const processingTime = (Date.now() - startTime) / 1000;
+    console.log(`[API/Analyze] Analysis completed in ${processingTime}s`);
+
+    // Return structured response
+    res.json({
+      success: true,
+      data: result.report,
+      analysisMethod: result.analysisMethod,
+      processingTime,
+      metadata: {
+        fileName,
+        fileSize,
+        dumpType,
+        uid
+      }
+    });
+
+  } catch (error) {
+    const processingTime = (Date.now() - startTime) / 1000;
+    console.error('[API/Analyze] Error:', error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Analysis failed',
+      code: 'ANALYSIS_FAILED',
+      processingTime
     });
   }
 });

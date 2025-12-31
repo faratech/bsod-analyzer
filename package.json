@@ -29,6 +29,7 @@
     "express-rate-limit": "latest",
     "form-data": "^4.0.5",
     "jszip": "latest",
+    "multer": "^2.0.2",
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "latest",
