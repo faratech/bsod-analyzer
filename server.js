@@ -12,6 +12,7 @@ import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
 import multer from 'multer';
+import JSZip from 'jszip';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1604,6 +1605,45 @@ function detectDumpType(fileBuffer) {
   return 'minidump';
 }
 
+// Extract dump files from ZIP archive
+const DUMP_EXTENSIONS = ['.dmp', '.mdmp', '.hdmp', '.kdmp'];
+
+async function extractDumpsFromZip(zipBuffer, originalName) {
+  const results = [];
+
+  try {
+    const zip = await JSZip.loadAsync(zipBuffer);
+
+    for (const [path, file] of Object.entries(zip.files)) {
+      if (file.dir) continue;
+
+      const lowerPath = path.toLowerCase();
+      const isDump = DUMP_EXTENSIONS.some(ext => lowerPath.endsWith(ext));
+
+      if (isDump) {
+        const content = await file.async('nodebuffer');
+        const fileName = path.split('/').pop();
+        results.push({
+          fileName,
+          buffer: content,
+          originalZip: originalName
+        });
+      }
+    }
+  } catch (error) {
+    console.error(`[ZIP] Failed to extract from ${originalName}:`, error.message);
+    throw new Error(`Failed to extract ZIP: ${error.message}`);
+  }
+
+  return results;
+}
+
+function isZipFile(buffer) {
+  return buffer.length >= 4 &&
+         buffer[0] === 0x50 && buffer[1] === 0x4B &&
+         buffer[2] === 0x03 && buffer[3] === 0x04;
+}
+
 // Main external API endpoint
 app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
@@ -1618,11 +1658,35 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
       });
     }
 
-    const fileBuffer = req.file.buffer;
-    const fileName = req.file.originalname || 'upload.dmp';
-    const fileSize = fileBuffer.length;
+    let fileBuffer = req.file.buffer;
+    let fileName = req.file.originalname || 'upload.dmp';
+    const originalFileSize = fileBuffer.length;
+    let originalZip = null;
 
-    console.log(`[API/Analyze] Received file: ${fileName} (${fileSize} bytes)`);
+    console.log(`[API/Analyze] Received file: ${fileName} (${originalFileSize} bytes)`);
+
+    // Check if file is a ZIP archive
+    if (isZipFile(fileBuffer)) {
+      console.log(`[API/Analyze] Detected ZIP archive, extracting dumps...`);
+      const extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
+
+      if (extractedDumps.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No dump files (.dmp, .mdmp, .hdmp, .kdmp) found in ZIP archive',
+          code: 'NO_DUMPS_IN_ZIP'
+        });
+      }
+
+      // Use the first dump found (could enhance to analyze all)
+      const firstDump = extractedDumps[0];
+      console.log(`[API/Analyze] Found ${extractedDumps.length} dump(s), analyzing: ${firstDump.fileName}`);
+      originalZip = fileName;
+      fileName = firstDump.fileName;
+      fileBuffer = firstDump.buffer;
+    }
+
+    const fileSize = fileBuffer.length;
 
     // Detect dump type
     const dumpType = detectDumpType(fileBuffer);
@@ -1704,7 +1768,8 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
         fileName,
         fileSize,
         dumpType,
-        uid
+        uid,
+        originalZip: originalZip || undefined
       }
     });
 
