@@ -49,6 +49,6 @@
     "tailwindcss": "latest",
     "terser": "latest",
     "typescript": "latest",
-    "vite": "latest"
+    "vite": "^7.3.1"
   }
 }
