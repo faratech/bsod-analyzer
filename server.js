@@ -154,13 +154,13 @@ const corsOptions = {
       'https://bsod-analyzer-399450330005.us-east1.run.app' // New Cloud Run URL
     );
     
-    // Allow any *.windowsforum.com subdomain
-    const isWindowsForumDomain = origin && origin.match(/https:\/\/[a-z0-9-]+\.windowsforum\.com$/);
-    
-    // Allow any bsod-analyzer*.run.app domain
-    const isBsodAnalyzerRunApp = origin && origin.match(/https:\/\/bsod-analyzer[a-z0-9-]*\..*\.run\.app$/);
-    
-    if (allowedOrigins.includes(origin) || isWindowsForumDomain || isBsodAnalyzerRunApp) {
+    // Allow any *.windowsforum.com subdomain (including www.)
+    const isWindowsForumDomain = origin && /^https:\/\/(www\.)?([a-z0-9-]+\.)?windowsforum\.com$/i.test(origin);
+
+    // Allow any Cloud Run URL (*.run.app) - we control the deployment
+    const isCloudRunApp = origin && /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$/i.test(origin);
+
+    if (allowedOrigins.includes(origin) || isWindowsForumDomain || isCloudRunApp) {
       callback(null, true);
     } else {
       console.warn(`CORS blocked origin: ${origin}`);
