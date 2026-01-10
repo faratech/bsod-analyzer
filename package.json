@@ -40,7 +40,7 @@
   "devDependencies": {
     "@fullhuman/postcss-purgecss": "latest",
     "@tailwindcss/postcss": "latest",
-    "@types/node": "^25.0.4",
+    "@types/node": "^25.0.5",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "autoprefixer": "latest",
