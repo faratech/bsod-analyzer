@@ -211,7 +211,11 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
+// Default JSON body limit for most API endpoints
 app.use(express.json({ limit: '10mb' }));
+
+// Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
+const largeJsonParser = express.json({ limit: '150mb' });
 
 // Global security headers middleware
 app.use((req, res, next) => {
@@ -1162,7 +1166,8 @@ if (!WINDBG_API_KEY) {
 }
 
 // Upload dump file to WinDBG server
-app.post('/api/windbg/upload', requireSession, async (req, res) => {
+// Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
+app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
