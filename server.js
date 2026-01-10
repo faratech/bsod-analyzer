@@ -20,8 +20,10 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Trust proxy headers (required for Cloud Run and other reverse proxies)
-app.set('trust proxy', true);
+// Trust proxy headers (required for Cloud Run)
+// Set to 1 to trust exactly one proxy hop (Cloud Run load balancer)
+// Setting to 'true' is insecure as it allows IP spoofing to bypass rate limiting
+app.set('trust proxy', 1);
 
 // Initialize xxhash
 let hasher;
