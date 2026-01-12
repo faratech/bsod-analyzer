@@ -21,9 +21,16 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Trust proxy headers (required for Cloud Run)
-// Set to 1 to trust exactly one proxy hop (Cloud Run load balancer)
-// Setting to 'true' is insecure as it allows IP spoofing to bypass rate limiting
-app.set('trust proxy', 1);
+// Set to 2 to trust both Cloudflare and Cloud Run load balancer
+// This ensures req.ip extracts the real client IP from X-Forwarded-For
+app.set('trust proxy', 2);
+
+// Helper to get client IP - prefer Cloudflare's header for accuracy
+function getClientIp(req) {
+  // Cloudflare provides the real client IP in CF-Connecting-IP header
+  // This is more reliable than parsing X-Forwarded-For
+  return req.headers['cf-connecting-ip'] || req.ip || req.connection.remoteAddress;
+}
 
 // Initialize xxhash
 let hasher;
@@ -614,7 +621,7 @@ function validateSession(sessionId, sessionHash, ip) {
 const requireSession = (req, res, next) => {
   const sessionId = req.cookies.bsod_session_id;
   const sessionHash = req.cookies.bsod_session_hash;
-  const clientIp = req.ip || req.connection.remoteAddress;
+  const clientIp = getClientIp(req);
   
   // In development mode, skip validation
   if (process.env.NODE_ENV === 'development') {
@@ -704,7 +711,7 @@ app.use('/api/', apiLimiter);
 app.post('/api/auth/verify-turnstile', async (req, res) => {
   try {
     const { token, action, cdata } = req.body;
-    const clientIp = req.ip || req.connection.remoteAddress;
+    const clientIp = getClientIp(req);
     
     // Generate idempotency key for this request
     const idempotencyKey = crypto.randomUUID();
@@ -825,8 +832,8 @@ app.get('/api/auth/session', async (req, res) => {
       }
     }
     */
-    
-    const clientIp = req.ip || req.connection.remoteAddress;
+
+    const clientIp = getClientIp(req);
     const { sessionId, sessionHash } = generateSessionCookie(clientIp);
     
     console.log('Creating session:', {
@@ -978,7 +985,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     if (sessionTracking.count >= REQUEST_LIMIT_PER_SESSION) {
       console.warn('[Security] Per-session rate limit exceeded:', {
         sessionId: sessionId?.substring(0, 10) + '...',
-        ip: req.ip,
+        ip: getClientIp(req),
         requestCount: sessionTracking.count,
         resetTime: new Date(sessionTracking.resetTime).toISOString()
       });
@@ -997,7 +1004,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     if (sessionTracking.totalTokens + estimatedInputTokens > TOKEN_LIMIT_PER_SESSION) {
       console.warn('[Security] Per-session token limit exceeded:', {
         sessionId: sessionId?.substring(0, 10) + '...',
-        ip: req.ip,
+        ip: getClientIp(req),
         totalTokens: sessionTracking.totalTokens,
         estimatedRequest: estimatedInputTokens
       });
@@ -1013,7 +1020,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     if (!validation.valid) {
       console.warn('[Security] Non-BSOD prompt blocked:', {
         sessionId: sessionId?.substring(0, 10) + '...',
-        ip: req.ip,
+        ip: getClientIp(req),
         reason: validation.reason,
         promptPreview: JSON.stringify(contents).substring(0, 150) + '...'
       });
