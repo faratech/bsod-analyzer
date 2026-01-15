@@ -47,7 +47,7 @@
     "postcss": "latest",
     "purgecss": "latest",
     "tailwindcss": "latest",
-    "terser": "^5.45.0",
+    "terser": "^5.46.0",
     "typescript": "latest",
     "vite": "^7.3.1"
   }
