@@ -1299,6 +1299,17 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
     console.log('[WinDBG] Response status:', response.status);
     console.log('[WinDBG] Response body:', responseText.substring(0, 500));
 
+    // Handle 409 - UID already exists (file was previously uploaded)
+    // This is expected when using file hash as UID - just poll for status
+    if (response.status === 409) {
+      console.log('[WinDBG] UID already exists, file was previously uploaded');
+      return res.json({
+        success: true,
+        alreadyExists: true,
+        data: { uid, queue_position: 0 }
+      });
+    }
+
     if (!response.ok) {
       throw new Error(`WinDBG upload failed with status ${response.status}: ${responseText}`);
     }
