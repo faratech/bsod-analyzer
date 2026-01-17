@@ -11,11 +11,7 @@
 import { Redis } from '@upstash/redis';
 import crypto from 'crypto';
 
-// Cache TTL values (in seconds)
-const CACHE_TTL = {
-  AI_REPORT: 24 * 60 * 60,        // 24 hours for AI-generated reports
-  WINDBG_ANALYSIS: 7 * 24 * 60 * 60,  // 7 days for WinDBG raw output
-};
+// No TTL - Upstash handles eviction automatically
 
 // Cache key prefixes
 const CACHE_PREFIX = {
@@ -132,8 +128,8 @@ export async function setCachedAIReport(windbgOutput, report) {
     const hash = hashContent(windbgOutput);
     const key = getAIReportKey(hash);
 
-    await redis.setex(key, CACHE_TTL.AI_REPORT, JSON.stringify(report));
-    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}... (TTL: ${CACHE_TTL.AI_REPORT}s)`);
+    await redis.set(key, JSON.stringify(report));
+    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}...`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching AI report:', error.message);
@@ -179,8 +175,8 @@ export async function setCachedWinDBGAnalysis(fileBuffer, analysisData) {
     const hash = Buffer.isBuffer(fileBuffer) ? hashContent(fileBuffer) : fileBuffer;
     const key = getWinDBGKey(hash);
 
-    await redis.setex(key, CACHE_TTL.WINDBG_ANALYSIS, JSON.stringify(analysisData));
-    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}... (TTL: ${CACHE_TTL.WINDBG_ANALYSIS}s)`);
+    await redis.set(key, JSON.stringify(analysisData));
+    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}...`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching WinDBG analysis:', error.message);
