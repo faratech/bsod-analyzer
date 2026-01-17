@@ -268,7 +268,7 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: https: blob:",
-    "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",
+    "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",
     "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
     "object-src 'none'",
     "base-uri 'self'",
