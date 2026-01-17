@@ -1300,9 +1300,50 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
     console.log('[WinDBG] Response body:', responseText.substring(0, 500));
 
     // Handle 409 - UID already exists (file was previously uploaded)
-    // This is expected when using file hash as UID - just poll for status
+    // Check if analysis is complete and cache it if so
     if (response.status === 409) {
-      console.log('[WinDBG] UID already exists, file was previously uploaded');
+      console.log('[WinDBG] UID already exists, checking if analysis is complete...');
+
+      try {
+        // Check status on WinDBG server
+        const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+        const statusResponse = await fetch(statusUrl);
+
+        if (statusResponse.ok) {
+          const statusResult = await statusResponse.json();
+          console.log('[WinDBG] Status for existing UID:', statusResult.data?.status);
+
+          // If completed, download and cache the result
+          if (statusResult.data?.status === 'completed') {
+            console.log('[WinDBG] Analysis already complete, downloading and caching...');
+            const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
+            const downloadResponse = await fetch(downloadUrl);
+
+            if (downloadResponse.ok) {
+              const analysisText = await downloadResponse.text();
+              console.log('[WinDBG] Downloaded existing analysis:', analysisText.length, 'bytes');
+
+              // Cache the result
+              await setCachedWinDBGAnalysis(uid, {
+                windbgOutput: analysisText,
+                timestamp: Date.now()
+              });
+
+              // Return cached response
+              return res.json({
+                success: true,
+                cached: true,
+                cachedAnalysis: analysisText,
+                data: { uid, queue_position: 0 }
+              });
+            }
+          }
+        }
+      } catch (statusError) {
+        console.error('[WinDBG] Error checking status for 409:', statusError);
+      }
+
+      // If we couldn't get/cache the result, let client poll
       return res.json({
         success: true,
         alreadyExists: true,
