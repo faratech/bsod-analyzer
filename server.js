@@ -15,15 +15,12 @@ import multer from 'multer';
 import JSZip from 'jszip';
 import {
   initCache,
-  isCacheEnabled,
   hashContent,
   getCachedAIReport,
   setCachedAIReport,
   getCachedWinDBGAnalysis,
   setCachedWinDBGAnalysis,
-  getCacheStats,
-  setUidMapping,
-  getUidMapping
+  getCacheStats
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1236,12 +1233,11 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
     // Convert base64 file data to buffer
     const fileBuffer = Buffer.from(fileData, 'base64');
 
-    // Hash the file for caching
-    const fileHash = hashContent(fileBuffer);
-    console.log('[WinDBG] File hash:', fileHash, 'Size:', fileBuffer.length);
+    // UID is now the file hash (computed client-side), use it directly for caching
+    console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
 
     // Check cache for existing WinDBG analysis
-    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
+    const cachedAnalysis = await getCachedWinDBGAnalysis(uid);
     if (cachedAnalysis) {
       console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
       return res.json({
@@ -1251,9 +1247,6 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
         data: { queue_position: 0 }
       });
     }
-
-    // Store UID -> fileHash mapping in Redis for caching at download time
-    await setUidMapping(uid, fileHash);
 
     console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
@@ -1411,15 +1404,11 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
     const analysisText = await response.text();
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
 
-    // Cache the WinDBG output by file hash (mapping stored in Redis)
-    const fileHash = await getUidMapping(uid);
-    if (fileHash) {
-      await setCachedWinDBGAnalysis(fileHash, {
-        windbgOutput: analysisText,
-        uid,
-        timestamp: Date.now()
-      });
-    }
+    // Cache the WinDBG output (UID is the file hash)
+    await setCachedWinDBGAnalysis(uid, {
+      windbgOutput: analysisText,
+      timestamp: Date.now()
+    });
 
     res.json({
       success: true,

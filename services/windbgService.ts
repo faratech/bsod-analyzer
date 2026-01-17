@@ -7,6 +7,15 @@
  * All requests go through our backend to keep the API key secure.
  */
 
+import xxhash from 'xxhash-wasm';
+
+// Initialize xxhash
+let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
+xxhash().then(h => {
+    hasher = h;
+    console.log('[WinDBG] XXHash initialized');
+});
+
 // Polling configuration - increased intervals to reduce server load
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
 const MAX_POLL_ATTEMPTS = 30; // Max 5 minutes of polling (30 * 10s = 300s), then fallback to local analysis
@@ -60,13 +69,27 @@ export interface WinDBGAnalysisResult {
 }
 
 /**
- * Generate a unique UID for the upload
- * Format: WF-{timestamp}-{random}
+ * Generate UID from file content hash
+ * Using xxhash64 for speed with large dump files
  */
-function generateUID(): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `WF-${timestamp}-${random}`;
+async function generateFileHash(file: File): Promise<string> {
+    const buffer = await file.arrayBuffer();
+    const data = new Uint8Array(buffer);
+
+    if (hasher) {
+        // Convert to string for xxhash
+        const binaryString = Array.from(data).map(b => String.fromCharCode(b)).join('');
+        return hasher.h64ToString(binaryString);
+    }
+
+    // Fallback if xxhash not initialized (shouldn't happen)
+    console.warn('[WinDBG] XXHash not ready, using fallback');
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+        hash = ((hash << 5) - hash) + data[i];
+        hash |= 0;
+    }
+    return Math.abs(hash).toString(16);
 }
 
 /**
@@ -90,9 +113,10 @@ async function fileToBase64(file: File): Promise<string> {
  * Upload a .dmp file to the WinDBG server via our backend
  */
 export async function uploadToWinDBG(file: File): Promise<WinDBGUploadResponse> {
-    const uid = generateUID();
+    // Use file hash as UID for deterministic caching
+    const uid = await generateFileHash(file);
 
-    console.log(`[WinDBG] Uploading ${file.name} with UID: ${uid}`);
+    console.log(`[WinDBG] Uploading ${file.name} with file hash UID: ${uid}`);
 
     // Convert file to base64
     const fileData = await fileToBase64(file);
