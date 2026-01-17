@@ -230,12 +230,7 @@ export async function getUidMapping(uid) {
 
   try {
     const key = `uid:${uid}`;
-    const fileHash = await redis.get(key);
-    if (fileHash) {
-      // Delete after retrieval (one-time use)
-      await redis.del(key);
-    }
-    return fileHash;
+    return await redis.get(key);
   } catch (error) {
     console.error('[Cache] Error getting UID mapping:', error.message);
     return null;
