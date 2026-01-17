@@ -23,6 +23,7 @@ enum Type {
 
 interface GenerateContentResponse {
     text: string;
+    cached?: boolean;
 }
 
 interface GenerateContentParams {
@@ -117,25 +118,33 @@ const createGeminiProxy = () => {
         };
 
         const data = await makeRequest();
-        
+
         // Log response details for debugging
         if (!data || typeof data !== 'object') {
             console.error('[GeminiProxy] Invalid response data:', data);
             throw new Error('Invalid response format from API');
         }
-        
+
+        // Log cache status prominently
+        if (data.cached) {
+            console.log('[GeminiProxy] ✓ AI CACHE HIT - using cached Gemini response');
+        } else {
+            console.log('[GeminiProxy] AI cache MISS - fresh Gemini API call');
+        }
+
         if (!data.text) {
             console.warn('[GeminiProxy] Response has no text field:', Object.keys(data));
         }
-        
+
         // Log thinking process if available (for debugging)
         if (data.candidates?.[0]?.content?.thinking) {
             console.log('[AI] Model thinking process available');
             // Note: We don't expose thinking to the client for now
         }
-        
+
         return {
-            text: data.text || ''
+            text: data.text || '',
+            cached: data.cached || false
         };
     };
 
