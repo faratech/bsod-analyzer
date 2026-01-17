@@ -16,6 +16,8 @@ const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout for entire WinD
 export interface WinDBGUploadResponse {
     success: boolean;
     message?: string;
+    cached?: boolean;
+    cachedAnalysis?: string;
     data?: {
         uid: string;
         filename: string;
@@ -119,6 +121,12 @@ export async function uploadToWinDBG(file: File): Promise<WinDBGUploadResponse> 
 
         if (!result.success) {
             throw new Error(result.error || 'Upload failed');
+        }
+
+        // Handle cached response
+        if (result.cached && result.cachedAnalysis) {
+            console.log(`[WinDBG] Cache HIT - using cached analysis for ${file.name}`);
+            return result;
         }
 
         console.log(`[WinDBG] Upload successful. Queue position: ${result.data?.queue_position}`);
@@ -228,6 +236,15 @@ export async function analyzeWithWinDBG(
         // Stage 1: Upload
         onProgress?.('uploading', `Uploading ${file.name} to WinDBG server...`);
         const uploadResult = await uploadToWinDBG(file);
+
+        // Handle cached response - skip polling and download
+        if (uploadResult.cached && uploadResult.cachedAnalysis) {
+            onProgress?.('complete', 'Using cached WinDBG analysis');
+            return {
+                success: true,
+                analysisText: uploadResult.cachedAnalysis
+            };
+        }
 
         if (!uploadResult.data) {
             throw new Error('Upload failed - no data returned');

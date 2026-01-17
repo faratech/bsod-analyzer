@@ -1045,12 +1045,23 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
       });
     }
 
+    // Check cache for this prompt
+    const promptHash = hashContent(requestText);
+    const cachedResponse = await getCachedAIReport(requestText);
+    if (cachedResponse) {
+      console.log('[Gemini API] Cache HIT for prompt hash:', promptHash);
+      return res.json({
+        ...cachedResponse,
+        cached: true
+      });
+    }
+
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
 
     // Debug logging
-    console.log('[Gemini API] Request received with contents type:', typeof contents);
+    console.log('[Gemini API] Cache MISS, calling Gemini. Contents type:', typeof contents);
     if (typeof contents === 'object') {
       console.log('[Gemini API] Contents structure:', JSON.stringify(contents).substring(0, 200) + '...');
     }
@@ -1172,12 +1183,17 @@ You do NOT provide assistance with any other topics.`
     // Return the text directly for compatibility
     const text = response.text();
 
-    res.json({
+    const responseData = {
       candidates: response.candidates || [{ content: { parts: [{ text }] } }],
       usageMetadata: response.usageMetadata,
       modelVersion: response.modelVersion,
       text // Include text for easier access
-    });
+    };
+
+    // Cache the response
+    await setCachedAIReport(requestText, responseData);
+
+    res.json(responseData);
   } catch (error) {
     console.error('Gemini API error:', error);
     res.status(500).json({ error: error.message || 'Failed to generate content' });
@@ -1190,6 +1206,9 @@ You do NOT provide assistance with any other topics.`
 
 const WINDBG_API_URL = 'https://windbg.stack-tech.net/api';
 const WINDBG_API_KEY = process.env.WINDBG_API_KEY;
+
+// Track UID -> fileHash for caching WinDBG results
+const uidToFileHash = new Map();
 
 if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
@@ -1218,7 +1237,26 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
     // Convert base64 file data to buffer
     const fileBuffer = Buffer.from(fileData, 'base64');
 
-    console.log('[WinDBG] Uploading file:', fileName, 'Size:', fileBuffer.length, 'UID:', uid);
+    // Hash the file for caching
+    const fileHash = hashContent(fileBuffer);
+    console.log('[WinDBG] File hash:', fileHash, 'Size:', fileBuffer.length);
+
+    // Check cache for existing WinDBG analysis
+    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
+    if (cachedAnalysis) {
+      console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
+      return res.json({
+        success: true,
+        cached: true,
+        cachedAnalysis: cachedAnalysis.windbgOutput,
+        data: { queue_position: 0 }
+      });
+    }
+
+    // Store UID -> fileHash mapping for caching at download time
+    uidToFileHash.set(uid, fileHash);
+
+    console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
     // Build multipart form data manually for compatibility with Node.js fetch
     const boundary = '----WinDBGBoundary' + Date.now();
@@ -1373,6 +1411,17 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
 
     const analysisText = await response.text();
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
+
+    // Cache the WinDBG output by file hash
+    const fileHash = uidToFileHash.get(uid);
+    if (fileHash) {
+      await setCachedWinDBGAnalysis(fileHash, {
+        windbgOutput: analysisText,
+        uid,
+        timestamp: Date.now()
+      });
+      uidToFileHash.delete(uid); // Clean up mapping
+    }
 
     res.json({
       success: true,
