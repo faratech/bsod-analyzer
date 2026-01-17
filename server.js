@@ -21,7 +21,9 @@ import {
   setCachedAIReport,
   getCachedWinDBGAnalysis,
   setCachedWinDBGAnalysis,
-  getCacheStats
+  getCacheStats,
+  setUidMapping,
+  getUidMapping
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1207,9 +1209,6 @@ You do NOT provide assistance with any other topics.`
 const WINDBG_API_URL = 'https://windbg.stack-tech.net/api';
 const WINDBG_API_KEY = process.env.WINDBG_API_KEY;
 
-// Track UID -> fileHash for caching WinDBG results
-const uidToFileHash = new Map();
-
 if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
 }
@@ -1253,8 +1252,8 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
       });
     }
 
-    // Store UID -> fileHash mapping for caching at download time
-    uidToFileHash.set(uid, fileHash);
+    // Store UID -> fileHash mapping in Redis for caching at download time
+    await setUidMapping(uid, fileHash);
 
     console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
@@ -1412,15 +1411,14 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
     const analysisText = await response.text();
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
 
-    // Cache the WinDBG output by file hash
-    const fileHash = uidToFileHash.get(uid);
+    // Cache the WinDBG output by file hash (mapping stored in Redis)
+    const fileHash = await getUidMapping(uid);
     if (fileHash) {
       await setCachedWinDBGAnalysis(fileHash, {
         windbgOutput: analysisText,
         uid,
         timestamp: Date.now()
       });
-      uidToFileHash.delete(uid); // Clean up mapping
     }
 
     res.json({
