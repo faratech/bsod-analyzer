@@ -27,7 +27,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --memory 512Mi \
   --cpu 1 \
   --set-env-vars NODE_ENV=production \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,WINDBG_API_KEY=windbg-api-key:latest \
+  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
   --project ${PROJECT_ID}
 
 # Get the service URL
