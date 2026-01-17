@@ -9,9 +9,16 @@
  */
 
 import { Redis } from '@upstash/redis';
-import crypto from 'crypto';
+import xxhash from 'xxhash-wasm';
 
 // No TTL - Upstash handles eviction automatically
+
+// Initialize xxhash
+let hasher = null;
+xxhash().then(xxhashModule => {
+  hasher = xxhashModule;
+  console.log('[Cache] XXHash initialized for cache key generation');
+});
 
 // Cache key prefixes
 const CACHE_PREFIX = {
@@ -60,17 +67,31 @@ export function isCacheEnabled() {
 }
 
 /**
- * Generate a SHA-256 hash of content for cache keys
+ * Generate an xxhash64 hash of content for cache keys
+ * Falls back to simple string hash if xxhash not yet initialized
  */
 export function hashContent(content) {
+  let data;
   if (typeof content === 'string') {
-    return crypto.createHash('sha256').update(content).digest('hex');
+    data = content;
+  } else if (Buffer.isBuffer(content)) {
+    data = content.toString('binary');
+  } else {
+    data = JSON.stringify(content);
   }
-  if (Buffer.isBuffer(content)) {
-    return crypto.createHash('sha256').update(content).digest('hex');
+
+  if (hasher) {
+    return hasher.h64ToString(data);
   }
-  // For objects, stringify first
-  return crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex');
+
+  // Fallback if xxhash not initialized yet (shouldn't happen in practice)
+  console.warn('[Cache] XXHash not ready, using fallback hash');
+  let hash = 0;
+  for (let i = 0; i < data.length; i++) {
+    hash = ((hash << 5) - hash) + data.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16);
 }
 
 /**
