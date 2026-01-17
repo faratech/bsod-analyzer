@@ -206,6 +206,43 @@ export async function setCachedWinDBGAnalysis(fileBuffer, analysisData) {
 }
 
 /**
+ * Store UID -> fileHash mapping (for linking upload to download)
+ */
+export async function setUidMapping(uid, fileHash) {
+  if (!isCacheEnabled()) return false;
+
+  try {
+    const key = `uid:${uid}`;
+    await redis.set(key, fileHash);
+    console.log(`[Cache] UID mapping stored: ${uid} -> ${fileHash}`);
+    return true;
+  } catch (error) {
+    console.error('[Cache] Error storing UID mapping:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Get fileHash from UID mapping
+ */
+export async function getUidMapping(uid) {
+  if (!isCacheEnabled()) return null;
+
+  try {
+    const key = `uid:${uid}`;
+    const fileHash = await redis.get(key);
+    if (fileHash) {
+      // Delete after retrieval (one-time use)
+      await redis.del(key);
+    }
+    return fileHash;
+  } catch (error) {
+    console.error('[Cache] Error getting UID mapping:', error.message);
+    return null;
+  }
+}
+
+/**
  * Get cache statistics (for monitoring)
  */
 export async function getCacheStats() {
