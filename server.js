@@ -13,6 +13,16 @@ import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
 import multer from 'multer';
 import JSZip from 'jszip';
+import {
+  initCache,
+  isCacheEnabled,
+  hashContent,
+  getCachedAIReport,
+  setCachedAIReport,
+  getCachedWinDBGAnalysis,
+  setCachedWinDBGAnalysis,
+  getCacheStats
+} from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,6 +48,9 @@ xxhash().then(xxhashModule => {
   hasher = xxhashModule;
   console.log('XXHash initialized for session management');
 });
+
+// Initialize Upstash Redis cache
+initCache();
 
 // Secret for session validation
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -692,14 +705,16 @@ const requireApiKey = (req, res, next) => {
 };
 
 // Health check endpoint for Cloud Run (not rate limited)
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
+app.get('/health', async (req, res) => {
+  const cacheStats = await getCacheStats();
+  res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     services: {
       gemini: !!genAI,
       turnstile: !!TURNSTILE_SECRET_KEY,
-      session: !!ACTUAL_SESSION_SECRET
+      session: !!ACTUAL_SESSION_SECRET,
+      cache: cacheStats
     }
   });
 });
@@ -1506,8 +1521,16 @@ function extractCulpritFromWinDBG(windbgOutput) {
 
 /**
  * Generate AI report from WinDBG analysis
+ * Uses cache to avoid redundant Gemini API calls
  */
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis) {
+  // Check cache first
+  const cachedReport = await getCachedAIReport(windbgAnalysis);
+  if (cachedReport) {
+    console.log('[API/AI] Using cached AI report');
+    return { ...cachedReport, cached: true };
+  }
+
   console.log('[API/AI] Generating AI report from WinDBG analysis...');
 
   const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
@@ -1574,19 +1597,25 @@ Respond with valid JSON matching this schema:
     const response = await result.response;
     const responseText = response.text();
 
+    let report;
     try {
-      return JSON.parse(responseText);
+      report = JSON.parse(responseText);
     } catch (parseError) {
       // Try to extract JSON from response
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
+        report = JSON.parse(jsonMatch[0]);
+      } else {
+        throw parseError;
       }
-      throw parseError;
     }
+
+    // Cache the successful AI report
+    await setCachedAIReport(windbgAnalysis, report);
+    return report;
   } catch (error) {
     console.error('[API/AI] AI analysis error:', error);
-    // Return basic report if AI fails
+    // Return basic report if AI fails (don't cache failures)
     return {
       summary: `Windows crash in ${fileName} analyzed by WinDBG`,
       probableCause: 'WinDBG analysis completed but AI interpretation failed.',
@@ -1712,6 +1741,44 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
     const dumpType = detectDumpType(fileBuffer);
     console.log(`[API/Analyze] Detected dump type: ${dumpType}`);
 
+    // Compute file hash for caching
+    const fileHash = hashContent(fileBuffer);
+    console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
+
+    // Check cache for previous WinDBG analysis of this exact file
+    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
+    if (cachedAnalysis) {
+      console.log('[API/Analyze] Cache HIT - using cached WinDBG analysis');
+
+      // Generate AI report from cached WinDBG output
+      const report = await generateAIReportFromWinDBG(
+        fileName,
+        dumpType,
+        fileSize,
+        cachedAnalysis.windbgOutput
+      );
+
+      const processingTime = (Date.now() - startTime) / 1000;
+      console.log(`[API/Analyze] Completed from cache in ${processingTime}s`);
+
+      return res.json({
+        success: true,
+        data: report,
+        analysisMethod: 'windbg',
+        cached: true,
+        processingTime,
+        metadata: {
+          fileName,
+          fileSize,
+          dumpType,
+          uid: cachedAnalysis.uid,
+          originalZip: originalZip || undefined
+        }
+      });
+    }
+
+    console.log('[API/Analyze] Cache MISS - running full WinDBG analysis');
+
     // Check if WinDBG is configured
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
@@ -1760,6 +1827,15 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
       console.log('[API/Analyze] Step 3: Downloading analysis...');
       const windbgAnalysis = await downloadWinDBGAnalysis(uid);
       console.log(`[API/Analyze] Downloaded ${windbgAnalysis.length} bytes of analysis`);
+
+      // Cache the WinDBG analysis for future requests with same file
+      await setCachedWinDBGAnalysis(fileHash, {
+        windbgOutput: windbgAnalysis,
+        uid,
+        fileName,
+        dumpType,
+        timestamp: Date.now()
+      });
 
       // Step 4: Generate AI report
       console.log('[API/Analyze] Step 4: Generating AI report...');

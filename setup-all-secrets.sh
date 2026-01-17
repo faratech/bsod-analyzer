@@ -82,6 +82,30 @@ else
 fi
 echo ""
 
+# 4. Upstash Redis URL
+echo "4️⃣ Upstash Redis REST URL"
+echo -n "Enter your Upstash Redis REST URL (or press Enter to skip): "
+read -r UPSTASH_URL
+echo ""
+if [ ! -z "$UPSTASH_URL" ]; then
+    setup_secret "upstash-redis-url" "$UPSTASH_URL" "Upstash Redis REST URL"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
+# 5. Upstash Redis Token
+echo "5️⃣ Upstash Redis REST Token"
+echo -n "Enter your Upstash Redis REST Token (or press Enter to skip): "
+read -r -s UPSTASH_TOKEN
+echo ""
+if [ ! -z "$UPSTASH_TOKEN" ]; then
+    setup_secret "upstash-redis-token" "$UPSTASH_TOKEN" "Upstash Redis REST Token"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
 # Grant Cloud Run service account access to all secrets
 echo "🔓 Granting Cloud Run access to all secrets..."
 SERVICE_ACCOUNT=$(gcloud iam service-accounts list \
@@ -97,7 +121,7 @@ fi
 echo "Using service account: ${SERVICE_ACCOUNT}"
 
 # Grant access to each secret
-for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret"; do
+for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "upstash-redis-url" "upstash-redis-token"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${SERVICE_ACCOUNT}" \
