@@ -111,15 +111,17 @@ function getWinDBGKey(fileHash) {
 }
 
 /**
- * Get cached AI report by WinDBG output hash
- * @param {string} windbgOutput - The WinDBG analysis text
+ * Get cached AI report by hash key
+ * @param {string} cacheKey - The cache key (fileHash or content to hash)
  * @returns {Promise<object|null>} Cached report or null
  */
-export async function getCachedAIReport(windbgOutput) {
+export async function getCachedAIReport(cacheKey) {
   if (!isCacheEnabled()) return null;
 
   try {
-    const hash = hashContent(windbgOutput);
+    // If cacheKey looks like a hash (16 hex chars), use it directly
+    const isHash = /^[a-f0-9]{16}$/i.test(cacheKey);
+    const hash = isHash ? cacheKey : hashContent(cacheKey);
     const key = getAIReportKey(hash);
     const cached = await redis.get(key);
 
@@ -139,14 +141,16 @@ export async function getCachedAIReport(windbgOutput) {
 
 /**
  * Cache an AI report
- * @param {string} windbgOutput - The WinDBG analysis text (used for key)
+ * @param {string} cacheKey - The cache key (fileHash or content to hash)
  * @param {object} report - The AI-generated report to cache
  */
-export async function setCachedAIReport(windbgOutput, report) {
+export async function setCachedAIReport(cacheKey, report) {
   if (!isCacheEnabled()) return false;
 
   try {
-    const hash = hashContent(windbgOutput);
+    // If cacheKey looks like a hash (16 hex chars), use it directly
+    const isHash = /^[a-f0-9]{16}$/i.test(cacheKey);
+    const hash = isHash ? cacheKey : hashContent(cacheKey);
     const key = getAIReportKey(hash);
 
     await redis.set(key, JSON.stringify(report));
