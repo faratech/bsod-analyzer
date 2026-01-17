@@ -36,6 +36,7 @@ interface GenerateContentParams {
         topP?: number;
     };
     tools?: any[];
+    fileHash?: string; // For cache key consistency
 }
 
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
@@ -594,7 +595,7 @@ function generateHexDump(buffer: ArrayBuffer, length = PROCESSING_LIMITS.HEX_DUM
 }
 
 
-const generateInitialAnalysis = async (fileName: string, prompt: string): Promise<AnalysisReportData> => {
+const generateInitialAnalysis = async (fileName: string, prompt: string, fileHash?: string): Promise<AnalysisReportData> => {
     try {
         // Check prompt size and warn if too large
         const promptSize = new Blob([prompt]).size;
@@ -616,7 +617,8 @@ const generateInitialAnalysis = async (fileName: string, prompt: string): Promis
                 // Enable optimized settings for complex BSOD analysis
                 temperature: 0.7,
                 maxOutputTokens: 4096,
-            }
+            },
+            fileHash // Pass fileHash for cache key consistency
             // Note: Grounding with Google Search cannot be used with JSON response format
             // To use grounding, we would need to remove responseMimeType and responseSchema
         });
@@ -729,7 +731,8 @@ async function generateReportFromWinDBG(
     fileName: string,
     dumpType: 'minidump' | 'kernel',
     fileSize: number,
-    windbgAnalysis: string
+    windbgAnalysis: string,
+    fileHash?: string
 ): Promise<AnalysisReportData> {
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
@@ -785,7 +788,8 @@ Decode the bug check parameters shown in the WinDBG output.`;
                 responseSchema: reportSchema,
                 temperature: 0.5,
                 maxOutputTokens: 4096
-            }
+            },
+            fileHash // Pass fileHash for cache key consistency
         });
 
         const responseText = response.text;
@@ -914,7 +918,8 @@ export const analyzeDumpFiles = async (
                         dumpFile.file.name,
                         dumpFile.dumpType,
                         dumpFile.file.size,
-                        windbgResult.analysisText
+                        windbgResult.analysisText,
+                        windbgResult.fileHash
                     );
 
                     return { id: dumpFile.id, report: windbgReport, status: FileStatus.ANALYZED };

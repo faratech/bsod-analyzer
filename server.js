@@ -975,7 +975,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
         error: `Request too large. Maximum size is ${SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024}MB` 
       });
     }
-    const { contents, generationConfig, safetySettings, config } = req.body;
+    const { contents, generationConfig, safetySettings, config, fileHash } = req.body;
     const sessionId = req.cookies.bsod_session_id;
 
     // Security: Session validation is handled by requireSession middleware
@@ -1044,11 +1044,11 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
       });
     }
 
-    // Check cache for this prompt
-    const promptHash = hashContent(requestText);
-    const cachedResponse = await getCachedAIReport(requestText);
+    // Check cache using fileHash if provided (consistent with WinDBG cache)
+    const cacheKey = fileHash || hashContent(requestText);
+    const cachedResponse = await getCachedAIReport(cacheKey);
     if (cachedResponse) {
-      console.log('[Gemini API] Cache HIT for prompt hash:', promptHash);
+      console.log('[Gemini API] Cache HIT for:', fileHash ? `fileHash ${fileHash}` : 'prompt hash');
       return res.json({
         ...cachedResponse,
         cached: true
@@ -1189,8 +1189,8 @@ You do NOT provide assistance with any other topics.`
       text // Include text for easier access
     };
 
-    // Cache the response
-    await setCachedAIReport(requestText, responseData);
+    // Cache the response using fileHash if provided
+    await setCachedAIReport(cacheKey, responseData);
 
     res.json(responseData);
   } catch (error) {

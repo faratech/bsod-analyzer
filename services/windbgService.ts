@@ -66,6 +66,7 @@ export interface WinDBGAnalysisResult {
     analysisText: string;
     processingTime?: number;
     error?: string;
+    fileHash?: string; // The xxhash64 of the file, used for cache key consistency
 }
 
 /**
@@ -147,10 +148,10 @@ export async function uploadToWinDBG(file: File): Promise<WinDBGUploadResponse> 
             throw new Error(result.error || 'Upload failed');
         }
 
-        // Handle cached response
+        // Handle cached response - include uid for cache key consistency
         if (result.cached && result.cachedAnalysis) {
             console.log(`[WinDBG] Cache HIT - using cached analysis for ${file.name}`);
-            return result;
+            return { ...result, data: { ...result.data, uid } as WinDBGUploadResponse['data'] };
         }
 
         console.log(`[WinDBG] Upload successful. Queue position: ${result.data?.queue_position}`);
@@ -266,7 +267,8 @@ export async function analyzeWithWinDBG(
             onProgress?.('complete', 'Using cached WinDBG analysis');
             return {
                 success: true,
-                analysisText: uploadResult.cachedAnalysis
+                analysisText: uploadResult.cachedAnalysis,
+                fileHash: uploadResult.data?.uid
             };
         }
 
@@ -338,7 +340,8 @@ export async function analyzeWithWinDBG(
         return {
             success: true,
             analysisText,
-            processingTime: statusResult.data?.processing_time_seconds
+            processingTime: statusResult.data?.processing_time_seconds,
+            fileHash: uid
         };
 
     } catch (error) {
