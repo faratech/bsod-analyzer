@@ -726,6 +726,19 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                     <span className="result-filename">{dumpFile.file.name}</span>
                     <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>({fileSize} KB)</span>
                     {getStatusBadge()}
+                    {dumpFile.cached && dumpFile.status === FileStatus.ANALYZED && (
+                        <div
+                            className="result-status"
+                            style={{
+                                backgroundColor: 'var(--bg-tertiary)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid var(--border-primary)'
+                            }}
+                            title="This file was previously analyzed. Results loaded from cache."
+                        >
+                            Previously Analyzed
+                        </div>
+                    )}
                 </div>
                 <button onClick={() => setIsExpanded(!isExpanded)} style={{background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.5rem'}} aria-expanded={isExpanded} aria-controls={`report-content-${dumpFile.id}`}>
                     {isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}

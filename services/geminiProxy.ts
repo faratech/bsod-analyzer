@@ -931,7 +931,12 @@ export const analyzeDumpFiles = async (
                         windbgResult.fileHash
                     );
 
-                    return { id: dumpFile.id, report: windbgReport, status: FileStatus.ANALYZED };
+                    return {
+                        id: dumpFile.id,
+                        report: windbgReport,
+                        status: FileStatus.ANALYZED,
+                        cached: windbgResult.cached || false
+                    };
                 } else {
                     console.log('[Analyzer] WinDBG analysis failed:', windbgResult.error);
                     console.log('[Analyzer] Falling back to local analysis...');

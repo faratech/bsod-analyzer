@@ -67,6 +67,7 @@ export interface WinDBGAnalysisResult {
     processingTime?: number;
     error?: string;
     fileHash?: string; // The xxhash64 of the file, used for cache key consistency
+    cached?: boolean; // True if WinDBG result was served from cache
 }
 
 /**
@@ -268,7 +269,8 @@ export async function analyzeWithWinDBG(
             return {
                 success: true,
                 analysisText: uploadResult.cachedAnalysis,
-                fileHash: uploadResult.data?.uid
+                fileHash: uploadResult.data?.uid,
+                cached: true
             };
         }
 
