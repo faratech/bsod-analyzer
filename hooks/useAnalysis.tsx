@@ -80,7 +80,12 @@ export const useAnalysis = () => {
                             if (analytics?.trackAnalysisComplete) {
                                 analytics.trackAnalysisComplete(true, df.dumpType);
                             }
-                            return { ...df, status: FileStatus.ANALYZED, report: result.report };
+                            return {
+                                ...df,
+                                status: FileStatus.ANALYZED,
+                                report: result.report,
+                                cached: result.cached || false
+                            };
                         }
                         // Track failed analysis
                         if (analytics?.trackAnalysisComplete) {

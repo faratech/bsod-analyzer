@@ -101,4 +101,5 @@ export interface DumpFile {
   dumpType: 'minidump' | 'kernel';
   report?: AnalysisReportData;
   error?: string;
+  cached?: boolean; // True if the analysis result was served from cache
 }
