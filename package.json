@@ -42,7 +42,7 @@
     "@fullhuman/postcss-purgecss": "latest",
     "@tailwindcss/postcss": "latest",
     "@types/node": "^25.0.9",
-    "@types/react": "^19.2.8",
+    "@types/react": "^19.2.9",
     "@types/react-dom": "latest",
     "autoprefixer": "latest",
     "postcss": "latest",
