@@ -12,7 +12,7 @@ import { useFileProcessor } from '../hooks/useFileProcessor';
 import { useAnalysis } from '../hooks/useAnalysis';
 import { InArticleAd, VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
-import { initializeSession } from '../utils/sessionManager';
+import { initializeSession, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 
 const Analyzer: React.FC = () => {
     const { trackFileUpload, trackAnalysisStart, trackAnalysisComplete } = useAnalytics();
@@ -28,10 +28,17 @@ const Analyzer: React.FC = () => {
     useEffect(() => {
         initializeSession().then(success => {
             setSessionReady(success);
-            if (!success) {
+            if (success) {
+                startSessionRefresh();
+            } else {
                 console.error('Failed to initialize session for analyzer');
             }
         });
+
+        // Cleanup on unmount
+        return () => {
+            stopSessionRefresh();
+        };
     }, []);
 
     const handleFilesAdded = useCallback(async (acceptedFiles: File[]) => {
