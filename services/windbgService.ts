@@ -174,6 +174,38 @@ export interface CachedAnalysisResult {
 }
 
 /**
+ * Cache combined analysis (WinDBG + AI report) after successful flow
+ */
+export async function cacheAnalysis(fileHash: string, windbgOutput: string, aiReport: unknown): Promise<boolean> {
+    try {
+        console.log(`[WinDBG] Caching combined analysis for hash: ${fileHash}`);
+
+        const response = await fetch('/api/cache/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ fileHash, windbgOutput, aiReport })
+        });
+
+        if (!response.ok) {
+            console.warn('[WinDBG] Failed to cache analysis:', response.status);
+            return false;
+        }
+
+        const data = await response.json();
+        if (data.success) {
+            console.log('[WinDBG] Analysis cached successfully');
+            return true;
+        }
+
+        return false;
+    } catch (error) {
+        console.error('[WinDBG] Error caching analysis:', error);
+        return false;
+    }
+}
+
+/**
  * Fetch cached analysis directly by hash (skip upload entirely)
  * Returns both WinDBG analysis and AI report if available
  */

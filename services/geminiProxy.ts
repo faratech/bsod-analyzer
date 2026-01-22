@@ -10,7 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { analyzeWithWinDBG, WinDBGAnalysisResult, fetchCachedAnalysis } from './windbgService';
+import { analyzeWithWinDBG, WinDBGAnalysisResult, fetchCachedAnalysis, cacheAnalysis } from './windbgService';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -957,6 +957,12 @@ export const analyzeDumpFiles = async (
                             dumpFile.fileHash
                         );
 
+                        // Update cache with the complete combined result
+                        if (dumpFile.fileHash) {
+                            cacheAnalysis(dumpFile.fileHash, cachedResult.windbgAnalysis, windbgReport)
+                                .catch(err => console.warn('[Analyzer] Failed to update combined cache:', err));
+                        }
+
                         return {
                             id: dumpFile.id,
                             report: windbgReport,
@@ -1001,6 +1007,12 @@ export const analyzeDumpFiles = async (
                         windbgResult.analysisText,
                         windbgResult.fileHash
                     );
+
+                    // Cache the combined result for future requests (only if fresh, not from cache)
+                    if (!windbgResult.cached && windbgResult.fileHash) {
+                        cacheAnalysis(windbgResult.fileHash, windbgResult.analysisText, windbgReport)
+                            .catch(err => console.warn('[Analyzer] Failed to cache combined analysis:', err));
+                    }
 
                     return {
                         id: dumpFile.id,
