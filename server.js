@@ -1229,7 +1229,7 @@ app.get('/api/cache/get', requireSession, async (req, res) => {
     // Use new combined cache (with legacy fallback built-in)
     const cached = await getCachedAnalysis(hash);
 
-    if (cached) {
+    if (cached && (cached.windbgOutput || cached.aiReport)) {
       console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}...`);
       return res.json({
         success: true,
