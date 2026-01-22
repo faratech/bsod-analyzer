@@ -5,6 +5,7 @@ import { SECURITY_CONFIG } from '../config/security';
 import { validateDumpFile } from '../utils/dumpParser';
 import { useError } from './useError';
 import { FILE_SIZE_THRESHOLDS } from '../constants';
+import { checkCacheStatus } from '../services/windbgService';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP_MAX_SIZE;
 
@@ -76,6 +77,26 @@ export const useFileProcessor = () => {
                 await processFile(file);
             } else {
                 setError(`Invalid file type: ${file.name}. Please upload .dmp, .mdmp, .hdmp, .kdmp files or ZIP archives containing them.`);
+            }
+        }
+
+        // Check cache status for all processed files
+        if (newDumpFiles.length > 0) {
+            try {
+                const files = newDumpFiles.map(df => df.file);
+                const cacheStatus = await checkCacheStatus(files);
+
+                // Update files with cache info
+                for (const dumpFile of newDumpFiles) {
+                    const status = cacheStatus.get(dumpFile.file.name);
+                    if (status) {
+                        dumpFile.fileHash = status.hash;
+                        dumpFile.knownCached = status.cached;
+                    }
+                }
+            } catch (e) {
+                console.error('Error checking cache status:', e);
+                // Continue without cache info - not critical
             }
         }
 

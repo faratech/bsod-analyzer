@@ -1210,6 +1210,45 @@ if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
 }
 
+// Check cache for file hashes (pre-upload detection)
+app.post('/api/cache/check', express.json(), requireSession, async (req, res) => {
+  try {
+    const { hashes } = req.body;
+
+    if (!hashes || !Array.isArray(hashes)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required field: hashes (array of file hashes)'
+      });
+    }
+
+    // Limit number of hashes to check at once
+    const hashesToCheck = hashes.slice(0, 20);
+    const results = {};
+
+    // Check each hash against the WinDBG cache
+    for (const hash of hashesToCheck) {
+      if (typeof hash === 'string' && /^[a-f0-9]{8,16}$/i.test(hash)) {
+        const cached = await getCachedWinDBGAnalysis(hash);
+        results[hash] = cached !== null;
+      }
+    }
+
+    console.log(`[Cache] Checked ${hashesToCheck.length} hashes, ${Object.values(results).filter(Boolean).length} cached`);
+
+    return res.json({
+      success: true,
+      cached: results
+    });
+  } catch (error) {
+    console.error('[Cache] Error checking cache:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to check cache'
+    });
+  }
+});
+
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res) => {

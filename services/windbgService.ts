@@ -74,7 +74,7 @@ export interface WinDBGAnalysisResult {
  * Generate UID from file content hash
  * Using xxhash64 for speed with large dump files
  */
-async function generateFileHash(file: File): Promise<string> {
+export async function generateFileHash(file: File): Promise<string> {
     const buffer = await file.arrayBuffer();
     const data = new Uint8Array(buffer);
 
@@ -92,6 +92,74 @@ async function generateFileHash(file: File): Promise<string> {
         hash |= 0;
     }
     return Math.abs(hash).toString(16);
+}
+
+/**
+ * Check cache status for multiple files before upload
+ * Returns a map of file hash -> cached status
+ */
+export async function checkCacheStatus(files: File[]): Promise<Map<string, { hash: string; cached: boolean }>> {
+    const results = new Map<string, { hash: string; cached: boolean }>();
+
+    if (files.length === 0) {
+        return results;
+    }
+
+    try {
+        // Generate hashes for all files in parallel
+        const hashPromises = files.map(async (file) => ({
+            name: file.name,
+            hash: await generateFileHash(file)
+        }));
+        const fileHashes = await Promise.all(hashPromises);
+
+        // Create a map of hash -> filename for lookup
+        const hashToFile = new Map<string, string>();
+        const hashes: string[] = [];
+        for (const { name, hash } of fileHashes) {
+            hashToFile.set(hash, name);
+            hashes.push(hash);
+        }
+
+        // Check cache status via API
+        const response = await fetch('/api/cache/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ hashes })
+        });
+
+        if (!response.ok) {
+            console.warn('[WinDBG] Cache check failed:', response.status);
+            // Return all as not cached on error
+            for (const { name, hash } of fileHashes) {
+                results.set(name, { hash, cached: false });
+            }
+            return results;
+        }
+
+        const data = await response.json();
+
+        if (data.success && data.cached) {
+            for (const { name, hash } of fileHashes) {
+                results.set(name, { hash, cached: data.cached[hash] || false });
+            }
+
+            const cachedCount = Object.values(data.cached).filter(Boolean).length;
+            console.log(`[WinDBG] Cache check: ${cachedCount}/${files.length} files already cached`);
+        } else {
+            // Return all as not cached if response format is unexpected
+            for (const { name, hash } of fileHashes) {
+                results.set(name, { hash, cached: false });
+            }
+        }
+
+        return results;
+    } catch (error) {
+        console.error('[WinDBG] Error checking cache status:', error);
+        // Return empty map on error - will just proceed without cache info
+        return results;
+    }
 }
 
 /**
