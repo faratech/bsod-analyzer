@@ -726,6 +726,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                     <span className="result-filename">{dumpFile.file.name}</span>
                     <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>({fileSize} KB)</span>
                     {getStatusBadge()}
+                    {/* Show "Previously Analyzed" after analysis completes from cache */}
                     {dumpFile.cached && dumpFile.status === FileStatus.ANALYZED && (
                         <div
                             className="result-status"
@@ -737,6 +738,20 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                             title="This file was previously analyzed. Results loaded from cache."
                         >
                             Previously Analyzed
+                        </div>
+                    )}
+                    {/* Show "Cached" before analysis starts if detected in pre-check */}
+                    {dumpFile.knownCached && dumpFile.status === FileStatus.PENDING && (
+                        <div
+                            className="result-status"
+                            style={{
+                                backgroundColor: 'var(--status-success-bg)',
+                                color: 'var(--status-success)',
+                                border: '1px solid var(--status-success)'
+                            }}
+                            title="This file was previously analyzed. Analysis will load instantly from cache."
+                        >
+                            Cached
                         </div>
                     )}
                 </div>
