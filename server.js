@@ -20,6 +20,9 @@ import {
   setCachedAIReport,
   getCachedWinDBGAnalysis,
   setCachedWinDBGAnalysis,
+  getCachedAnalysis,
+  setCachedAnalysis,
+  isAnalysisCached,
   getCacheStats
 } from './services/cache.js';
 
@@ -1211,7 +1214,7 @@ if (!WINDBG_API_KEY) {
 }
 
 // Get cached analysis by file hash (skip upload for known-cached files)
-// Returns both WinDBG analysis and AI report if available
+// Returns combined WinDBG analysis and AI report from single cache key
 app.get('/api/cache/get', requireSession, async (req, res) => {
   try {
     const { hash } = req.query;
@@ -1223,19 +1226,16 @@ app.get('/api/cache/get', requireSession, async (req, res) => {
       });
     }
 
-    // Check both caches
-    const [windbgCached, aiCached] = await Promise.all([
-      getCachedWinDBGAnalysis(hash),
-      getCachedAIReport(hash)
-    ]);
+    // Use new combined cache (with legacy fallback built-in)
+    const cached = await getCachedAnalysis(hash);
 
-    if (windbgCached || aiCached) {
-      console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}... (windbg: ${!!windbgCached}, ai: ${!!aiCached})`);
+    if (cached) {
+      console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}...`);
       return res.json({
         success: true,
         cached: true,
-        windbgAnalysis: windbgCached?.windbgOutput || null,
-        aiReport: aiCached || null,
+        windbgAnalysis: cached.windbgOutput || null,
+        aiReport: cached.aiReport || null,
         fileHash: hash
       });
     }
@@ -1251,6 +1251,48 @@ app.get('/api/cache/get', requireSession, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: 'Failed to get cached analysis'
+    });
+  }
+});
+
+// Store combined analysis (WinDBG + AI report) in cache
+app.post('/api/cache/set', express.json({ limit: '5mb' }), requireSession, async (req, res) => {
+  try {
+    const { fileHash, windbgOutput, aiReport } = req.body;
+
+    if (!fileHash || typeof fileHash !== 'string' || !/^[a-f0-9]{8,16}$/i.test(fileHash)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid or missing fileHash'
+      });
+    }
+
+    if (!windbgOutput && !aiReport) {
+      return res.status(400).json({
+        success: false,
+        error: 'Must provide at least windbgOutput or aiReport'
+      });
+    }
+
+    const success = await setCachedAnalysis(fileHash, {
+      windbgOutput: windbgOutput || null,
+      aiReport: aiReport || null
+    });
+
+    if (success) {
+      console.log(`[Cache] SET combined analysis for hash ${fileHash.substring(0, 12)}...`);
+      return res.json({ success: true });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cache analysis'
+    });
+  } catch (error) {
+    console.error('[Cache] Error setting cache:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cache analysis'
     });
   }
 });
@@ -1271,13 +1313,14 @@ app.post('/api/cache/check', express.json(), requireSession, async (req, res) =>
     const hashesToCheck = hashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the WinDBG cache
-    for (const hash of hashesToCheck) {
-      if (typeof hash === 'string' && /^[a-f0-9]{8,16}$/i.test(hash)) {
-        const cached = await getCachedWinDBGAnalysis(hash);
-        results[hash] = cached !== null;
-      }
-    }
+    // Check each hash against the combined cache (with legacy fallback)
+    const checkPromises = hashesToCheck
+      .filter(hash => typeof hash === 'string' && /^[a-f0-9]{8,16}$/i.test(hash))
+      .map(async (hash) => {
+        results[hash] = await isAnalysisCached(hash);
+      });
+
+    await Promise.all(checkPromises);
 
     console.log(`[Cache] Checked ${hashesToCheck.length} hashes, ${Object.values(results).filter(Boolean).length} cached`);
 
