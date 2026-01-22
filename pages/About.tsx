@@ -169,7 +169,7 @@ const About: React.FC = () => {
                         <h2>The Team</h2>
                         <p>
                             BSOD AI Analyzer is developed by Fara Technologies LLC in partnership with <a href="https://windowsforum.com" target="_blank" rel="noopener noreferrer">WindowsForum</a>,
-                            one of the internet's oldest and most trusted Windows support communities. Special thanks to
+                            one of the internet's oldest and most trusted Windows support communities. Special thanks to{' '}
                             <a href="https://www.stack-tech.com" target="_blank" rel="noopener noreferrer">Stack-Tech</a> for providing additional compute resources. Our team combines:
                         </p>
                         <ul>
