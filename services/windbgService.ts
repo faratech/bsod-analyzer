@@ -163,6 +163,58 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
 }
 
 /**
+ * Result from fetching cached analysis (includes both WinDBG and AI report)
+ */
+export interface CachedAnalysisResult {
+    success: boolean;
+    windbgAnalysis?: string;
+    aiReport?: unknown; // The full AI report object
+    fileHash: string;
+    error?: string;
+}
+
+/**
+ * Fetch cached analysis directly by hash (skip upload entirely)
+ * Returns both WinDBG analysis and AI report if available
+ */
+export async function fetchCachedAnalysis(hash: string): Promise<CachedAnalysisResult> {
+    try {
+        console.log(`[WinDBG] Fetching cached analysis for hash: ${hash}`);
+
+        const response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error(`Cache fetch failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.success && data.cached) {
+            const hasWinDBG = !!data.windbgAnalysis;
+            const hasAI = !!data.aiReport;
+            console.log(`[WinDBG] Cached analysis fetched (windbg: ${hasWinDBG}, ai: ${hasAI})`);
+            return {
+                success: true,
+                windbgAnalysis: data.windbgAnalysis || undefined,
+                aiReport: data.aiReport || undefined,
+                fileHash: hash
+            };
+        }
+
+        throw new Error(data.error || 'Cache miss');
+    } catch (error) {
+        console.error('[WinDBG] Failed to fetch cached analysis:', error);
+        return {
+            success: false,
+            fileHash: hash,
+            error: (error as Error).message
+        };
+    }
+}
+
+/**
  * Convert File to base64 string
  */
 async function fileToBase64(file: File): Promise<string> {

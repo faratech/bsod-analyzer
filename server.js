@@ -1210,6 +1210,51 @@ if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
 }
 
+// Get cached analysis by file hash (skip upload for known-cached files)
+// Returns both WinDBG analysis and AI report if available
+app.get('/api/cache/get', requireSession, async (req, res) => {
+  try {
+    const { hash } = req.query;
+
+    if (!hash || typeof hash !== 'string' || !/^[a-f0-9]{8,16}$/i.test(hash)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid or missing hash parameter'
+      });
+    }
+
+    // Check both caches
+    const [windbgCached, aiCached] = await Promise.all([
+      getCachedWinDBGAnalysis(hash),
+      getCachedAIReport(hash)
+    ]);
+
+    if (windbgCached || aiCached) {
+      console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}... (windbg: ${!!windbgCached}, ai: ${!!aiCached})`);
+      return res.json({
+        success: true,
+        cached: true,
+        windbgAnalysis: windbgCached?.windbgOutput || null,
+        aiReport: aiCached || null,
+        fileHash: hash
+      });
+    }
+
+    console.log(`[Cache] GET miss for hash ${hash.substring(0, 12)}...`);
+    return res.json({
+      success: false,
+      cached: false,
+      error: 'Not found in cache'
+    });
+  } catch (error) {
+    console.error('[Cache] Error getting cached analysis:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get cached analysis'
+    });
+  }
+});
+
 // Check cache for file hashes (pre-upload detection)
 app.post('/api/cache/check', express.json(), requireSession, async (req, res) => {
   try {

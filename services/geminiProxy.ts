@@ -10,7 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
+import { analyzeWithWinDBG, WinDBGAnalysisResult, fetchCachedAnalysis } from './windbgService';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -900,6 +900,59 @@ export const analyzeDumpFiles = async (
         const result = await (async () => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
+
+            // Fast path: If file is known to be cached, fetch directly without uploading
+            if (dumpFile.knownCached && dumpFile.fileHash) {
+                console.log('[Analyzer] File known to be cached, fetching directly...');
+                if (onProgress) {
+                    onProgress('downloading', 'Loading cached analysis...');
+                }
+
+                const cachedResult = await fetchCachedAnalysis(dumpFile.fileHash);
+
+                if (cachedResult.success) {
+                    // If we have a cached AI report, use it directly (skip AI call too)
+                    if (cachedResult.aiReport) {
+                        console.log('[Analyzer] Using fully cached result (WinDBG + AI)');
+                        if (onProgress) {
+                            onProgress('complete', 'Loaded from cache');
+                        }
+                        return {
+                            id: dumpFile.id,
+                            report: cachedResult.aiReport as AnalysisReportData,
+                            status: FileStatus.ANALYZED,
+                            cached: true
+                        };
+                    }
+
+                    // If we have cached WinDBG analysis, generate AI report from it
+                    if (cachedResult.windbgAnalysis) {
+                        console.log('[Analyzer] Using cached WinDBG analysis, generating AI report...');
+                        if (onProgress) {
+                            onProgress('analyzing', 'AI is interpreting the crash analysis...');
+                        }
+
+                        const windbgReport = await generateReportFromWinDBG(
+                            dumpFile.file.name,
+                            dumpFile.dumpType,
+                            dumpFile.file.size,
+                            cachedResult.windbgAnalysis,
+                            dumpFile.fileHash
+                        );
+
+                        return {
+                            id: dumpFile.id,
+                            report: windbgReport,
+                            status: FileStatus.ANALYZED,
+                            cached: true
+                        };
+                    }
+                }
+
+                // Cache fetch failed, fall through to normal flow
+                console.log('[Analyzer] Cache fetch failed, falling back to normal flow...');
+            }
+
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
             console.log('[Analyzer] File buffer loaded, size:', fileBuffer.byteLength);
 
