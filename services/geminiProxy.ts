@@ -890,12 +890,13 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
 
 export const analyzeDumpFiles = async (
     files: DumpFile[],
-    onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void
+    onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void,
+    onFileComplete?: (result: { id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean }) => void
 ) => {
-    // Process files sequentially to avoid overwhelming the WinDBG server
-    const results: Array<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus }> = [];
+    // Process files in parallel for better performance
+    // Each file's result is streamed to onFileComplete as it finishes
 
-    for (const dumpFile of files) {
+    const analyzeFile = async (dumpFile: DumpFile): Promise<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean }> => {
         const result = await (async () => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
@@ -1653,10 +1654,36 @@ Decode ALL bug check parameters with their specific meanings:
         }
         })();
 
-        results.push(result);
-    }
+        return result;
+    };
 
-    return results;
+    // Process all files in parallel and stream results as they complete
+    const filePromises = files.map(async (dumpFile) => {
+        const result = await analyzeFile(dumpFile);
+        // Stream result to callback immediately when this file completes
+        if (onFileComplete) {
+            onFileComplete(result);
+        }
+        return result;
+    });
+
+    // Wait for all files to complete and return all results
+    const results = await Promise.allSettled(filePromises);
+
+    // Extract successful results, handling any rejected promises
+    return results.map((result, index) => {
+        if (result.status === 'fulfilled') {
+            return result.value;
+        } else {
+            // Handle rejected promise (shouldn't happen since we catch errors inside analyzeFile)
+            console.error(`Promise rejected for file ${files[index].file.name}:`, result.reason);
+            return {
+                id: files[index].id,
+                error: `Unexpected error: ${result.reason}`,
+                status: FileStatus.ERROR
+            };
+        }
+    });
 };
 
 const getAdvancedPrompt = (tool: string, dumpFile: DumpFile, extractedStrings: string, hexDump: string): string => {
