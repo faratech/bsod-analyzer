@@ -24,7 +24,7 @@
     "compression": "latest",
     "concurrently": "latest",
     "cookie-parser": "latest",
-    "cors": "latest",
+    "cors": "^2.8.6",
     "dotenv": "latest",
     "express": "latest",
     "express-rate-limit": "latest",
