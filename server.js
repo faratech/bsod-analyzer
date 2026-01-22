@@ -1298,7 +1298,8 @@ app.post('/api/cache/set', express.json({ limit: '5mb' }), requireSession, async
 });
 
 // Check cache for file hashes (pre-upload detection)
-app.post('/api/cache/check', express.json(), requireSession, async (req, res) => {
+// No session required - read-only lookup by hash, doesn't expose sensitive data
+app.post('/api/cache/check', express.json(), async (req, res) => {
   try {
     const { hashes } = req.body;
 
