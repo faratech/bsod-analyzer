@@ -43,13 +43,18 @@ export const useAnalysis = () => {
             )
         );
 
-        // Initialize progress tracking
+        // Check if all files are known to be cached - skip progress animation if so
+        const allCached = filesToAnalyze.every(f => f.knownCached);
+
+        // Initialize progress tracking (skip for fully cached analyses)
         const startTime = Date.now();
-        setProgress({
-            stage: 'uploading',
-            message: 'Preparing analysis...',
-            startTime
-        });
+        if (!allCached) {
+            setProgress({
+                stage: 'uploading',
+                message: 'Preparing analysis...',
+                startTime
+            });
+        }
 
         try {
             // Track analysis start for each file
@@ -59,8 +64,8 @@ export const useAnalysis = () => {
                 });
             }
 
-            // Progress callback for WinDBG stages
-            const onProgress = (stage: AnalysisStage, message: string) => {
+            // Progress callback for WinDBG stages (skip for fully cached analyses)
+            const onProgress = allCached ? undefined : (stage: AnalysisStage, message: string) => {
                 setProgress({
                     stage,
                     message,
