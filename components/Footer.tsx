@@ -9,7 +9,8 @@ const Footer: React.FC = () => {
                     <div className="footer-section">
                         <div className="footer-brand">
                             <span className="footer-company">Fara Technologies LLC</span>
-                            <span className="footer-tagline">In partnership with WindowsForum</span>
+                            <span className="footer-tagline">In partnership with <a href="https://windowsforum.com" target="_blank" rel="noopener noreferrer">WindowsForum</a></span>
+                            <span className="footer-tagline">Special thanks to <a href="https://www.stack-tech.com" target="_blank" rel="noopener noreferrer">Stack-Tech</a></span>
                         </div>
                         <p className="footer-description">
                             Professional BSOD analysis powered by advanced AI technology. 
