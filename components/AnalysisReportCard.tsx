@@ -418,7 +418,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     <span style={{color: 'var(--text-tertiary)'}}>Component:</span>
                                     <span style={{color: 'var(--text-primary)', fontWeight: '500'}}>{hardwareError.component}</span>
                                 </div>
-                                {hardwareError.details.length > 0 && (
+                                {hardwareError.details?.length > 0 && (
                                     <div style={{
                                         backgroundColor: 'var(--bg-primary)',
                                         padding: '0.75rem',
@@ -545,11 +545,11 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                                 fontSize: '0.8rem',
                                                 color: 'var(--text-secondary)'
                                             }}>
-                                                {warning.issues.slice(0, 2).map((issue, j) => (
+                                                {warning.issues?.slice(0, 2).map((issue, j) => (
                                                     <li key={j}>{issue}</li>
                                                 ))}
                                             </ul>
-                                            {warning.recommendations.length > 0 && (
+                                            {warning.recommendations?.length > 0 && (
                                                 <div style={{
                                                     marginTop: '0.5rem',
                                                     fontSize: '0.75rem',
@@ -586,12 +586,14 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     </div>
                                 )}
                             </div>
+                            {dumpFile.report.recommendations && dumpFile.report.recommendations.length > 0 && (
                             <div>
                                 <h3>Recommendations</h3>
                                 <ul style={{listStyle: 'disc', paddingLeft: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem'}}>
                                     {dumpFile.report.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
                                 </ul>
                             </div>
+                            )}
                         </div>
 
                         {/* Register Context */}
