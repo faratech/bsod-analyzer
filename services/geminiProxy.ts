@@ -917,9 +917,26 @@ export const analyzeDumpFiles = async (
                         if (onProgress) {
                             onProgress('complete', 'Loaded from cache');
                         }
+
+                        // Parse the cached AI report - it's stored as raw Gemini response
+                        let parsedReport: AnalysisReportData;
+                        try {
+                            const rawReport = cachedResult.aiReport as { text?: string };
+                            if (rawReport.text) {
+                                parsedReport = JSON.parse(rawReport.text);
+                            } else {
+                                // Fallback if already parsed
+                                parsedReport = cachedResult.aiReport as AnalysisReportData;
+                            }
+                        } catch (parseError) {
+                            console.error('[Analyzer] Failed to parse cached AI report:', parseError);
+                            // Fall through to WinDBG path or normal flow
+                            parsedReport = cachedResult.aiReport as AnalysisReportData;
+                        }
+
                         return {
                             id: dumpFile.id,
-                            report: cachedResult.aiReport as AnalysisReportData,
+                            report: parsedReport,
                             status: FileStatus.ANALYZED,
                             cached: true
                         };
