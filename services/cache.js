@@ -289,7 +289,7 @@ export async function setCachedAnalysis(fileHash, data) {
 }
 
 /**
- * Check if analysis is cached (quick check without fetching data)
+ * Check if analysis is cached with usable data
  * @param {string} fileHash - The file content hash
  * @returns {Promise<boolean>}
  */
@@ -297,15 +297,9 @@ export async function isAnalysisCached(fileHash) {
   if (!isCacheEnabled()) return false;
 
   try {
-    // Check new key first
-    const key = getAnalysisKey(fileHash);
-    const exists = await redis.exists(key);
-    if (exists) return true;
-
-    // Fallback: Check legacy WinDBG key
-    const legacyKey = getWinDBGKey(fileHash);
-    const legacyExists = await redis.exists(legacyKey);
-    return legacyExists > 0;
+    // Fetch and verify usable data exists (not just key existence)
+    const cached = await getCachedAnalysis(fileHash);
+    return !!(cached && (cached.windbgOutput || cached.aiReport));
   } catch (error) {
     console.error('[Cache] Error checking analysis cache:', error.message);
     return false;
