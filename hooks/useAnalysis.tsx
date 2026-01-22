@@ -68,34 +68,36 @@ export const useAnalysis = () => {
                 });
             };
 
-            const analysisResults = await analyzeDumpFiles(filesToAnalyze, onProgress);
-
-            // Update files with results
-            onUpdate(prevFiles =>
-                prevFiles.map(df => {
-                    const result = analysisResults.find(r => r.id === df.id);
-                    if (result) {
-                        if (result.report) {
-                            // Track successful analysis
-                            if (analytics?.trackAnalysisComplete) {
-                                analytics.trackAnalysisComplete(true, df.dumpType);
+            // Callback to update UI immediately when each file completes
+            const onFileComplete = (result: { id: string; report?: typeof filesToAnalyze[0]['report']; error?: string; status: FileStatus; cached?: boolean }) => {
+                onUpdate(prevFiles =>
+                    prevFiles.map(df => {
+                        if (df.id === result.id) {
+                            if (result.report) {
+                                // Track successful analysis
+                                if (analytics?.trackAnalysisComplete) {
+                                    analytics.trackAnalysisComplete(true, df.dumpType);
+                                }
+                                return {
+                                    ...df,
+                                    status: FileStatus.ANALYZED,
+                                    report: result.report,
+                                    cached: result.cached || false
+                                };
                             }
-                            return {
-                                ...df,
-                                status: FileStatus.ANALYZED,
-                                report: result.report,
-                                cached: result.cached || false
-                            };
+                            // Track failed analysis
+                            if (analytics?.trackAnalysisComplete) {
+                                analytics.trackAnalysisComplete(false, df.dumpType);
+                            }
+                            return { ...df, status: FileStatus.ERROR, error: result.error || 'Unknown analysis error' };
                         }
-                        // Track failed analysis
-                        if (analytics?.trackAnalysisComplete) {
-                            analytics.trackAnalysisComplete(false, df.dumpType);
-                        }
-                        return { ...df, status: FileStatus.ERROR, error: result.error || 'Unknown analysis error' };
-                    }
-                    return df;
-                })
-            );
+                        return df;
+                    })
+                );
+            };
+
+            // Process files in parallel - results stream to UI via onFileComplete
+            await analyzeDumpFiles(filesToAnalyze, onProgress, onFileComplete);
         } catch (e) {
             console.error("Analysis failed:", e);
             setError('A critical error occurred during analysis.');
