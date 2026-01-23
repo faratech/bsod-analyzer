@@ -34,7 +34,7 @@
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "latest",
-    "react-router-dom": "^7.12.0",
+    "react-router-dom": "^7.13.0",
     "remark-gfm": "latest",
     "xxhash-wasm": "latest"
   },
