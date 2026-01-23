@@ -11,8 +11,8 @@
 import { Redis } from '@upstash/redis';
 import xxhash from 'xxhash-wasm';
 
-// Cache TTL: 72 hours maximum
-const CACHE_TTL_SECONDS = 72 * 60 * 60; // 259200 seconds
+// Cache TTL: 7 days maximum
+const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 604800 seconds
 
 // Initialize xxhash
 let hasher = null;
@@ -156,7 +156,7 @@ export async function setCachedAIReport(cacheKey, report) {
     const key = getAIReportKey(hash);
 
     await redis.set(key, JSON.stringify(report), { ex: CACHE_TTL_SECONDS });
-    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}... (TTL: 72h)`);
+    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}... (TTL: 7d)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching AI report:', error.message);
@@ -203,7 +203,7 @@ export async function setCachedWinDBGAnalysis(fileBuffer, analysisData) {
     const key = getWinDBGKey(hash);
 
     await redis.set(key, JSON.stringify(analysisData), { ex: CACHE_TTL_SECONDS });
-    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}... (TTL: 72h)`);
+    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}... (TTL: 7d)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching WinDBG analysis:', error.message);
@@ -281,7 +281,7 @@ export async function setCachedAnalysis(fileHash, data) {
     };
 
     await redis.set(key, JSON.stringify(cacheData), { ex: CACHE_TTL_SECONDS });
-    console.log(`[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 72h)`);
+    console.log(`[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 7d)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching analysis:', error.message);
