@@ -11,7 +11,8 @@
 import { Redis } from '@upstash/redis';
 import xxhash from 'xxhash-wasm';
 
-// No TTL - Upstash handles eviction automatically
+// Cache TTL: 72 hours maximum
+const CACHE_TTL_SECONDS = 72 * 60 * 60; // 259200 seconds
 
 // Initialize xxhash
 let hasher = null;
@@ -154,8 +155,8 @@ export async function setCachedAIReport(cacheKey, report) {
     const hash = isHash ? cacheKey : hashContent(cacheKey);
     const key = getAIReportKey(hash);
 
-    await redis.set(key, JSON.stringify(report));
-    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}...`);
+    await redis.set(key, JSON.stringify(report), { ex: CACHE_TTL_SECONDS });
+    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}... (TTL: 72h)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching AI report:', error.message);
@@ -201,8 +202,8 @@ export async function setCachedWinDBGAnalysis(fileBuffer, analysisData) {
     const hash = Buffer.isBuffer(fileBuffer) ? hashContent(fileBuffer) : fileBuffer;
     const key = getWinDBGKey(hash);
 
-    await redis.set(key, JSON.stringify(analysisData));
-    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}...`);
+    await redis.set(key, JSON.stringify(analysisData), { ex: CACHE_TTL_SECONDS });
+    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}... (TTL: 72h)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching WinDBG analysis:', error.message);
@@ -279,8 +280,8 @@ export async function setCachedAnalysis(fileHash, data) {
       timestamp: Date.now()
     };
 
-    await redis.set(key, JSON.stringify(cacheData));
-    console.log(`[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}...`);
+    await redis.set(key, JSON.stringify(cacheData), { ex: CACHE_TTL_SECONDS });
+    console.log(`[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 72h)`);
     return true;
   } catch (error) {
     console.error('[Cache] Error caching analysis:', error.message);
