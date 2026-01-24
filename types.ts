@@ -48,6 +48,19 @@ export interface LoadedModule {
   isCulprit?: boolean;
 }
 
+export interface StackFrame {
+  address: string;
+  module: string;
+  function?: string;
+  offset?: string;
+}
+
+export interface SystemInfo {
+  windowsVersion?: string;    // e.g., "10.0.22631.4460"
+  systemUptime?: string;      // e.g., "0 days 4:23:45"
+  processName?: string;       // e.g., "System", "chrome.exe"
+}
+
 export interface DriverWarning {
   driverName: string;
   displayName: string;
@@ -92,6 +105,13 @@ export interface AnalysisReportData {
   advancedAnalyses?: AdvancedAnalysisResult[];
   // Legacy field for bug check code (deprecated, use bugCheck instead)
   bugCheckCode?: string;
+  // WinDBG-specific fields (parsed directly from raw output)
+  failureBucketId?: string;   // Searchable crash signature
+  symbolName?: string;        // e.g., "nt!MmAccessFault+0x93ea0"
+  faultAddress?: string;      // Memory address that faulted
+  systemInfo?: SystemInfo;
+  callStack?: StackFrame[];   // Actual call stack (not just loaded modules)
+  rawWinDbgOutput?: string;   // Full !analyze -v output for advanced users
 }
 
 export interface DumpFile {
