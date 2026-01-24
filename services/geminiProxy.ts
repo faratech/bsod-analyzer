@@ -1,5 +1,5 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
-import { DumpFile, AnalysisReportData, FileStatus } from '../types';
+import { DumpFile, AnalysisReportData, FileStatus, StackFrame, SystemInfo } from '../types';
 import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
@@ -746,6 +746,15 @@ async function generateReportFromWinDBG(
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
 
+    // Parse structured fields directly from WinDBG output (more reliable than AI extraction)
+    const parsedFields = parseWinDbgOutput(windbgAnalysis);
+    console.log('[Analyzer] Parsed WinDBG fields:', {
+        failureBucketId: parsedFields.failureBucketId ? 'present' : 'missing',
+        symbolName: parsedFields.symbolName ? 'present' : 'missing',
+        callStackFrames: parsedFields.callStack?.length || 0,
+        processName: parsedFields.systemInfo?.processName || 'missing'
+    });
+
     // Pass full WinDBG output without truncation
     const truncatedAnalysis = windbgAnalysis;
 
@@ -806,9 +815,15 @@ Decode the bug check parameters shown in the WinDBG output.`;
 
         // Parse the JSON response
         try {
-            const report = JSON.parse(responseText) as AnalysisReportData;
+            const aiReport = JSON.parse(responseText) as AnalysisReportData;
             console.log('[Analyzer] Successfully parsed WinDBG-based report');
-            return report;
+            // Merge AI report with directly parsed fields (parsed fields take precedence for structured data)
+            return {
+                ...aiReport,
+                ...parsedFields,
+                // Preserve AI's systemInfo but merge with parsed
+                systemInfo: { ...aiReport.systemInfo, ...parsedFields.systemInfo }
+            };
         } catch (parseError) {
             console.error('[Analyzer] Failed to parse WinDBG AI response:', parseError);
 
@@ -816,15 +831,19 @@ Decode the bug check parameters shown in the WinDBG output.`;
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
-                    const report = JSON.parse(jsonMatch[0]) as AnalysisReportData;
+                    const aiReport = JSON.parse(jsonMatch[0]) as AnalysisReportData;
                     console.log('[Analyzer] Extracted JSON from WinDBG response');
-                    return report;
+                    return {
+                        ...aiReport,
+                        ...parsedFields,
+                        systemInfo: { ...aiReport.systemInfo, ...parsedFields.systemInfo }
+                    };
                 } catch {
                     // Continue to fallback
                 }
             }
 
-            // Return a basic report from WinDBG output
+            // Return a basic report from WinDBG output with parsed fields
             return {
                 summary: `Windows crash analyzed via WinDBG for ${fileName}`,
                 probableCause: 'Analysis completed by WinDBG server. See raw output for details.',
@@ -834,13 +853,14 @@ Decode the bug check parameters shown in the WinDBG output.`;
                     'Update the identified driver if applicable',
                     'Check for Windows updates',
                     'Run system file checker (sfc /scannow)'
-                ]
+                ],
+                ...parsedFields
             };
         }
     } catch (error) {
         console.error('[Analyzer] WinDBG AI analysis error:', error);
 
-        // Return a basic report if AI fails
+        // Return a basic report if AI fails, still include parsed fields
         return {
             summary: `Windows crash in ${fileName} analyzed by WinDBG`,
             probableCause: 'WinDBG analysis completed but AI interpretation failed.',
@@ -849,7 +869,8 @@ Decode the bug check parameters shown in the WinDBG output.`;
                 'Review the raw WinDBG output manually',
                 'Update drivers mentioned in the analysis',
                 'Check Windows Event Viewer for related errors'
-            ]
+            ],
+            ...parsedFields
         };
     }
 }
@@ -886,6 +907,117 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
     }
 
     return 'Unknown';
+}
+
+/**
+ * Parse additional structured data from WinDBG raw output.
+ * This extracts fields that the AI might miss or misinterpret.
+ */
+function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
+    const result: Partial<AnalysisReportData> = {};
+
+    // Extract FAILURE_BUCKET_ID - highly searchable crash signature
+    const bucketMatch = output.match(/FAILURE_BUCKET_ID:\s*(.+)/i);
+    if (bucketMatch) {
+        result.failureBucketId = bucketMatch[1].trim();
+    }
+
+    // Extract SYMBOL_NAME - precise crash location
+    const symbolMatch = output.match(/SYMBOL_NAME:\s*(.+)/i);
+    if (symbolMatch) {
+        result.symbolName = symbolMatch[1].trim();
+    }
+
+    // Extract fault address from various sources
+    const faultAddrMatch = output.match(/TRAP_FRAME:.*Rip\s*=\s*([0-9a-fA-F`]+)/i) ||
+                           output.match(/FAULTING_IP:\s*\S+\s*([0-9a-fA-F`]+)/i) ||
+                           output.match(/READ_ADDRESS:\s*([0-9a-fA-F`]+)/i) ||
+                           output.match(/WRITE_ADDRESS:\s*([0-9a-fA-F`]+)/i);
+    if (faultAddrMatch) {
+        result.faultAddress = faultAddrMatch[1].trim();
+    }
+
+    // Extract system info
+    const systemInfo: SystemInfo = {};
+
+    // PROCESS_NAME
+    const processMatch = output.match(/PROCESS_NAME:\s*(\S+)/i);
+    if (processMatch) {
+        systemInfo.processName = processMatch[1];
+    }
+
+    // Windows version from ProductVersion or OS_VERSION
+    const versionMatch = output.match(/ProductVersion:\s*([0-9.]+)/i) ||
+                         output.match(/OS_VERSION:\s*([0-9.]+)/i);
+    if (versionMatch) {
+        systemInfo.windowsVersion = versionMatch[1];
+    }
+
+    // System uptime
+    const uptimeMatch = output.match(/SYSTEM_UPTIME:\s*(.+)/i);
+    if (uptimeMatch) {
+        systemInfo.systemUptime = uptimeMatch[1].trim();
+    }
+
+    if (Object.keys(systemInfo).length > 0) {
+        result.systemInfo = systemInfo;
+    }
+
+    // Parse STACK_TEXT for call stack
+    const stackMatch = output.match(/STACK_TEXT:\s*([\s\S]*?)(?=\n\n[A-Z_]+:|CHKIMG_EXTENSION|SYMBOL_NAME|\n\nFOLLOWUP|$)/i);
+    if (stackMatch) {
+        result.callStack = parseStackText(stackMatch[1]);
+    }
+
+    // Include raw output (truncated if very large)
+    const MAX_RAW_OUTPUT = 50000;
+    if (output.length > MAX_RAW_OUTPUT) {
+        result.rawWinDbgOutput = output.slice(0, MAX_RAW_OUTPUT) + '\n\n... (truncated, ' + output.length + ' total characters)';
+    } else {
+        result.rawWinDbgOutput = output;
+    }
+
+    return result;
+}
+
+/**
+ * Parse the STACK_TEXT section from WinDBG output into structured frames.
+ */
+function parseStackText(stackText: string): StackFrame[] {
+    const frames: StackFrame[] = [];
+    const lines = stackText.split('\n');
+
+    for (const line of lines) {
+        // WinDBG stack format: "fffff807`12345678 nt!KeBugCheckEx+0x0"
+        // Or: "00000000`12345678 module!Function+0x123"
+        const match = line.match(/^\s*([0-9a-fA-F`]+)\s+(\S+?)!([^+\s]+)(?:\+0x([0-9a-fA-F]+))?/);
+        if (match) {
+            frames.push({
+                address: match[1],
+                module: match[2],
+                function: match[3],
+                offset: match[4] ? `0x${match[4]}` : undefined
+            });
+        } else {
+            // Try simpler format: "fffff807`12345678 00000000`00000000 : args"
+            // This captures stack frames without symbols
+            const addrMatch = line.match(/^\s*([0-9a-fA-F`]{16,17})\s+([0-9a-fA-F`]+)/);
+            if (addrMatch && !line.includes('Args to Child')) {
+                // Only add if we don't have a function name - less useful but still data
+                frames.push({
+                    address: addrMatch[1],
+                    module: 'unknown',
+                    function: undefined,
+                    offset: undefined
+                });
+            }
+        }
+
+        // Limit to reasonable number of frames
+        if (frames.length >= 20) break;
+    }
+
+    return frames;
 }
 
 export const analyzeDumpFiles = async (

@@ -53,6 +53,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
     const [runningTool, setRunningTool] = useState<string | null>(null);
     const [toolError, setToolError] = useState<string | null>(null);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [showCallStack, setShowCallStack] = useState<boolean>(false);
+    const [showRawOutput, setShowRawOutput] = useState<boolean>(false);
 
     const handleRunTool = async (tool: string) => {
         if (!dumpFile.report || !tool || runningTool) return;
@@ -71,7 +73,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
     const generateMarkdownReport = (): string => {
         if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis } = dumpFile.report;
+        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
         let report = `# BSOD Analysis Report for ${dumpFile.file.name}\n\n`;
 
@@ -86,6 +88,21 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                 });
                 report += `\n`;
             }
+        }
+
+        // Failure Bucket ID
+        if (failureBucketId) {
+            report += `**Failure Bucket:** \`${failureBucketId}\`\n\n`;
+        }
+
+        // Symbol and Process Info
+        if (symbolName || systemInfo?.processName || systemInfo?.windowsVersion) {
+            report += `## System Info\n`;
+            if (systemInfo?.processName) report += `- **Process:** ${systemInfo.processName}\n`;
+            if (symbolName) report += `- **Symbol:** \`${symbolName}\`\n`;
+            if (systemInfo?.windowsVersion) report += `- **Windows Version:** ${systemInfo.windowsVersion}\n`;
+            if (systemInfo?.systemUptime) report += `- **System Uptime:** ${systemInfo.systemUptime}\n`;
+            report += `\n`;
         }
 
         // Parameter Analysis
@@ -174,12 +191,30 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             report += `## Loaded Modules\n\`\`\`\n${stackTrace.join('\n')}\n\`\`\`\n\n`;
         }
 
+        // Call Stack
+        if (callStack && callStack.length > 0) {
+            report += `## Call Stack (${callStack.length} frames)\n\`\`\`\n`;
+            callStack.forEach((frame, i) => {
+                let frameLine = `${i.toString().padStart(2, ' ')} ${frame.address} ${frame.module}`;
+                if (frame.function) frameLine += `!${frame.function}`;
+                if (frame.offset) frameLine += `+${frame.offset}`;
+                report += `${frameLine}\n`;
+            });
+            report += `\`\`\`\n\n`;
+        }
+
         if (advancedAnalyses && advancedAnalyses.length > 0) {
             report += `## Advanced Analysis Results\n`;
             advancedAnalyses.forEach(analysis => {
                 report += `### Output for \`${analysis.tool}\`\n\n\`\`\`markdown\n${analysis.result}\n\`\`\`\n\n`;
             });
         }
+
+        // Raw WinDBG Output (optional, can be large)
+        if (rawWinDbgOutput) {
+            report += `## Raw WinDBG Output\n\n<details>\n<summary>Click to expand (${rawWinDbgOutput.length.toLocaleString()} characters)</summary>\n\n\`\`\`\n${rawWinDbgOutput}\n\`\`\`\n\n</details>\n\n`;
+        }
+
         return report;
     };
 
@@ -265,7 +300,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             case FileStatus.ANALYZED:
                 if (!dumpFile.report) return null;
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
-                const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis } = dumpFile.report;
+                const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
                 return (
                     <div style={{padding: '1.5rem'}}>
@@ -328,6 +363,86 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                                 <span>{param.meaning}</span>
                                             </div>
                                         ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Failure Bucket ID - Crash signature */}
+                        {failureBucketId && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                border: '1px solid var(--border-primary)',
+                                borderRadius: '0.5rem',
+                                padding: '0.75rem 1rem',
+                                marginBottom: '1.5rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem'
+                            }}>
+                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.85rem', flexShrink: 0}}>Failure Bucket:</span>
+                                <span style={{
+                                    fontFamily: 'Jetbrains Mono, monospace',
+                                    fontSize: '0.85rem',
+                                    color: 'var(--text-primary)',
+                                    wordBreak: 'break-all'
+                                }}>{failureBucketId}</span>
+                                <button
+                                    onClick={() => navigator.clipboard.writeText(failureBucketId)}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        padding: '0.25rem',
+                                        color: 'var(--text-tertiary)',
+                                        marginLeft: 'auto',
+                                        flexShrink: 0
+                                    }}
+                                    title="Copy failure bucket ID"
+                                >
+                                    <ClipboardIcon />
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Symbol Name and Process Info */}
+                        {(symbolName || systemInfo?.processName) && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderRadius: '0.5rem',
+                                padding: '0.75rem 1rem',
+                                marginBottom: '1.5rem',
+                                border: '1px solid var(--border-primary)',
+                                display: 'flex',
+                                gap: '1.5rem',
+                                flexWrap: 'wrap',
+                                fontSize: '0.85rem'
+                            }}>
+                                {systemInfo?.processName && (
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                                        <span style={{color: 'var(--text-tertiary)'}}>Process:</span>
+                                        <span style={{
+                                            fontFamily: 'Jetbrains Mono, monospace',
+                                            color: 'var(--text-primary)',
+                                            fontWeight: '500'
+                                        }}>{systemInfo.processName}</span>
+                                    </div>
+                                )}
+                                {symbolName && (
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0, flex: 1}}>
+                                        <span style={{color: 'var(--text-tertiary)', flexShrink: 0}}>Symbol:</span>
+                                        <span style={{
+                                            fontFamily: 'Jetbrains Mono, monospace',
+                                            color: 'var(--brand-primary)',
+                                            fontWeight: '500',
+                                            wordBreak: 'break-all'
+                                        }}>{symbolName}</span>
+                                    </div>
+                                )}
+                                {systemInfo?.windowsVersion && (
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                                        <span style={{color: 'var(--text-tertiary)'}}>Windows:</span>
+                                        <span style={{color: 'var(--text-secondary)'}}>{systemInfo.windowsVersion}</span>
                                     </div>
                                 )}
                             </div>
@@ -671,6 +786,154 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                 <pre className="code-block">
                                     {dumpFile.report.stackTrace.join('\n')}
                                 </pre>
+                            </div>
+                        )}
+
+                        {/* Call Stack from WinDBG */}
+                        {callStack && callStack.length > 0 && (
+                            <div style={{marginTop: '1.5rem'}}>
+                                <button
+                                    onClick={() => setShowCallStack(!showCallStack)}
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        padding: 0,
+                                        color: 'var(--text-primary)',
+                                        fontSize: '1rem',
+                                        fontWeight: '600'
+                                    }}
+                                    aria-expanded={showCallStack}
+                                >
+                                    <span style={{display: 'inline-flex', transform: showCallStack ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronDownIcon />
+                                    </span>
+                                    Call Stack ({callStack.length} frames)
+                                </button>
+                                {showCallStack && (
+                                    <div style={{
+                                        marginTop: '0.75rem',
+                                        backgroundColor: 'var(--bg-secondary)',
+                                        padding: '0.75rem',
+                                        borderRadius: '0.5rem',
+                                        fontSize: '0.8rem',
+                                        fontFamily: 'Jetbrains Mono, monospace',
+                                        overflowX: 'auto'
+                                    }}>
+                                        {callStack.map((frame, i) => (
+                                            <div key={i} style={{
+                                                padding: '0.25rem 0',
+                                                borderBottom: i < callStack.length - 1 ? '1px solid var(--border-primary)' : 'none',
+                                                display: 'flex',
+                                                gap: '0.75rem',
+                                                alignItems: 'baseline'
+                                            }}>
+                                                <span style={{
+                                                    color: 'var(--text-tertiary)',
+                                                    minWidth: '1.5rem',
+                                                    textAlign: 'right'
+                                                }}>{i}</span>
+                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem'}}>{frame.address}</span>
+                                                <span>
+                                                    <span style={{color: 'var(--brand-primary)'}}>{frame.module}</span>
+                                                    {frame.function && (
+                                                        <>
+                                                            <span style={{color: 'var(--text-tertiary)'}}>!</span>
+                                                            <span style={{color: 'var(--text-primary)'}}>{frame.function}</span>
+                                                        </>
+                                                    )}
+                                                    {frame.offset && (
+                                                        <span style={{color: 'var(--text-tertiary)'}}>+{frame.offset}</span>
+                                                    )}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Raw WinDBG Output */}
+                        {rawWinDbgOutput && (
+                            <div style={{marginTop: '1.5rem'}}>
+                                <button
+                                    onClick={() => setShowRawOutput(!showRawOutput)}
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        padding: 0,
+                                        color: 'var(--text-primary)',
+                                        fontSize: '1rem',
+                                        fontWeight: '600'
+                                    }}
+                                    aria-expanded={showRawOutput}
+                                >
+                                    <span style={{display: 'inline-flex', transform: showRawOutput ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronDownIcon />
+                                    </span>
+                                    <TerminalIcon className="w-4 h-4" />
+                                    Raw WinDBG Output
+                                </button>
+                                {showRawOutput && (
+                                    <div style={{
+                                        marginTop: '0.75rem',
+                                        backgroundColor: 'var(--bg-primary)',
+                                        border: '1px solid var(--border-primary)',
+                                        borderRadius: '0.5rem',
+                                        overflow: 'hidden'
+                                    }}>
+                                        <div style={{
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                            padding: '0.5rem 0.75rem',
+                                            backgroundColor: 'var(--bg-secondary)',
+                                            borderBottom: '1px solid var(--border-primary)'
+                                        }}>
+                                            <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>
+                                                {rawWinDbgOutput.length.toLocaleString()} characters
+                                            </span>
+                                            <button
+                                                onClick={() => navigator.clipboard.writeText(rawWinDbgOutput)}
+                                                style={{
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.35rem',
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    color: 'var(--text-secondary)',
+                                                    fontSize: '0.75rem',
+                                                    padding: '0.25rem 0.5rem'
+                                                }}
+                                                title="Copy raw output"
+                                            >
+                                                <ClipboardIcon />
+                                                Copy
+                                            </button>
+                                        </div>
+                                        <pre style={{
+                                            margin: 0,
+                                            padding: '0.75rem',
+                                            fontSize: '0.75rem',
+                                            fontFamily: 'Jetbrains Mono, monospace',
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-all',
+                                            maxHeight: '400px',
+                                            overflowY: 'auto',
+                                            color: 'var(--text-secondary)'
+                                        }}>
+                                            {rawWinDbgOutput}
+                                        </pre>
+                                    </div>
+                                )}
                             </div>
                         )}
 
