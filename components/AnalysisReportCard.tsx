@@ -817,8 +817,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     }}
                                     aria-expanded={showCallStack}
                                 >
-                                    <span style={{display: 'inline-flex', transform: showCallStack ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronDownIcon />
+                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showCallStack ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronDownIcon className="w-4 h-4" />
                                     </span>
                                     Call Stack ({callStack.length} frames)
                                 </button>
@@ -884,8 +884,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     }}
                                     aria-expanded={showRawOutput}
                                 >
-                                    <span style={{display: 'inline-flex', transform: showRawOutput ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronDownIcon />
+                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showRawOutput ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronDownIcon className="w-4 h-4" />
                                     </span>
                                     <TerminalIcon className="w-4 h-4" />
                                     Raw WinDBG Output
