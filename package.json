@@ -39,14 +39,14 @@
     "xxhash-wasm": "latest"
   },
   "devDependencies": {
-    "@fullhuman/postcss-purgecss": "latest",
+    "@fullhuman/postcss-purgecss": "^8.0.0",
     "@tailwindcss/postcss": "latest",
     "@types/node": "^25.0.10",
     "@types/react": "^19.2.9",
     "@types/react-dom": "latest",
     "autoprefixer": "latest",
     "postcss": "latest",
-    "purgecss": "latest",
+    "purgecss": "^8.0.0",
     "tailwindcss": "latest",
     "terser": "^5.46.0",
     "typescript": "latest",
