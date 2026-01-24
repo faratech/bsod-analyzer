@@ -302,6 +302,15 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
                 const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
+                // Debug logging for WinDBG fields
+                console.log('[UI] Report WinDBG fields:', {
+                    failureBucketId: failureBucketId || 'missing',
+                    symbolName: symbolName || 'missing',
+                    processName: systemInfo?.processName || 'missing',
+                    callStackFrames: callStack?.length || 0,
+                    rawWinDbgOutputLength: rawWinDbgOutput?.length || 0
+                });
+
                 return (
                     <div style={{padding: '1.5rem'}}>
 

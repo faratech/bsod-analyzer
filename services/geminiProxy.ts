@@ -818,12 +818,19 @@ Decode the bug check parameters shown in the WinDBG output.`;
             const aiReport = JSON.parse(responseText) as AnalysisReportData;
             console.log('[Analyzer] Successfully parsed WinDBG-based report');
             // Merge AI report with directly parsed fields (parsed fields take precedence for structured data)
-            return {
+            const mergedReport = {
                 ...aiReport,
                 ...parsedFields,
                 // Preserve AI's systemInfo but merge with parsed
                 systemInfo: { ...aiReport.systemInfo, ...parsedFields.systemInfo }
             };
+            console.log('[Analyzer] Merged report has:', {
+                failureBucketId: mergedReport.failureBucketId || 'missing',
+                symbolName: mergedReport.symbolName || 'missing',
+                rawWinDbgOutput: mergedReport.rawWinDbgOutput ? `${mergedReport.rawWinDbgOutput.length} chars` : 'missing',
+                callStack: mergedReport.callStack?.length || 0
+            });
+            return mergedReport;
         } catch (parseError) {
             console.error('[Analyzer] Failed to parse WinDBG AI response:', parseError);
 
@@ -916,16 +923,23 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
 function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
     const result: Partial<AnalysisReportData> = {};
 
+    console.log('[WinDBG Parser] Parsing output of length:', output.length);
+    console.log('[WinDBG Parser] First 500 chars:', output.substring(0, 500));
+
     // Extract FAILURE_BUCKET_ID - highly searchable crash signature
     const bucketMatch = output.match(/FAILURE_BUCKET_ID:\s*(.+)/i);
     if (bucketMatch) {
         result.failureBucketId = bucketMatch[1].trim();
+        console.log('[WinDBG Parser] Found failureBucketId:', result.failureBucketId);
+    } else {
+        console.log('[WinDBG Parser] No FAILURE_BUCKET_ID found');
     }
 
     // Extract SYMBOL_NAME - precise crash location
     const symbolMatch = output.match(/SYMBOL_NAME:\s*(.+)/i);
     if (symbolMatch) {
         result.symbolName = symbolMatch[1].trim();
+        console.log('[WinDBG Parser] Found symbolName:', result.symbolName);
     }
 
     // Extract fault address from various sources
@@ -976,6 +990,15 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
     } else {
         result.rawWinDbgOutput = output;
     }
+
+    console.log('[WinDBG Parser] Parse result summary:', {
+        hasFailureBucketId: !!result.failureBucketId,
+        hasSymbolName: !!result.symbolName,
+        hasFaultAddress: !!result.faultAddress,
+        hasSystemInfo: !!result.systemInfo,
+        callStackFrames: result.callStack?.length || 0,
+        rawOutputLength: result.rawWinDbgOutput?.length || 0
+    });
 
     return result;
 }
@@ -1064,6 +1087,18 @@ export const analyzeDumpFiles = async (
                             console.error('[Analyzer] Failed to parse cached AI report:', parseError);
                             // Fall through to WinDBG path or normal flow
                             parsedReport = cachedResult.aiReport as AnalysisReportData;
+                        }
+
+                        // If we have the raw WinDBG analysis, parse and merge additional fields
+                        // This ensures new parsed fields are added to older cached reports
+                        if (cachedResult.windbgAnalysis && !parsedReport.rawWinDbgOutput) {
+                            console.log('[Analyzer] Enriching cached report with parsed WinDBG fields');
+                            const parsedFields = parseWinDbgOutput(cachedResult.windbgAnalysis);
+                            parsedReport = {
+                                ...parsedReport,
+                                ...parsedFields,
+                                systemInfo: { ...parsedReport.systemInfo, ...parsedFields.systemInfo }
+                            };
                         }
 
                         return {
