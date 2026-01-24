@@ -883,6 +883,87 @@ Decode the bug check parameters shown in the WinDBG output.`;
 }
 
 /**
+ * Convert Windows version number to friendly name
+ * e.g., "6.1.7601" -> "Windows 7 SP1"
+ */
+function getWindowsVersionName(version: string): string {
+    const parts = version.split('.');
+    if (parts.length < 2) return '';
+
+    const major = parseInt(parts[0], 10);
+    const minor = parseInt(parts[1], 10);
+    const build = parts.length >= 3 ? parseInt(parts[2], 10) : 0;
+
+    // Windows 10/11 - differentiated by build number
+    if (major === 10 && minor === 0) {
+        // Windows 11
+        if (build >= 26200) return 'Windows 11 25H2';
+        if (build >= 26100) return 'Windows 11 24H2';
+        if (build >= 22631) return 'Windows 11 23H2';
+        if (build >= 22621) return 'Windows 11 22H2';
+        if (build >= 22000) return 'Windows 11 21H2';
+
+        // Windows 10
+        if (build >= 19045) return 'Windows 10 22H2';
+        if (build >= 19044) return 'Windows 10 21H2';
+        if (build >= 19043) return 'Windows 10 21H1';
+        if (build >= 19042) return 'Windows 10 20H2';
+        if (build >= 19041) return 'Windows 10 2004';
+        if (build >= 18363) return 'Windows 10 1909';
+        if (build >= 18362) return 'Windows 10 1903';
+        if (build >= 17763) return 'Windows 10 1809';
+        if (build >= 17134) return 'Windows 10 1803';
+        if (build >= 16299) return 'Windows 10 1709';
+        if (build >= 15063) return 'Windows 10 1703';
+        if (build >= 14393) return 'Windows 10 1607';
+        if (build >= 10586) return 'Windows 10 1511';
+        if (build >= 10240) return 'Windows 10 1507';
+        return 'Windows 10';
+    }
+
+    // Windows 8.1 / Server 2012 R2
+    if (major === 6 && minor === 3) {
+        return 'Windows 8.1';
+    }
+
+    // Windows 8 / Server 2012
+    if (major === 6 && minor === 2) {
+        return 'Windows 8';
+    }
+
+    // Windows 7 / Server 2008 R2
+    if (major === 6 && minor === 1) {
+        if (build >= 7601) return 'Windows 7 SP1';
+        return 'Windows 7';
+    }
+
+    // Windows Vista / Server 2008
+    if (major === 6 && minor === 0) {
+        if (build >= 6002) return 'Windows Vista SP2';
+        if (build >= 6001) return 'Windows Vista SP1';
+        return 'Windows Vista';
+    }
+
+    // Windows XP x64 / Server 2003
+    if (major === 5 && minor === 2) {
+        return 'Windows XP x64 / Server 2003';
+    }
+
+    // Windows XP
+    if (major === 5 && minor === 1) {
+        if (build >= 2600) return 'Windows XP SP2+';
+        return 'Windows XP';
+    }
+
+    // Windows 2000
+    if (major === 5 && minor === 0) {
+        return 'Windows 2000';
+    }
+
+    return '';
+}
+
+/**
  * Extract the culprit module name from WinDBG output
  */
 function extractCulpritFromWinDBG(windbgOutput: string): string {
@@ -964,7 +1045,11 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
     const versionMatch = output.match(/ProductVersion:\s*([0-9.]+)/i) ||
                          output.match(/OS_VERSION:\s*([0-9.]+)/i);
     if (versionMatch) {
-        systemInfo.windowsVersion = versionMatch[1];
+        const versionNumber = versionMatch[1];
+        const friendlyName = getWindowsVersionName(versionNumber);
+        systemInfo.windowsVersion = friendlyName
+            ? `${friendlyName} (${versionNumber})`
+            : versionNumber;
     }
 
     // System uptime
@@ -983,13 +1068,8 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
         result.callStack = parseStackText(stackMatch[1]);
     }
 
-    // Include raw output (truncated if very large)
-    const MAX_RAW_OUTPUT = 50000;
-    if (output.length > MAX_RAW_OUTPUT) {
-        result.rawWinDbgOutput = output.slice(0, MAX_RAW_OUTPUT) + '\n\n... (truncated, ' + output.length + ' total characters)';
-    } else {
-        result.rawWinDbgOutput = output;
-    }
+    // Include full raw output for UI display
+    result.rawWinDbgOutput = output;
 
     console.log('[WinDBG Parser] Parse result summary:', {
         hasFailureBucketId: !!result.failureBucketId,
