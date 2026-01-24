@@ -1004,6 +1004,72 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
 }
 
 /**
+ * Extract module information from WinDBG !analyze -v output.
+ * Looks for MODULE_NAME, IMAGE_NAME, and module list sections.
+ */
+function extractModuleInfoFromWinDBG(output: string): string | null {
+    const lines: string[] = [];
+
+    // Extract MODULE_NAME and IMAGE_NAME
+    const moduleNameMatch = output.match(/MODULE_NAME:\s*(.+)/i);
+    const imageNameMatch = output.match(/IMAGE_NAME:\s*(.+)/i);
+    const faultingModuleMatch = output.match(/FAULTING_MODULE:\s*(.+)/i);
+
+    if (moduleNameMatch) lines.push(`MODULE_NAME: ${moduleNameMatch[1].trim()}`);
+    if (imageNameMatch) lines.push(`IMAGE_NAME:  ${imageNameMatch[1].trim()}`);
+    if (faultingModuleMatch) lines.push(`FAULTING_MODULE: ${faultingModuleMatch[1].trim()}`);
+
+    // Try to find loaded module list (various formats)
+    const moduleListMatch = output.match(/LOADED_IMAGE_NAME:\s*(.+)/gi);
+    if (moduleListMatch && moduleListMatch.length > 0) {
+        lines.push('');
+        lines.push('Loaded Modules:');
+        moduleListMatch.forEach(m => lines.push(`  ${m}`));
+    }
+
+    // Look for module addresses
+    const moduleAddrPattern = /([0-9a-fA-F`]+)\s+([0-9a-fA-F`]+)\s+(\S+\.sys|\S+\.dll|\S+\.exe)/gi;
+    const moduleAddrs = output.match(moduleAddrPattern);
+    if (moduleAddrs && moduleAddrs.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('Module Addresses:');
+        // Deduplicate and limit
+        const uniqueModules = [...new Set(moduleAddrs)].slice(0, 30);
+        uniqueModules.forEach(m => lines.push(`  ${m}`));
+    }
+
+    return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
+ * Extract process information from WinDBG !analyze -v output.
+ */
+function extractProcessInfoFromWinDBG(output: string): string | null {
+    const lines: string[] = [];
+
+    // Extract process-related fields
+    const processNameMatch = output.match(/PROCESS_NAME:\s*(.+)/i);
+    const currentIrqlMatch = output.match(/CURRENT_IRQL:\s*(.+)/i);
+    const defaultBucketMatch = output.match(/DEFAULT_BUCKET_ID:\s*(.+)/i);
+    const bugcheckStrMatch = output.match(/BUGCHECK_STR:\s*(.+)/i);
+
+    if (processNameMatch) lines.push(`PROCESS_NAME:      ${processNameMatch[1].trim()}`);
+    if (currentIrqlMatch) lines.push(`CURRENT_IRQL:      ${currentIrqlMatch[1].trim()}`);
+    if (defaultBucketMatch) lines.push(`DEFAULT_BUCKET_ID: ${defaultBucketMatch[1].trim()}`);
+    if (bugcheckStrMatch) lines.push(`BUGCHECK_STR:      ${bugcheckStrMatch[1].trim()}`);
+
+    // Try to find CONTEXT section
+    const contextMatch = output.match(/CONTEXT:\s*([\s\S]*?)(?=\n\n[A-Z_]+:|\nSTACK_TEXT|\nFOLLOWUP)/i);
+    if (contextMatch) {
+        lines.push('');
+        lines.push('CONTEXT:');
+        lines.push(contextMatch[1].trim().split('\n').slice(0, 10).join('\n'));
+    }
+
+    return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
  * Parse the STACK_TEXT section from WinDBG output into structured frames.
  */
 function parseStackText(stackText: string): StackFrame[] {
@@ -1992,50 +2058,84 @@ export const runAdvancedAnalysis = async (tool: string, dumpFile: DumpFile): Pro
     if (!dumpFile.report) {
         throw new Error("Cannot run advanced analysis without an initial report.");
     }
-    
+
+    // Check if we have real WinDBG output from the server
+    const hasRealWinDbgOutput = !!dumpFile.report.rawWinDbgOutput;
+
     // Re-process the file to get the data needed for the prompt.
     const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
-    
+
     try {
         // Use real WinDbg command implementations
         let result: string;
-        
+
         switch (tool) {
             case '!analyze -v': {
-                const commandResult = executeAnalyzeV(fileBuffer);
-                if (commandResult.success) {
-                    // Format as markdown for better presentation
-                    result = `## !analyze -v\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
+                // Use real WinDBG server output if available
+                if (hasRealWinDbgOutput) {
+                    console.log('[Advanced] Using real WinDBG output for !analyze -v');
+                    result = `## !analyze -v (WinDBG Server)\n\n\`\`\`\n${dumpFile.report.rawWinDbgOutput}\n\`\`\``;
                 } else {
-                    result = `Error executing !analyze -v: ${commandResult.error}`;
+                    // Fall back to local simulation
+                    console.log('[Advanced] Using local simulation for !analyze -v');
+                    const commandResult = executeAnalyzeV(fileBuffer);
+                    if (commandResult.success) {
+                        result = `## !analyze -v (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
+                    } else {
+                        result = `Error executing !analyze -v: ${commandResult.error}`;
+                    }
                 }
                 break;
             }
             
             case 'lm kv': {
+                // Try to extract module info from real WinDBG output
+                if (hasRealWinDbgOutput) {
+                    const moduleSection = extractModuleInfoFromWinDBG(dumpFile.report.rawWinDbgOutput!);
+                    if (moduleSection) {
+                        console.log('[Advanced] Extracted module info from real WinDBG output');
+                        result = `## lm kv (from WinDBG Server)\n\n\`\`\`\n${moduleSection}\n\`\`\``;
+                        break;
+                    }
+                }
+                // Fall back to local simulation
+                console.log('[Advanced] Using local simulation for lm kv');
                 const commandResult = executeLmKv(fileBuffer);
                 if (commandResult.success) {
-                    result = `## lm kv\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
+                    result = `## lm kv (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
                 } else {
                     result = `Error executing lm kv: ${commandResult.error}`;
                 }
                 break;
             }
-            
+
             case '!process 0 0': {
+                // Try to extract process info from real WinDBG output
+                if (hasRealWinDbgOutput) {
+                    const processSection = extractProcessInfoFromWinDBG(dumpFile.report.rawWinDbgOutput!);
+                    if (processSection) {
+                        console.log('[Advanced] Extracted process info from real WinDBG output');
+                        result = `## !process 0 0 (from WinDBG Server)\n\n\`\`\`\n${processSection}\n\`\`\``;
+                        break;
+                    }
+                }
+                // Fall back to local simulation
+                console.log('[Advanced] Using local simulation for !process 0 0');
                 const commandResult = executeProcess00(fileBuffer);
                 if (commandResult.success) {
-                    result = `## !process 0 0\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
+                    result = `## !process 0 0 (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
                 } else {
                     result = `Error executing !process 0 0: ${commandResult.error}`;
                 }
                 break;
             }
-            
+
             case '!vm': {
+                // Local simulation only - !vm info not typically in !analyze -v output
+                console.log('[Advanced] Using local simulation for !vm');
                 const commandResult = executeVm(fileBuffer);
                 if (commandResult.success) {
-                    result = `## !vm\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
+                    result = `## !vm (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
                 } else {
                     result = `Error executing !vm: ${commandResult.error}`;
                 }
