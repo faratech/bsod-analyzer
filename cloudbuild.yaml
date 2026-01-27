@@ -36,8 +36,35 @@ steps:
       - '--update-secrets'
       - 'GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest'
 
+  # Purge Cloudflare cache after deployment
+  - name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🧹 Purging Cloudflare cache for bsod.windowsforum.com..."
+        RESPONSE=$$(curl -s -w "\n%%{http_code}" -X POST \
+          "https://api.cloudflare.com/client/v4/zones/$${CLOUDFLARE_ZONE_ID}/purge_cache" \
+          -H "Authorization: Bearer $${CLOUDFLARE_PURGE_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data '{"hosts":["bsod.windowsforum.com"]}')
+        HTTP_CODE=$$(echo "$$RESPONSE" | tail -n1)
+        if [ "$$HTTP_CODE" = "200" ]; then
+          echo "✅ Cloudflare cache purged successfully"
+        else
+          echo "⚠️  Cache purge returned HTTP $$HTTP_CODE (non-fatal)"
+        fi
+    secretEnv: ['CLOUDFLARE_PURGE_TOKEN', 'CLOUDFLARE_ZONE_ID']
+
 substitutions:
   _REGION: us-east1
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/cloudflare-purge-token/versions/latest
+      env: 'CLOUDFLARE_PURGE_TOKEN'
+    - versionName: projects/$PROJECT_ID/secrets/cloudflare-zone-id/versions/latest
+      env: 'CLOUDFLARE_ZONE_ID'
 
 options:
   logging: CLOUD_LOGGING_ONLY

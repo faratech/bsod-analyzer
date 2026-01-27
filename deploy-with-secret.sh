@@ -35,3 +35,11 @@ SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --platform managed --
 
 echo "✅ Deployment complete!"
 echo "🌐 Service URL: ${SERVICE_URL}"
+
+# Purge Cloudflare cache
+echo "🧹 Purging Cloudflare cache..."
+export CLOUDFLARE_PURGE_TOKEN=$(gcloud secrets versions access latest --secret=cloudflare-purge-token --project=${PROJECT_ID} 2>/dev/null || echo "")
+export CLOUDFLARE_ZONE_ID=$(gcloud secrets versions access latest --secret=cloudflare-zone-id --project=${PROJECT_ID} 2>/dev/null || echo "")
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/scripts/purge-cloudflare-cache.sh"
