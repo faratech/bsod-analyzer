@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "latest",
-    "@upstash/redis": "^1.36.1",
+    "@upstash/redis": "^1.36.2",
     "compression": "latest",
     "concurrently": "latest",
     "cookie-parser": "latest",
