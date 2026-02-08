@@ -2277,22 +2277,10 @@ body.mobile-menu-open {
   overflow-x: hidden;
 }
 
-/* All sections hidden by default; active one shown.
-   Inactive sections use position:absolute + clip to stay in DOM for SEO
-   but not affect layout or be visible to users. */
-.docs-section {
-  display: none;
+.docs-section,
+.about-section {
   margin-bottom: 3rem;
-}
-
-.docs-section.docs-section-active {
-  display: block;
-  animation: docsFadeIn 0.25s ease-out;
-}
-
-@keyframes docsFadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  scroll-margin-top: 6rem;
 }
 
 .docs-section h2 {

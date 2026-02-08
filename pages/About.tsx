@@ -1,10 +1,31 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import PageLayout from '../components/PageLayout';
 import StructuredData from '../components/StructuredData';
 import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
 
 const About: React.FC = () => {
+    const [activeSection, setActiveSection] = useState('');
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        setActiveSection(entry.target.id);
+                    }
+                });
+            },
+            { rootMargin: '-100px 0px -70% 0px' }
+        );
+
+        const sections = document.querySelectorAll('.about-section');
+        sections.forEach((section) => observer.observe(section));
+
+        return () => {
+            sections.forEach((section) => observer.unobserve(section));
+        };
+    }, []);
     // Article Structured Data
     const articleData = {
         "@context": "https://schema.org",
@@ -89,9 +110,25 @@ const About: React.FC = () => {
                 keywords="about BSOD analyzer, how BSOD analysis works, AI crash analysis, Windows debugging technology"
                 canonicalPath="/about"
             >
-                <div className="content-wrapper">
-                    
-                    <section className="content-section">
+                <div className="docs-layout">
+                    <nav className="docs-nav">
+                        <h3>Contents</h3>
+                        <ul>
+                            <li><a href="#mission" className={activeSection === 'mission' ? 'active' : ''}>Our Mission</a></li>
+                            <li><a href="#how-it-works" className={activeSection === 'how-it-works' ? 'active' : ''}>How It Works</a></li>
+                            <li><a href="#privacy" className={activeSection === 'privacy' ? 'active' : ''}>Privacy & Security</a></li>
+                            <li><a href="#team" className={activeSection === 'team' ? 'active' : ''}>The Team</a></li>
+                            <li><a href="#features" className={activeSection === 'features' ? 'active' : ''}>Advanced Features</a></li>
+                            <li><a href="#comparison" className={activeSection === 'comparison' ? 'active' : ''}>AI vs WinDbg</a></li>
+                            <li><a href="#windbg-guide" className={activeSection === 'windbg-guide' ? 'active' : ''}>WinDbg Guide</a></li>
+                            <li><a href="#pros-cons" className={activeSection === 'pros-cons' ? 'active' : ''}>Pros and Cons</a></li>
+                            <li><a href="#future" className={activeSection === 'future' ? 'active' : ''}>Future Development</a></li>
+                            <li><a href="#resources" className={activeSection === 'resources' ? 'active' : ''}>Resources</a></li>
+                        </ul>
+                    </nav>
+
+                    <div className="docs-content">
+                    <section id="mission" className="about-section content-section">
                         <h2>Our Mission</h2>
                         <p>
                             BSOD AI Analyzer was created to democratize Windows crash analysis. What once required 
@@ -111,7 +148,7 @@ const About: React.FC = () => {
                         style={{ margin: '3rem 0' }}
                     />
 
-                    <section className="content-section">
+                    <section id="how-it-works" className="about-section content-section">
                         <h2>How It Works</h2>
                         <p>
                             Our analyzer combines real WinDBG debugging with Google's Gemini AI to deliver
@@ -146,7 +183,7 @@ const About: React.FC = () => {
                         style={{ margin: '3rem 0' }}
                     />
 
-                    <section className="content-section">
+                    <section id="privacy" className="about-section content-section">
                         <h2>Privacy & Security</h2>
                         <p>
                             Your privacy is our priority. Here's how we protect your data:
@@ -169,7 +206,7 @@ const About: React.FC = () => {
                         />
                     </div>
 
-                    <section className="content-section">
+                    <section id="team" className="about-section content-section">
                         <h2>The Team</h2>
                         <p>
                             BSOD AI Analyzer is developed by Fara Technologies LLC in partnership with <a href="https://windowsforum.com" target="_blank" rel="noopener noreferrer">WindowsForum</a>,
@@ -183,7 +220,7 @@ const About: React.FC = () => {
                         </ul>
                     </section>
 
-                    <section className="content-section">
+                    <section id="features" className="about-section content-section">
                         <h2>Advanced Features</h2>
                         <p>
                             Our analyzer runs real WinDBG debugging commands on your crash dump server-side.
@@ -201,7 +238,7 @@ const About: React.FC = () => {
                         </p>
                     </section>
 
-                    <section className="content-section">
+                    <section id="comparison" className="about-section content-section">
                         <h2>BSOD AI Analyzer vs WinDbg: Comparison</h2>
                         <p>
                             Understanding the differences between our AI-powered approach and traditional debugging tools 
@@ -273,7 +310,7 @@ const About: React.FC = () => {
                         </div>
                     </section>
 
-                    <section className="content-section">
+                    <section id="windbg-guide" className="about-section content-section">
                         <h2>How to Use WinDbg for Minidump Analysis</h2>
                         <p>
                             For those interested in traditional debugging methods, here's a guide to analyzing minidumps with WinDbg:
@@ -311,7 +348,7 @@ kb                   # Display stack backtrace
                         </ul>
                     </section>
 
-                    <section className="content-section">
+                    <section id="pros-cons" className="about-section content-section">
                         <h2>Pros and Cons: Choosing the Right Tool</h2>
                         
                         <h3>BSOD AI Analyzer - Best For:</h3>
@@ -376,7 +413,7 @@ kb                   # Display stack backtrace
                         </div>
                     </section>
 
-                    <section className="content-section">
+                    <section id="future" className="about-section content-section">
                         <h2>Future Development</h2>
                         <p>
                             We're constantly improving our analysis capabilities. Upcoming features include:
@@ -389,7 +426,7 @@ kb                   # Display stack backtrace
                         </ul>
                     </section>
 
-                    <section className="content-section">
+                    <section id="resources" className="about-section content-section">
                         <h2>Additional Resources</h2>
                         <p>
                             For comprehensive Windows crash troubleshooting guidance, we recommend these official resources:
@@ -440,6 +477,7 @@ kb                   # Display stack backtrace
                             style={{ minHeight: '300px' }}
                         />
                     </section>
+                    </div>
                 </div>
             </PageLayout>
         </>

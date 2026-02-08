@@ -1,56 +1,43 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
 import { InArticleAd, HorizontalAd } from '../components/AdSense';
 
-const SECTIONS = [
-    { id: 'getting-started', label: 'Getting Started' },
-    { id: 'understanding-dumps', label: 'Understanding Dump Files' },
-    { id: 'finding-files', label: 'Finding Your Files' },
-    { id: 'using-analyzer', label: 'Using the Analyzer' },
-    { id: 'analysis-results', label: 'Analysis Results' },
-    { id: 'common-errors', label: 'Common BSOD Errors' },
-    { id: 'advanced-analysis', label: 'Advanced Analysis' },
-    { id: 'prevention-tips', label: 'Prevention Tips' },
-    { id: 'troubleshooting', label: 'Troubleshooting' },
-    { id: 'faq', label: 'FAQ' },
-];
-
 const Documentation: React.FC = () => {
     const location = useLocation();
-    const navigate = useNavigate();
-    const contentRef = useRef<HTMLDivElement>(null);
+    const [activeSection, setActiveSection] = useState('');
 
-    // Determine initial section from URL hash or default to first
-    const getInitialSection = () => {
-        if (location.hash) {
-            const hashId = location.hash.slice(1);
-            if (SECTIONS.some(s => s.id === hashId)) return hashId;
-        }
-        return SECTIONS[0].id;
-    };
-
-    const [activeSection, setActiveSection] = useState(getInitialSection);
-
-    // Handle URL hash changes (e.g. direct links, back/forward)
+    // Smooth scroll to section on hash change
     useEffect(() => {
         if (location.hash) {
-            const hashId = location.hash.slice(1);
-            if (SECTIONS.some(s => s.id === hashId)) {
-                setActiveSection(hashId);
+            const element = document.querySelector(location.hash);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth' });
             }
         }
-    }, [location.hash]);
+    }, [location]);
 
-    const handleNavClick = useCallback((sectionId: string, e: React.MouseEvent) => {
-        e.preventDefault();
-        setActiveSection(sectionId);
-        navigate(`#${sectionId}`, { replace: true });
-        // Scroll content area to top
-        contentRef.current?.scrollTo(0, 0);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, [navigate]);
+    // Track active section for navigation highlighting
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        setActiveSection(entry.target.id);
+                    }
+                });
+            },
+            { rootMargin: '-100px 0px -70% 0px' }
+        );
+
+        const sections = document.querySelectorAll('.docs-section');
+        sections.forEach((section) => observer.observe(section));
+
+        return () => {
+            sections.forEach((section) => observer.unobserve(section));
+        };
+    }, []);
 
     // FAQ Structured Data
     const faqData = {
@@ -178,24 +165,23 @@ const Documentation: React.FC = () => {
                         <nav className="docs-nav">
                             <h3>Contents</h3>
                             <ul>
-                                {SECTIONS.map(section => (
-                                    <li key={section.id}>
-                                        <a
-                                            href={`#${section.id}`}
-                                            className={activeSection === section.id ? 'active' : ''}
-                                            onClick={(e) => handleNavClick(section.id, e)}
-                                        >
-                                            {section.label}
-                                        </a>
-                                    </li>
-                                ))}
+                                <li><a href="#getting-started" className={activeSection === 'getting-started' ? 'active' : ''}>Getting Started</a></li>
+                                <li><a href="#understanding-dumps" className={activeSection === 'understanding-dumps' ? 'active' : ''}>Understanding Dump Files</a></li>
+                                <li><a href="#finding-files" className={activeSection === 'finding-files' ? 'active' : ''}>Finding Your Files</a></li>
+                                <li><a href="#using-analyzer" className={activeSection === 'using-analyzer' ? 'active' : ''}>Using the Analyzer</a></li>
+                                <li><a href="#analysis-results" className={activeSection === 'analysis-results' ? 'active' : ''}>Analysis Results</a></li>
+                                <li><a href="#common-errors" className={activeSection === 'common-errors' ? 'active' : ''}>Common BSOD Errors</a></li>
+                                <li><a href="#advanced-analysis" className={activeSection === 'advanced-analysis' ? 'active' : ''}>Advanced Analysis</a></li>
+                                <li><a href="#prevention-tips" className={activeSection === 'prevention-tips' ? 'active' : ''}>Prevention Tips</a></li>
+                                <li><a href="#troubleshooting" className={activeSection === 'troubleshooting' ? 'active' : ''}>Troubleshooting</a></li>
+                                <li><a href="#faq" className={activeSection === 'faq' ? 'active' : ''}>FAQ</a></li>
                             </ul>
                         </nav>
-                        
-                        {/* Documentation Content - only active section visible, all in DOM for SEO */}
-                        <div className="docs-content" ref={contentRef}>
+
+                        {/* Documentation Content */}
+                        <div className="docs-content">
                             {/* Getting Started */}
-                            <section id="getting-started" className={`docs-section${activeSection === 'getting-started' ? ' docs-section-active' : ''}`}>
+                            <section id="getting-started" className="docs-section">
                                 <h2>Getting Started</h2>
                                 
                                 <p>
@@ -221,7 +207,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Understanding Dumps */}
-                            <section id="understanding-dumps" className={`docs-section${activeSection === 'understanding-dumps' ? ' docs-section-active' : ''}`}>
+                            <section id="understanding-dumps" className="docs-section">
                                 <h2>Understanding Windows Crash Dumps</h2>
                                 
                                 <h3>What is a Memory Dump?</h3>
@@ -260,7 +246,7 @@ const Documentation: React.FC = () => {
                             />
 
                             {/* Finding Files */}
-                            <section id="finding-files" className={`docs-section${activeSection === 'finding-files' ? ' docs-section-active' : ''}`}>
+                            <section id="finding-files" className="docs-section">
                                 <h2>Finding Your Dump Files</h2>
                                 
                                 <h3>Default Locations</h3>
@@ -286,7 +272,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Using the Analyzer */}
-                            <section id="using-analyzer" className={`docs-section${activeSection === 'using-analyzer' ? ' docs-section-active' : ''}`}>
+                            <section id="using-analyzer" className="docs-section">
                                 <h2>Using the Analyzer</h2>
                                 
                                 <h3>Step 1: Prepare Your Files</h3>
@@ -314,7 +300,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Analysis Results */}
-                            <section id="analysis-results" className={`docs-section${activeSection === 'analysis-results' ? ' docs-section-active' : ''}`}>
+                            <section id="analysis-results" className="docs-section">
                                 <h2>Understanding Analysis Results</h2>
                                 
                                 <p>Each analysis report includes:</p>
@@ -354,7 +340,7 @@ const Documentation: React.FC = () => {
                             />
 
                             {/* Common Errors */}
-                            <section id="common-errors" className={`docs-section${activeSection === 'common-errors' ? ' docs-section-active' : ''}`}>
+                            <section id="common-errors" className="docs-section">
                                 <h2>Common BSOD Error Codes</h2>
                                 
                                 <p>
@@ -713,7 +699,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Advanced Analysis */}
-                            <section id="advanced-analysis" className={`docs-section${activeSection === 'advanced-analysis' ? ' docs-section-active' : ''}`}>
+                            <section id="advanced-analysis" className="docs-section">
                                 <h2>Advanced Analysis Tools</h2>
 
                                 <p>
@@ -776,7 +762,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Prevention Tips */}
-                            <section id="prevention-tips" className={`docs-section${activeSection === 'prevention-tips' ? ' docs-section-active' : ''}`}>
+                            <section id="prevention-tips" className="docs-section">
                                 <h2>Preventing Future Crashes</h2>
                                 
                                 <p>
@@ -815,7 +801,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* Troubleshooting */}
-                            <section id="troubleshooting" className={`docs-section${activeSection === 'troubleshooting' ? ' docs-section-active' : ''}`}>
+                            <section id="troubleshooting" className="docs-section">
                                 <h2>Troubleshooting Tips</h2>
                                 
                                 <h3>Before Analysis</h3>
@@ -847,7 +833,7 @@ const Documentation: React.FC = () => {
                             </section>
 
                             {/* FAQ */}
-                            <section id="faq" className={`docs-section${activeSection === 'faq' ? ' docs-section-active' : ''}`}>
+                            <section id="faq" className="docs-section">
                                 <h2>Frequently Asked Questions</h2>
                                 
                                 <div className="faq-item">
