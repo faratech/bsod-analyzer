@@ -4,6 +4,7 @@ interface AnalysisProgressProps {
     stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete';
     message?: string;
     startTime?: number;
+    percentage?: number;
 }
 
 const funFacts = [
@@ -57,7 +58,16 @@ const stageInfo: Record<string, { icon: string; title: string; description: stri
     }
 };
 
-const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime }) => {
+const timeEstimates: Record<string, { typical: string; maxSeconds: number }> = {
+    uploading: { typical: 'typically 5\u201315 seconds', maxSeconds: 15 },
+    queued: { typical: 'usually under a minute', maxSeconds: 60 },
+    processing: { typical: 'usually 30\u201390 seconds', maxSeconds: 90 },
+    downloading: { typical: 'a few seconds', maxSeconds: 10 },
+    analyzing: { typical: 'usually 10\u201330 seconds', maxSeconds: 30 },
+    complete: { typical: '', maxSeconds: 0 },
+};
+
+const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime, percentage }) => {
     const [currentFact, setCurrentFact] = useState(0);
     const [elapsedTime, setElapsedTime] = useState(0);
     const [dots, setDots] = useState('');
@@ -97,6 +107,17 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
     const stageOrder = ['uploading', 'queued', 'processing', 'downloading', 'analyzing', 'complete'];
     const currentStageIndex = stageOrder.indexOf(stage);
 
+    const estimate = timeEstimates[stage];
+    const isTakingLong = estimate && estimate.maxSeconds > 0 && elapsedTime > estimate.maxSeconds * 2;
+    const timeEstimateText = isTakingLong
+        ? 'Taking longer than usual...'
+        : estimate?.typical || '';
+
+    // For uploading stage, show percentage in the description
+    const displayMessage = stage === 'uploading' && percentage !== undefined
+        ? `Uploading... ${percentage}%`
+        : message || info.description;
+
     return (
         <div className="analysis-progress-container">
             <div className="analysis-progress-card">
@@ -113,7 +134,26 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
 
                 {/* Stage title */}
                 <h3 className="progress-title">{info.title}{dots}</h3>
-                <p className="progress-description">{message || info.description}</p>
+                <p className="progress-description">{displayMessage}</p>
+
+                {/* Fallback warning */}
+                {message && message.includes('unavailable') && (
+                    <div style={{
+                        backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '0.375rem',
+                        padding: '0.5rem 0.75rem',
+                        marginTop: '0.5rem',
+                        fontSize: '0.8rem',
+                        color: '#f59e0b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem'
+                    }}>
+                        <span style={{fontSize: '1rem'}}>&#x26A0;</span>
+                        {message}
+                    </div>
+                )}
 
                 {/* Progress stages indicator */}
                 <div className="progress-stages">
@@ -136,19 +176,35 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
                     <span>AI</span>
                 </div>
 
-                {/* Elapsed time */}
+                {/* Elapsed time with estimate */}
                 {startTime && (
                     <div className="progress-time">
                         <span className="time-icon">⏱️</span>
-                        <span>Elapsed: {formatTime(elapsedTime)}</span>
+                        <span>
+                            Elapsed: {formatTime(elapsedTime)}
+                            {timeEstimateText && <span style={{color: 'var(--text-tertiary)', marginLeft: '0.5rem'}}>({timeEstimateText})</span>}
+                        </span>
                     </div>
                 )}
 
                 {/* Animated loading bar */}
                 <div className="progress-bar-container">
                     <div className="progress-bar-track">
-                        <div className="progress-bar-fill"></div>
-                        <div className="progress-bar-shimmer"></div>
+                        {stage === 'uploading' && percentage !== undefined ? (
+                            <div
+                                className="progress-bar-fill"
+                                style={{
+                                    width: `${percentage}%`,
+                                    animation: 'none',
+                                    transition: 'width 0.3s ease'
+                                }}
+                            ></div>
+                        ) : (
+                            <>
+                                <div className="progress-bar-fill"></div>
+                                <div className="progress-bar-shimmer"></div>
+                            </>
+                        )}
                     </div>
                 </div>
 

@@ -51,6 +51,7 @@ export interface WinDBGStatusResponse {
         output_file_size?: number;
         processing_time_seconds?: number;
         error_message?: string;
+        queue_position?: number;
     };
     error?: string;
 }
@@ -266,7 +267,10 @@ async function fileToBase64(file: File): Promise<string> {
 /**
  * Upload a .dmp file to the WinDBG server via our backend
  */
-export async function uploadToWinDBG(file: File): Promise<WinDBGUploadResponse> {
+export async function uploadToWinDBG(
+    file: File,
+    onUploadProgress?: (percent: number) => void
+): Promise<WinDBGUploadResponse> {
     // Use file hash as UID for deterministic caching
     const uid = await generateFileHash(file);
 
@@ -275,48 +279,53 @@ export async function uploadToWinDBG(file: File): Promise<WinDBGUploadResponse> 
     // Convert file to base64
     const fileData = await fileToBase64(file);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+    const body = JSON.stringify({
+        uid,
+        fileData,
+        fileName: file.name
+    });
 
-    try {
-        const response = await fetch('/api/windbg/upload', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                uid,
-                fileData,
-                fileName: file.name
-            }),
-            signal: controller.signal
-        });
+    // Use XMLHttpRequest for upload progress events
+    const result = await new Promise<WinDBGUploadResponse>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/windbg/upload');
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.withCredentials = true;
+        xhr.timeout = UPLOAD_TIMEOUT_MS;
 
-        clearTimeout(timeoutId);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                onUploadProgress?.(Math.round((e.loaded / e.total) * 100));
+            }
+        };
 
-        const result: WinDBGUploadResponse = await response.json();
+        xhr.onload = () => {
+            try {
+                const data: WinDBGUploadResponse = JSON.parse(xhr.responseText);
+                resolve(data);
+            } catch {
+                reject(new Error('Invalid response from upload endpoint'));
+            }
+        };
 
-        if (!result.success) {
-            throw new Error(result.error || 'Upload failed');
-        }
+        xhr.onerror = () => reject(new Error('Upload network error'));
+        xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-        // Handle cached response - include uid for cache key consistency
-        if (result.cached && result.cachedAnalysis) {
-            console.log(`[WinDBG] Cache HIT - using cached analysis for ${file.name}`);
-            return { ...result, data: { ...result.data, uid } as WinDBGUploadResponse['data'] };
-        }
+        xhr.send(body);
+    });
 
-        console.log(`[WinDBG] Upload successful. Queue position: ${result.data?.queue_position}`);
-        return { ...result, data: { ...result.data!, uid } };
-
-    } catch (error) {
-        clearTimeout(timeoutId);
-        if ((error as Error).name === 'AbortError') {
-            throw new Error('Upload timed out');
-        }
-        throw error;
+    if (!result.success) {
+        throw new Error(result.error || 'Upload failed');
     }
+
+    // Handle cached response - include uid for cache key consistency
+    if (result.cached && result.cachedAnalysis) {
+        console.log(`[WinDBG] Cache HIT - using cached analysis for ${file.name}`);
+        return { ...result, data: { ...result.data, uid } as WinDBGUploadResponse['data'] };
+    }
+
+    console.log(`[WinDBG] Upload successful. Queue position: ${result.data?.queue_position}`);
+    return { ...result, data: { ...result.data!, uid } };
 }
 
 /**
@@ -400,7 +409,8 @@ export async function downloadAnalysis(uid: string): Promise<string> {
  */
 export async function analyzeWithWinDBG(
     file: File,
-    onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'complete', message: string) => void
+    onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'complete', message: string) => void,
+    onUploadProgress?: (percent: number) => void
 ): Promise<WinDBGAnalysisResult> {
     // Hard timeout wrapper - 5 minute max for entire WinDBG process
     const timeoutPromise = new Promise<WinDBGAnalysisResult>((_, reject) => {
@@ -413,7 +423,7 @@ export async function analyzeWithWinDBG(
     try {
         // Stage 1: Upload
         onProgress?.('uploading', `Uploading ${file.name} to WinDBG server...`);
-        const uploadResult = await uploadToWinDBG(file);
+        const uploadResult = await uploadToWinDBG(file, onUploadProgress);
 
         // Handle cached response - skip polling and download
         if (uploadResult.cached && uploadResult.cachedAnalysis) {
@@ -459,12 +469,22 @@ export async function analyzeWithWinDBG(
                 throw new Error(result.error || 'Status check failed');
             }
 
-            // Update progress if status changed
-            if (result.data?.status && result.data.status !== lastStatus) {
-                lastStatus = result.data.status;
-                console.log(`[WinDBG] Status changed to: ${lastStatus}`);
+            // Update progress based on current status
+            if (result.data?.status) {
+                if (result.data.status !== lastStatus) {
+                    lastStatus = result.data.status;
+                    console.log(`[WinDBG] Status changed to: ${lastStatus}`);
+                }
                 if (result.data.status === 'processing') {
-                    onProgress?.('processing', 'WinDBG is analyzing the dump file...');
+                    onProgress?.('processing', 'WinDBG is analyzing your dump file...');
+                } else if (result.data.status === 'pending') {
+                    const queuePos = result.data.queue_position;
+                    const elapsed = attempts * 10;
+                    if (queuePos !== undefined && queuePos > 0) {
+                        onProgress?.('queued', `Queued for analysis (position ${queuePos}) — ${elapsed}s elapsed`);
+                    } else {
+                        onProgress?.('queued', `Waiting for WinDBG server... (${elapsed}s)`);
+                    }
                 }
             }
 

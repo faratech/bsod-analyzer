@@ -1192,12 +1192,13 @@ function parseStackText(stackText: string): StackFrame[] {
 export const analyzeDumpFiles = async (
     files: DumpFile[],
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void,
-    onFileComplete?: (result: { id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean }) => void
+    onFileComplete?: (result: { id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => void,
+    onUploadProgress?: (percent: number) => void
 ) => {
     // Process files in parallel for better performance
     // Each file's result is streamed to onFileComplete as it finishes
 
-    const analyzeFile = async (dumpFile: DumpFile): Promise<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean }> => {
+    const analyzeFile = async (dumpFile: DumpFile): Promise<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }> => {
         const result = await (async () => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
@@ -1251,7 +1252,8 @@ export const analyzeDumpFiles = async (
                             id: dumpFile.id,
                             report: parsedReport,
                             status: FileStatus.ANALYZED,
-                            cached: true
+                            cached: true,
+                            analysisMethod: 'windbg' as const
                         };
                     }
 
@@ -1280,7 +1282,8 @@ export const analyzeDumpFiles = async (
                             id: dumpFile.id,
                             report: windbgReport,
                             status: FileStatus.ANALYZED,
-                            cached: true
+                            cached: true,
+                            analysisMethod: 'windbg' as const
                         };
                     }
                 }
@@ -1302,7 +1305,7 @@ export const analyzeDumpFiles = async (
                     if (onProgress) {
                         onProgress(stage, message);
                     }
-                });
+                }, onUploadProgress);
 
                 if (windbgResult.success) {
                     console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
@@ -1331,15 +1334,18 @@ export const analyzeDumpFiles = async (
                         id: dumpFile.id,
                         report: windbgReport,
                         status: FileStatus.ANALYZED,
-                        cached: windbgResult.cached || false
+                        cached: windbgResult.cached || false,
+                        analysisMethod: 'windbg' as const
                     };
                 } else {
                     console.log('[Analyzer] WinDBG analysis failed:', windbgResult.error);
                     console.log('[Analyzer] Falling back to local analysis...');
+                    onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
                 }
             } catch (windbgError) {
                 console.error('[Analyzer] WinDBG server error:', windbgError);
                 console.log('[Analyzer] Falling back to local analysis...');
+                onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
             }
 
             // Fallback: Use local analysis if WinDBG failed
@@ -2042,7 +2048,7 @@ Decode ALL bug check parameters with their specific meanings:
                 console.log(`[Analyzer] AI provided ${report.parameterAnalysis.length} parameter analyses`);
             }
 
-            return { id: dumpFile.id, report, status: FileStatus.ANALYZED };
+            return { id: dumpFile.id, report, status: FileStatus.ANALYZED, analysisMethod: 'local' as const };
         } catch (error) {
             console.error(`Analysis failed for ${dumpFile.file.name}:`, error);
             return { id: dumpFile.id, error: `Failed to read or analyze file. ${(error as Error).message}`, status: FileStatus.ERROR };
