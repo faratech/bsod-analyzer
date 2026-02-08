@@ -193,6 +193,7 @@ const Donate: React.FC = () => {
                         <div className="sponsor-list">
                             <div className="sponsor">WindowsForum Community</div>
                             <div className="sponsor">Fara Technologies LLC</div>
+                            <div className="sponsor">Stack-Tech</div>
                         </div>
                     </section>
                 </div>
