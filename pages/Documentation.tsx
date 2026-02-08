@@ -73,7 +73,7 @@ const Documentation: React.FC = () => {
                 "name": "How do I analyze a BSOD dump file?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Simply upload your .dmp file to BSOD AI Analyzer. Our AI will automatically extract error codes, identify problematic drivers, analyze the call stack, and provide step-by-step solutions to fix the issue."
+                    "text": "Simply upload your .dmp file to BSOD AI Analyzer. Your file is sent to our WinDBG server for real debugging, then our AI interprets the results to identify error codes, problematic drivers, call stacks, and provide step-by-step solutions."
                 }
             },
             {
@@ -261,9 +261,10 @@ const Documentation: React.FC = () => {
                                 </p>
                                 
                                 <div className="alert alert-info">
-                                    <strong>Quick Start:</strong> Simply drag and drop your .dmp file onto the analyzer 
-                                    page and click "Analyze" to get instant results. The entire process takes less than 
-                                    30 seconds and provides comprehensive crash analysis.
+                                    <strong>Quick Start:</strong> Simply drag and drop your .dmp file onto the analyzer
+                                    page and click "Analyze." Your file is sent to our WinDBG server for real debugging,
+                                    then our AI interprets the results into a clear report. Analysis typically takes
+                                    30-60 seconds.
                                 </div>
                                 
                                 <h3>What You'll Need</h3>
@@ -356,8 +357,9 @@ const Documentation: React.FC = () => {
                                 <ol className="step-list">
                                     <li>Navigate to the <Link to="/analyzer">Analyzer page</Link></li>
                                     <li>Drag and drop your files or click to browse</li>
-                                    <li>Click "Analyze" to start the AI analysis</li>
-                                    <li>Wait for results (usually 10-30 seconds)</li>
+                                    <li>Click "Analyze" to start the analysis</li>
+                                    <li>Your file is uploaded to our WinDBG server for real debugging</li>
+                                    <li>Wait for results (typically 30-60 seconds for first analysis, instant for cached files)</li>
                                 </ol>
                                 
                                 <div className="alert alert-success">
@@ -769,10 +771,10 @@ const Documentation: React.FC = () => {
                             {/* Advanced Analysis */}
                             <section id="advanced-analysis" className="docs-section">
                                 <h2>Advanced Analysis Tools</h2>
-                                
+
                                 <p>
-                                    Our analyzer provides professional-grade debugging capabilities similar to WinDbg. 
-                                    After initial analysis, you can run additional debugging commands for deeper insights:
+                                    Our analyzer runs real WinDBG debugging commands on your crash dump server-side.
+                                    The output comes directly from WinDBG — not a simulation. Key commands include:
                                 </p>
                                 
                                 <div className="command-list">
@@ -800,19 +802,20 @@ const Documentation: React.FC = () => {
                                 
                                 <h3>Symbol Resolution</h3>
                                 <p>
-                                    Our analyzer automatically downloads and resolves Windows symbols from Microsoft's symbol 
-                                    servers, providing accurate function names and call stacks. This process:
+                                    Our WinDBG server automatically downloads and resolves Windows symbols from
+                                    Microsoft's symbol servers, providing accurate function names and call stacks:
                                 </p>
                                 <ul>
-                                    <li>Downloads symbols for the exact Windows version from the crash</li>
-                                    <li>Resolves driver and system function names</li>
-                                    <li>Provides accurate stack traces with source information</li>
-                                    <li>Caches symbols locally for faster subsequent analysis</li>
+                                    <li>Downloads PDB symbols for the exact Windows version from the crash</li>
+                                    <li>Resolves driver and system function names automatically</li>
+                                    <li>Provides accurate stack traces with module and offset information</li>
+                                    <li>Symbols are cached on the server for faster subsequent analysis</li>
                                 </ul>
-                                
+
                                 <div className="alert alert-info">
-                                    <strong>Pro Tip:</strong> Symbol resolution may take 10-30 seconds on first analysis. 
-                                    Subsequent analyses of similar crashes will be faster due to symbol caching.
+                                    <strong>Pro Tip:</strong> First-time analysis of a dump may take 30-60 seconds
+                                    while WinDBG processes the file. If the same file is analyzed again, results are
+                                    returned instantly from cache.
                                 </div>
                                 
                                 <h3>Reading Stack Traces</h3>
@@ -906,8 +909,10 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>Is my dump file data kept private?</h3>
                                     <p>
-                                        Yes. We process files locally in your browser and only send extracted text data 
-                                        for analysis. We don't store your files or analysis results.
+                                        Yes. Your dump file is securely uploaded to our WinDBG server for analysis
+                                        and is not retained after processing. Analysis results are cached temporarily
+                                        to speed up repeat queries. All communications are encrypted via TLS,
+                                        and no personal information is collected.
                                     </p>
                                 </div>
                                 
@@ -922,9 +927,10 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>How accurate is the analysis?</h3>
                                     <p>
-                                        Our AI is trained on millions of crash scenarios and typically identifies the root 
-                                        cause with high accuracy. However, complex hardware issues may require additional 
-                                        diagnostic tools.
+                                        Our analyzer runs real WinDBG debugging on your crash dump, producing the same
+                                        output a Microsoft engineer would see. The AI then interprets this data to
+                                        identify the root cause with high accuracy. However, complex hardware issues
+                                        may require additional diagnostic tools.
                                     </p>
                                 </div>
                                 

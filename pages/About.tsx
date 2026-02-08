@@ -112,27 +112,30 @@ const About: React.FC = () => {
                     />
 
                     <section className="content-section">
-                        <h2>How Our AI Works</h2>
+                        <h2>How It Works</h2>
                         <p>
-                            Our analysis engine uses Google's Gemini AI, trained on millions of crash scenarios 
-                            and debugging patterns. When you upload a dump file, our system:
+                            Our analyzer combines real WinDBG debugging with Google's Gemini AI to deliver
+                            professional-grade crash analysis. When you upload a dump file:
                         </p>
                         <ol>
                             <li>
-                                <strong>Extracts Critical Data:</strong> We parse the binary dump file to extract 
-                                error codes, driver information, call stacks, and system state data.
+                                <strong>Real WinDBG Analysis:</strong> Your dump file is securely uploaded to our
+                                WinDBG server, which runs actual debugging commands ({<code>!analyze -v</code>})
+                                against the crash dump — the same tool Microsoft engineers use.
                             </li>
                             <li>
-                                <strong>Pattern Recognition:</strong> Our AI compares your crash signature against 
-                                known patterns to identify the most likely causes.
+                                <strong>Symbol Resolution:</strong> The WinDBG server automatically resolves
+                                symbols from Microsoft's symbol servers, providing accurate function names,
+                                driver versions, and call stacks.
                             </li>
                             <li>
-                                <strong>Contextual Analysis:</strong> The system considers driver versions, hardware 
-                                configurations, and recent system changes to provide context-aware recommendations.
+                                <strong>AI Interpretation:</strong> Google's Gemini AI interprets the raw WinDBG
+                                output and translates it into a clear, actionable report with plain-language
+                                explanations and step-by-step solutions.
                             </li>
                             <li>
-                                <strong>Solution Generation:</strong> Based on the analysis, we generate step-by-step 
-                                solutions tailored to your specific issue.
+                                <strong>Intelligent Caching:</strong> Results are cached by file content hash,
+                                so analyzing the same dump again returns instant results.
                             </li>
                         </ol>
                     </section>
@@ -149,11 +152,12 @@ const About: React.FC = () => {
                             Your privacy is our priority. Here's how we protect your data:
                         </p>
                         <ul>
-                            <li>All dump file processing happens locally in your browser</li>
-                            <li>Only extracted text data is sent to our AI for analysis</li>
-                            <li>We don't store your dump files or analysis results</li>
+                            <li>Dump files are sent to our secure WinDBG server for analysis and are not retained after processing</li>
+                            <li>Analysis results are cached temporarily to speed up repeat queries for the same file</li>
                             <li>All communications are encrypted using industry-standard SSL/TLS</li>
                             <li>No personal information is collected or retained</li>
+                            <li>API keys and secrets are stored server-side — never exposed to the browser</li>
+                            <li>Sessions are protected with Cloudflare Turnstile and rate limiting</li>
                         </ul>
                     </section>
                     
@@ -182,17 +186,18 @@ const About: React.FC = () => {
                     <section className="content-section">
                         <h2>Advanced Features</h2>
                         <p>
-                            For power users and IT professionals, we offer advanced analysis tools that mimic 
-                            professional debugging commands:
+                            Our analyzer runs real WinDBG debugging commands on your crash dump server-side.
+                            The output you see comes directly from WinDBG — not a simulation:
                         </p>
                         <ul>
-                            <li><code>!analyze -v</code> - Detailed crash analysis with full technical details</li>
+                            <li><code>!analyze -v</code> - Full automated crash analysis with stack traces and module info</li>
                             <li><code>lm kv</code> - List all loaded kernel modules with version information</li>
                             <li><code>!process 0 0</code> - Display process information at crash time</li>
                             <li><code>!vm</code> - Virtual memory statistics and usage</li>
                         </ul>
                         <p>
-                            These tools provide WinDbg-style output for professionals who need deeper insights.
+                            The raw WinDBG output is then interpreted by our AI into a user-friendly report
+                            with plain-language explanations and actionable recommendations.
                         </p>
                     </section>
 
@@ -230,12 +235,12 @@ const About: React.FC = () => {
                                     </tr>
                                     <tr>
                                         <td><strong>Memory Analysis</strong></td>
-                                        <td>⚠️ Pattern-based string extraction</td>
+                                        <td>✅ Server-side WinDBG analysis of full dump</td>
                                         <td>✅ Direct memory structure access</td>
                                     </tr>
                                     <tr>
                                         <td><strong>Symbol Resolution</strong></td>
-                                        <td>❌ No PDB symbol support</td>
+                                        <td>✅ Automatic via server-side WinDBG</td>
                                         <td>✅ Full Microsoft symbol server integration</td>
                                     </tr>
                                     <tr>
@@ -260,7 +265,7 @@ const About: React.FC = () => {
                                     </tr>
                                     <tr>
                                         <td><strong>Privacy</strong></td>
-                                        <td>✅ Client-side processing, no file storage</td>
+                                        <td>✅ Secure server-side processing, no permanent file storage</td>
                                         <td>✅ Fully local analysis</td>
                                     </tr>
                                 </tbody>
@@ -325,11 +330,9 @@ kb                   # Display stack backtrace
                             <div className="cons">
                                 <h4>❌ Cons:</h4>
                                 <ul>
-                                    <li>Cannot access raw memory structures</li>
-                                    <li>No symbol resolution capabilities</li>
-                                    <li>Limited to pattern-based analysis</li>
                                     <li>Cannot perform live debugging</li>
                                     <li>Requires internet connection</li>
+                                    <li>No interactive command-line session</li>
                                 </ul>
                             </div>
                         </div>
@@ -383,7 +386,6 @@ kb                   # Display stack backtrace
                             <li>Predictive failure detection</li>
                             <li>Integration with Windows Event Logs</li>
                             <li>Support for Linux kernel dumps</li>
-                            <li>API access for enterprise customers</li>
                         </ul>
                     </section>
 
