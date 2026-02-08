@@ -38,6 +38,7 @@ const LazyMarkdown: React.FC<{ children: string }> = ({ children }) => {
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
     onUpdateAdvancedAnalysis: (fileId: string, tool: string, result: string) => void;
+    onRetry?: () => void;
     style?: React.CSSProperties;
 }
 
@@ -48,7 +49,7 @@ const ADVANCED_TOOLS = [
     { id: '!vm', name: 'Virtual Memory Usage (!vm)' },
 ];
 
-const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpdateAdvancedAnalysis, style }) => {
+const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpdateAdvancedAnalysis, onRetry, style }) => {
     const [isExpanded, setIsExpanded] = useState(dumpFile.status !== FileStatus.PENDING);
     const [runningTool, setRunningTool] = useState<string | null>(null);
     const [toolError, setToolError] = useState<string | null>(null);
@@ -295,6 +296,15 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                     <div style={{padding: '1.5rem', color: 'var(--text-primary)'}}>
                         <p><strong>Analysis Failed</strong></p>
                         <p style={{color: 'var(--text-secondary)'}}>{dumpFile.error}</p>
+                        {onRetry && (
+                            <button
+                                className="btn btn-primary"
+                                onClick={onRetry}
+                                style={{marginTop: '1rem'}}
+                            >
+                                &#x21BB; Retry Analysis
+                            </button>
+                        )}
                     </div>
                 );
             case FileStatus.ANALYZED:
@@ -313,6 +323,25 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
                 return (
                     <div style={{padding: '1.5rem'}}>
+
+                        {/* Local analysis fallback notice */}
+                        {dumpFile.analysisMethod === 'local' && (
+                            <div style={{
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                border: '1px solid rgba(59, 130, 246, 0.3)',
+                                borderRadius: '0.5rem',
+                                padding: '0.75rem 1rem',
+                                marginBottom: '1.5rem',
+                                fontSize: '0.85rem',
+                                color: 'var(--text-secondary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem'
+                            }}>
+                                <span style={{fontSize: '1rem', flexShrink: 0}}>&#x2139;</span>
+                                Analyzed with local parsing &#x2014; WinDBG was unavailable. Results may be less detailed.
+                            </div>
+                        )}
 
                         <div className="report-actions">
                             <button

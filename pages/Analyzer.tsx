@@ -19,7 +19,7 @@ const Analyzer: React.FC = () => {
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
     const { processFiles, addFilesToState, error: fileError } = useFileProcessor();
-    const { isAnalyzing, progress, error: analysisError, analyzeFiles, updateAdvancedAnalysis } = useAnalysis();
+    const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile, updateAdvancedAnalysis } = useAnalysis();
     
     const error = fileError || analysisError;
     const [sessionReady, setSessionReady] = useState(false);
@@ -103,6 +103,13 @@ const Analyzer: React.FC = () => {
         });
     };
     
+    const handleRetry = useCallback((fileId: string) => {
+        retryFile(fileId, dumpFiles, setDumpFiles, {
+            trackAnalysisStart,
+            trackAnalysisComplete
+        });
+    }, [dumpFiles, retryFile, trackAnalysisStart, trackAnalysisComplete]);
+
     const handleUpdateAdvancedAnalysis = (fileId: string, tool: string, result: string) => {
         updateAdvancedAnalysis(fileId, tool, result, dumpFiles, setDumpFiles);
     };
@@ -176,12 +183,14 @@ const Analyzer: React.FC = () => {
                         stage={progress.stage}
                         message={progress.message}
                         startTime={progress.startTime}
+                        percentage={progress.percentage}
                     />
                 )}
 
                 <AnalysisResults
                     dumpFiles={dumpFiles}
                     onUpdateAdvancedAnalysis={handleUpdateAdvancedAnalysis}
+                    onRetry={handleRetry}
                     showAds={true}
                     AdComponent={InFeedAd}
                 />

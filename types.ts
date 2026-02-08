@@ -124,4 +124,5 @@ export interface DumpFile {
   cached?: boolean; // True if the analysis result was served from cache
   fileHash?: string; // Pre-computed xxhash64 of file content
   knownCached?: boolean; // True if cache check detected this file before analysis
+  analysisMethod?: 'windbg' | 'local'; // Which analysis method was used
 }

@@ -6,15 +6,17 @@ interface AnalysisResultsProps {
     title?: string;
     dumpFiles: DumpFile[];
     onUpdateAdvancedAnalysis: (fileId: string, tool: string, result: string) => void;
+    onRetry?: (fileId: string) => void;
     className?: string;
     showAds?: boolean;
     AdComponent?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
 }
 
-const AnalysisResults: React.FC<AnalysisResultsProps> = ({ 
+const AnalysisResults: React.FC<AnalysisResultsProps> = ({
     title = "Analysis Results",
     dumpFiles,
     onUpdateAdvancedAnalysis,
+    onRetry,
     className = '',
     showAds = false,
     AdComponent
@@ -32,6 +34,7 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = ({
                         <AnalysisReportCard
                             dumpFile={dumpFile}
                             onUpdateAdvancedAnalysis={onUpdateAdvancedAnalysis}
+                            onRetry={onRetry ? () => onRetry(dumpFile.id) : undefined}
                             style={{ animationDelay: `${index * 100}ms` }}
                         />
                         {/* Add an ad after every 2 analysis results */}
