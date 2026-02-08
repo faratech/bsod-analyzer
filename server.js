@@ -266,7 +266,7 @@ app.use((req, res, next) => {
     // - sha256-...: Hashes for inline scripts (Google Analytics, AdSense loaders)
     // - Third-party: Google services (Analytics, Ads, Tag Manager, Turnstile)
     // - NO 'unsafe-inline' or 'unsafe-eval' - all scripts must be hashed or from trusted sources
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com",
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com https://www.paypalobjects.com",
     // Styles: Allow inline for React/Tailwind (future: move to hash-based)
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
@@ -275,7 +275,7 @@ app.use((req, res, next) => {
     "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
     "object-src 'none'",
     "base-uri 'self'",
-    "form-action 'self'",
+    "form-action 'self' https://www.paypal.com",
     "frame-ancestors 'self'",
     "upgrade-insecure-requests"
   ];

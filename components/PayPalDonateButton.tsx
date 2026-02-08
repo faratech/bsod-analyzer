@@ -1,5 +1,42 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { useAnalytics } from '../hooks/useAnalytics';
+
+declare global {
+    interface Window {
+        PayPal?: {
+            Donation: {
+                Button: (config: Record<string, unknown>) => {
+                    render: (selector: string) => void;
+                };
+            };
+        };
+    }
+}
+
+const PAYPAL_SDK_URL = 'https://www.paypalobjects.com/donate/sdk/donate-sdk.js';
+
+let sdkLoadPromise: Promise<void> | null = null;
+
+function loadPayPalSdk(): Promise<void> {
+    if (window.PayPal?.Donation) {
+        return Promise.resolve();
+    }
+    if (sdkLoadPromise) {
+        return sdkLoadPromise;
+    }
+    sdkLoadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = PAYPAL_SDK_URL;
+        script.charset = 'UTF-8';
+        script.onload = () => resolve();
+        script.onerror = () => {
+            sdkLoadPromise = null;
+            reject(new Error('Failed to load PayPal Donate SDK'));
+        };
+        document.head.appendChild(script);
+    });
+    return sdkLoadPromise;
+}
 
 interface PayPalDonateButtonProps {
     amount?: string;
@@ -7,82 +44,76 @@ interface PayPalDonateButtonProps {
     isMonthly?: boolean;
 }
 
-const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({ 
-    amount, 
+const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
+    amount,
     buttonText = 'Donate with PayPal',
-    isMonthly = false 
+    isMonthly = false
 }) => {
-    const buttonRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const buttonIdRef = useRef(`paypal-donate-${Math.random().toString(36).slice(2, 9)}`);
     const { trackDonation } = useAnalytics();
 
-    useEffect(() => {
-        // Create a form dynamically for PayPal donation
-        if (buttonRef.current) {
-            buttonRef.current.innerHTML = '';
-            
-            const form = document.createElement('form');
-            form.action = 'https://www.paypal.com/donate';
-            form.method = 'post';
-            form.target = '_blank';
-            
-            // Hidden inputs for PayPal
-            const inputs = [
-                { name: 'business', value: 'admin@windowsforum.com' },
-                { name: 'no_recurring', value: isMonthly ? '0' : '1' },
-                { name: 'item_name', value: 'BSOD AI Analyzer Support' },
-                { name: 'currency_code', value: 'USD' },
-                { name: 'return', value: window.location.origin + '/donate?success=true' },
-                { name: 'cancel_return', value: window.location.origin + '/donate' }
-            ];
-            
-            // Add amount if specified
+    const renderButton = useCallback(async () => {
+        if (!containerRef.current) return;
+
+        // Clear previous button
+        containerRef.current.innerHTML = `<div id="${buttonIdRef.current}"></div>`;
+
+        try {
+            await loadPayPalSdk();
+
+            if (!window.PayPal?.Donation) return;
+
+            const config: Record<string, unknown> = {
+                env: 'production',
+                business: 'admin@windowsforum.com',
+                item_name: 'BSOD AI Analyzer Support',
+                currency_code: 'USD',
+                no_recurring: isMonthly ? '0' : '1',
+                image: {
+                    src: 'https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif',
+                    title: 'PayPal - The safer, easier way to pay online!',
+                    alt: 'Donate with PayPal button',
+                },
+                onComplete: () => {
+                    trackDonation(amount || '0', isMonthly ? 'monthly' : 'one-time');
+                },
+            };
+
             if (amount) {
-                inputs.push({ name: 'amount', value: amount });
+                config.amount = amount;
             }
-            
-            // If monthly, set up recurring
-            if (isMonthly) {
-                inputs.push({ name: 'cmd', value: '_xclick-subscriptions' });
-                inputs.push({ name: 'a3', value: amount || '5' }); // amount
-                inputs.push({ name: 'p3', value: '1' }); // period
-                inputs.push({ name: 't3', value: 'M' }); // monthly
-                inputs.push({ name: 'src', value: '1' }); // recurring
-            } else {
-                inputs.push({ name: 'cmd', value: '_donations' });
+
+            window.PayPal.Donation.Button(config).render(`#${buttonIdRef.current}`);
+        } catch {
+            // Fallback: render a direct link if SDK fails to load
+            if (containerRef.current) {
+                const params = new URLSearchParams({
+                    business: 'admin@windowsforum.com',
+                    item_name: 'BSOD AI Analyzer Support',
+                    currency_code: 'USD',
+                    no_recurring: isMonthly ? '0' : '1',
+                });
+                if (amount) {
+                    params.set('amount', amount);
+                }
+                containerRef.current.innerHTML = `
+                    <a href="https://www.paypal.com/donate?${params.toString()}"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="btn btn-primary btn-large">
+                        ${buttonText}
+                    </a>
+                `;
             }
-            
-            // Create hidden inputs
-            inputs.forEach(({ name, value }) => {
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = name;
-                input.value = value;
-                form.appendChild(input);
-            });
-            
-            // Create submit button
-            const submitButton = document.createElement('button');
-            submitButton.type = 'submit';
-            submitButton.className = 'btn btn-primary btn-large';
-            submitButton.innerHTML = `
-                <svg style="width: 20px; height: 20px; margin-right: 8px;" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72c.07-.37.39-.693.767-.693h6.184c2.59 0 4.77 1.17 4.77 3.93 0 3.51-3.007 4.14-4.77 4.14h-2.79c-.087 0-.16.057-.171.142l-1.06 5.97c-.06.34-.36.63-.717.63zM19.606 7.344c-.247-1.366-1.558-2.328-3.178-2.328h-3.93c-.395 0-.714.32-.75.714l-2.259 12.857c-.037.216.13.41.35.41h2.36c.276 0 .51-.202.547-.477l.6-3.424a.7.7 0 0 1 .69-.577h1.6c2.432 0 4.34-2.01 4.34-4.577 0-.859-.17-1.644-.37-2.327z"/>
-                </svg>
-                ${buttonText}
-            `;
-            
-            // Track donation click
-            submitButton.addEventListener('click', () => {
-                trackDonation(amount || '0', isMonthly ? 'monthly' : 'one-time');
-            });
-            
-            form.appendChild(submitButton);
-            
-            buttonRef.current.appendChild(form);
         }
     }, [amount, buttonText, isMonthly, trackDonation]);
 
-    return <div ref={buttonRef}></div>;
+    useEffect(() => {
+        renderButton();
+    }, [renderButton]);
+
+    return <div ref={containerRef}></div>;
 };
 
 export default PayPalDonateButton;
