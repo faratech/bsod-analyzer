@@ -180,8 +180,10 @@ p {
 
 .btn-primary:hover:not(:disabled) {
   background-color: var(--brand-secondary);
+  color: white;
   transform: translateY(-3px) scale(1.02);
   box-shadow: 0 8px 25px rgba(37, 99, 235, 0.3);
+  text-decoration: none;
 }
 
 .btn-primary:hover:not(:disabled)::before {
@@ -200,8 +202,10 @@ p {
 }
 
 .btn-secondary:hover:not(:disabled) {
+  color: var(--text-primary);
   border-color: var(--brand-primary);
   box-shadow: 0 4px 6px -1px var(--shadow-color);
+  text-decoration: none;
 }
 
 .btn-large {
