@@ -2171,7 +2171,7 @@ body.mobile-menu-open {
 /* Page Content Wrapper */
 .page-content {
   width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Documentation Layout - OPTIMIZATION: Extract to docs.css for better code splitting */
@@ -2183,7 +2183,7 @@ body.mobile-menu-open {
   margin-top: 2rem;
   width: 100%;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   position: relative;
 }
 
