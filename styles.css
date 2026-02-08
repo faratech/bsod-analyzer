@@ -2241,11 +2241,12 @@ body.mobile-menu-open {
   color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.875rem;
-  transition: color 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease;
   display: block;
   padding: 0.5rem 0.75rem;
   border-radius: 0.5rem;
   position: relative;
+  cursor: pointer;
 }
 
 .docs-nav a:hover {
@@ -2276,9 +2277,22 @@ body.mobile-menu-open {
   overflow-x: hidden;
 }
 
+/* All sections hidden by default; active one shown.
+   Inactive sections use position:absolute + clip to stay in DOM for SEO
+   but not affect layout or be visible to users. */
 .docs-section {
+  display: none;
   margin-bottom: 3rem;
-  scroll-margin-top: 6rem;
+}
+
+.docs-section.docs-section-active {
+  display: block;
+  animation: docsFadeIn 0.25s ease-out;
+}
+
+@keyframes docsFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .docs-section h2 {
