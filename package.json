@@ -25,7 +25,7 @@
     "concurrently": "latest",
     "cookie-parser": "latest",
     "cors": "^2.8.6",
-    "dotenv": "^17.3.0",
+    "dotenv": "^17.3.1",
     "express": "latest",
     "express-rate-limit": "latest",
     "form-data": "^4.0.5",
