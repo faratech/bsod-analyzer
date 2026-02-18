@@ -40,14 +40,14 @@
   },
   "devDependencies": {
     "@fullhuman/postcss-purgecss": "^8.0.0",
-    "@tailwindcss/postcss": "latest",
+    "@tailwindcss/postcss": "^4.2.0",
     "@types/node": "^25.2.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "latest",
     "autoprefixer": "^10.4.24",
     "postcss": "latest",
     "purgecss": "^8.0.0",
-    "tailwindcss": "latest",
+    "tailwindcss": "^4.2.0",
     "terser": "^5.46.0",
     "typescript": "latest",
     "vite": "^7.3.1"
