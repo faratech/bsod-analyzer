@@ -279,7 +279,7 @@ const Documentation: React.FC = () => {
                                 <p>Supported formats:</p>
                                 <ul>
                                     <li>.dmp files (any type of Windows dump)</li>
-                                    <li>.zip archives containing .dmp files</li>
+                                    <li>.zip, .7z, and .rar archives containing .dmp files</li>
                                     <li>Multiple files can be analyzed in one session</li>
                                 </ul>
                                 
@@ -807,7 +807,7 @@ const Documentation: React.FC = () => {
                                 <h3>Before Analysis</h3>
                                 <ul>
                                     <li>Ensure dump files are not corrupted (check file size is greater than 0)</li>
-                                    <li>Compress large files into ZIP archives for faster upload</li>
+                                    <li>Compress large files into ZIP, 7z, or RAR archives for faster upload</li>
                                     <li>Check that automatic dump creation is enabled in Windows</li>
                                 </ul>
                                 

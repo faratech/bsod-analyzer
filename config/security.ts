@@ -3,13 +3,16 @@ export const SECURITY_CONFIG = {
     minSize: 56 * 1024, // 56KB minimum - realistic size for legitimate dump files
     maxSize: 100 * 1024 * 1024, // 100MB maximum
     maxFileCount: 10, // Maximum files per upload session
-    allowedExtensions: ['.dmp', '.zip'],
+    allowedExtensions: ['.dmp', '.zip', '.7z', '.rar'],
     allowedMimeTypes: [
       'application/octet-stream',
       'application/x-dmp',
       'application/zip',
       'application/x-zip-compressed',
-      'application/x-zip'
+      'application/x-zip',
+      'application/x-7z-compressed',
+      'application/x-rar-compressed',
+      'application/vnd.rar'
     ]
   },
   
@@ -46,6 +49,13 @@ export const SECURITY_CONFIG = {
       { bytes: [0x50, 0x4B, 0x03, 0x04], offset: 0 }, // PK.. - Standard ZIP
       { bytes: [0x50, 0x4B, 0x05, 0x06], offset: 0 }, // PK.. - Empty ZIP
       { bytes: [0x50, 0x4B, 0x07, 0x08], offset: 0 }, // PK.. - Spanned ZIP
+    ],
+    sevenZipMagicBytes: [
+      { bytes: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C], offset: 0 }, // 7z signature
+    ],
+    rarMagicBytes: [
+      { bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00], offset: 0 }, // RAR v5
+      { bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00], offset: 0 }, // RAR v4
     ]
   }
 };

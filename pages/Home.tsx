@@ -115,7 +115,7 @@ const Home: React.FC = () => {
                     {
                         icon: <UploadFeatureIcon />,
                         title: "Easy Upload",
-                        description: "Simply drag and drop your .dmp files or .zip archives. Supports both minidumps and kernel dumps."
+                        description: "Simply drag and drop your .dmp files or .zip, .7z, and .rar archives. Supports both minidumps and kernel dumps."
                     },
                     {
                         icon: <AnalyzeFeatureIcon />,

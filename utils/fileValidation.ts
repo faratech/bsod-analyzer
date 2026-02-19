@@ -38,9 +38,21 @@ export function validateFileExtension(file: File): ValidationResult {
 
 export async function validateFileMagicBytes(file: File): Promise<ValidationResult> {
   const extension = '.' + file.name.split('.').pop()?.toLowerCase();
-  const magicBytesConfig = extension === '.zip' 
-    ? SECURITY_CONFIG.validation.zipMagicBytes 
-    : SECURITY_CONFIG.validation.dmpMagicBytes;
+  let magicBytesConfig;
+  switch (extension) {
+    case '.zip':
+      magicBytesConfig = SECURITY_CONFIG.validation.zipMagicBytes;
+      break;
+    case '.7z':
+      magicBytesConfig = SECURITY_CONFIG.validation.sevenZipMagicBytes;
+      break;
+    case '.rar':
+      magicBytesConfig = SECURITY_CONFIG.validation.rarMagicBytes;
+      break;
+    default:
+      magicBytesConfig = SECURITY_CONFIG.validation.dmpMagicBytes;
+      break;
+  }
   
   try {
     const headerBytes = await readFileHeader(file, 8);

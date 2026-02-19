@@ -11,8 +11,13 @@ import crypto from 'crypto';
 import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import os from 'os';
 import multer from 'multer';
 import JSZip from 'jszip';
+
+const execFileAsync = promisify(execFile);
 import {
   initCache,
   hashContent,
@@ -93,7 +98,7 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     // Accept dump files and archives
-    const allowedExtensions = ['.dmp', '.mdmp', '.hdmp', '.kdmp', '.zip', '.7z'];
+    const allowedExtensions = ['.dmp', '.mdmp', '.hdmp', '.kdmp', '.zip', '.7z', '.rar'];
     const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
@@ -1604,6 +1609,64 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
 });
 
 // ============================================================
+// Archive Extraction Endpoint (7z/RAR)
+// ============================================================
+app.post('/api/extract-archive', requireSession, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
+    }
+
+    const buffer = req.file.buffer;
+    const fileName = req.file.originalname || 'archive';
+    const archiveType = detectArchiveType(buffer);
+
+    if (!archiveType || archiveType === 'zip') {
+      return res.status(400).json({
+        success: false,
+        error: 'File is not a supported archive format (.7z or .rar)'
+      });
+    }
+
+    console.log(`[Archive] Extracting ${archiveType} archive: ${fileName} (${buffer.length} bytes)`);
+
+    const extractedDumps = await extractDumpsFromArchive(buffer, fileName, archiveType);
+
+    if (extractedDumps.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No dump files (.dmp, .mdmp, .hdmp, .kdmp) found in archive'
+      });
+    }
+
+    console.log(`[Archive] Extracted ${extractedDumps.length} dump file(s) from ${fileName}`);
+
+    // Return extracted files as base64-encoded JSON
+    const files = extractedDumps.map(dump => ({
+      fileName: dump.fileName,
+      data: dump.buffer.toString('base64'),
+      size: dump.buffer.length
+    }));
+
+    res.json({
+      success: true,
+      files,
+      originalArchive: fileName,
+      archiveType
+    });
+  } catch (error) {
+    console.error('[Archive] Extraction error:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Failed to extract archive'
+    });
+  }
+});
+
+// ============================================================
 // External API Endpoint for BSOD Analysis
 // ============================================================
 // This endpoint accepts dump files and returns structured analysis
@@ -1909,6 +1972,141 @@ function isZipFile(buffer) {
          buffer[2] === 0x03 && buffer[3] === 0x04;
 }
 
+function is7zFile(buffer) {
+  return buffer.length >= 6 &&
+         buffer[0] === 0x37 && buffer[1] === 0x7A &&
+         buffer[2] === 0xBC && buffer[3] === 0xAF &&
+         buffer[4] === 0x27 && buffer[5] === 0x1C;
+}
+
+function isRarFile(buffer) {
+  if (buffer.length < 7) return false;
+  // RAR v5: Rar!\x1a\x07\x01\x00
+  if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 &&
+      buffer[3] === 0x21 && buffer[4] === 0x1A && buffer[5] === 0x07 &&
+      buffer[6] === 0x01) return true;
+  // RAR v4: Rar!\x1a\x07\x00
+  if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 &&
+      buffer[3] === 0x21 && buffer[4] === 0x1A && buffer[5] === 0x07 &&
+      buffer[6] === 0x00) return true;
+  return false;
+}
+
+/**
+ * Detect archive type from buffer magic bytes
+ * @returns 'zip' | '7z' | 'rar' | null
+ */
+function detectArchiveType(buffer) {
+  if (isZipFile(buffer)) return 'zip';
+  if (is7zFile(buffer)) return '7z';
+  if (isRarFile(buffer)) return 'rar';
+  return null;
+}
+
+/**
+ * Extract .dmp files from a 7z/RAR archive using p7zip CLI
+ * Security: archive bomb detection, path traversal prevention, timeout
+ */
+async function extractDumpsFromArchive(buffer, originalName, archiveType) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bsod-extract-'));
+  const archivePath = path.join(tmpDir, `archive.${archiveType}`);
+  const extractDir = path.join(tmpDir, 'out');
+
+  try {
+    fs.writeFileSync(archivePath, buffer);
+    fs.mkdirSync(extractDir);
+
+    // Step 1: List archive contents to check for archive bombs
+    let listOutput;
+    try {
+      listOutput = await execFileAsync('7z', ['l', '-slt', archivePath], { timeout: 15000 });
+    } catch (err) {
+      if (err.stderr && err.stderr.includes('Wrong password')) {
+        throw new Error('Password-protected archives are not supported');
+      }
+      throw new Error(`Failed to read archive: ${err.message}`);
+    }
+
+    // Parse listing to check sizes and file counts
+    const sizeMatches = listOutput.stdout.matchAll(/^Size = (\d+)$/gm);
+    const packedMatches = listOutput.stdout.matchAll(/^Packed Size = (\d+)$/gm);
+    let totalExtractedSize = 0;
+    let fileCount = 0;
+    const sizes = [];
+    const packedSizes = [];
+
+    for (const match of sizeMatches) {
+      sizes.push(parseInt(match[1], 10));
+      totalExtractedSize += parseInt(match[1], 10);
+      fileCount++;
+    }
+    for (const match of packedMatches) {
+      packedSizes.push(parseInt(match[1], 10));
+    }
+
+    // Archive bomb checks
+    const MAX_EXTRACTED_SIZE = 200 * 1024 * 1024; // 200MB
+    const MAX_FILE_COUNT = 20;
+    const MAX_COMPRESSION_RATIO = 100;
+
+    if (totalExtractedSize > MAX_EXTRACTED_SIZE) {
+      throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+    }
+    if (fileCount > MAX_FILE_COUNT) {
+      throw new Error(`Archive contains too many files (${fileCount}). Maximum is ${MAX_FILE_COUNT}.`);
+    }
+    if (buffer.length > 0 && totalExtractedSize / buffer.length > MAX_COMPRESSION_RATIO) {
+      throw new Error('Archive compression ratio too high — possible archive bomb');
+    }
+
+    // Step 2: Extract files
+    try {
+      await execFileAsync('7z', ['x', `-o${extractDir}`, '-y', archivePath], { timeout: 30000 });
+    } catch (err) {
+      if (err.stderr && err.stderr.includes('Wrong password')) {
+        throw new Error('Password-protected archives are not supported');
+      }
+      throw new Error(`Failed to extract archive: ${err.message}`);
+    }
+
+    // Step 3: Find .dmp files recursively, with path traversal protection
+    const results = [];
+    const realExtractDir = fs.realpathSync(extractDir);
+
+    function findDmpFiles(dir) {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        // Path traversal protection
+        const realPath = fs.realpathSync(fullPath);
+        if (!realPath.startsWith(realExtractDir)) {
+          console.warn('[Archive] Path traversal detected, skipping:', fullPath);
+          continue;
+        }
+        if (entry.isDirectory()) {
+          findDmpFiles(fullPath);
+        } else if (DUMP_EXTENSIONS.some(ext => entry.name.toLowerCase().endsWith(ext))) {
+          results.push({
+            fileName: entry.name,
+            buffer: fs.readFileSync(fullPath),
+            originalArchive: originalName
+          });
+        }
+      }
+    }
+
+    findDmpFiles(extractDir);
+    return results;
+  } finally {
+    // Always clean up temp directory
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.error('[Archive] Cleanup error:', cleanupErr.message);
+    }
+  }
+}
+
 // Main external API endpoint
 app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
@@ -1930,16 +2128,23 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
 
     console.log(`[API/Analyze] Received file: ${fileName} (${originalFileSize} bytes)`);
 
-    // Check if file is a ZIP archive
-    if (isZipFile(fileBuffer)) {
-      console.log(`[API/Analyze] Detected ZIP archive, extracting dumps...`);
-      const extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
+    // Check if file is an archive and extract dumps
+    const archiveType = detectArchiveType(fileBuffer);
+    if (archiveType) {
+      console.log(`[API/Analyze] Detected ${archiveType} archive, extracting dumps...`);
+
+      let extractedDumps;
+      if (archiveType === 'zip') {
+        extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
+      } else {
+        extractedDumps = await extractDumpsFromArchive(fileBuffer, fileName, archiveType);
+      }
 
       if (extractedDumps.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'No dump files (.dmp, .mdmp, .hdmp, .kdmp) found in ZIP archive',
-          code: 'NO_DUMPS_IN_ZIP'
+          error: `No dump files (.dmp, .mdmp, .hdmp, .kdmp) found in ${archiveType.toUpperCase()} archive`,
+          code: 'NO_DUMPS_IN_ARCHIVE'
         });
       }
 
