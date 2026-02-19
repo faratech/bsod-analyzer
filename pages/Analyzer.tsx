@@ -1,3 +1,4 @@
+declare const __BUILD_VERSION__: string;
 import React, { useState, useCallback, useEffect } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
@@ -220,6 +221,9 @@ const Analyzer: React.FC = () => {
                 style={{ maxHeight: '90px' }}
                 minWidth={320}
             />
+        </div>
+        <div style={{ textAlign: 'center', padding: '0.5rem 0', opacity: 0.3, fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>
+            {__BUILD_VERSION__}
         </div>
         </>
     );
