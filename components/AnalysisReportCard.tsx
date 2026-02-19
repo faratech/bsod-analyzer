@@ -833,22 +833,21 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                 <button
                                     onClick={() => setShowCallStack(!showCallStack)}
                                     style={{
-                                        display: 'flex',
+                                        display: 'inline-flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
-                                        width: '100%',
+                                        gap: '0.4rem',
                                         background: 'var(--bg-secondary)',
                                         border: '1px solid var(--border-primary)',
-                                        borderRadius: '0.5rem',
+                                        borderRadius: '0.375rem',
                                         cursor: 'pointer',
-                                        padding: '0.6rem 0.75rem',
+                                        padding: '0.4rem 0.75rem',
                                         color: 'var(--text-primary)',
-                                        fontSize: '0.875rem',
+                                        fontSize: '0.8rem',
                                         fontWeight: '600'
                                     }}
                                     aria-expanded={showCallStack}
                                 >
-                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
+                                    <span style={{display: 'inline-flex', width: '0.85rem', height: '0.85rem', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
                                         <ChevronRightIcon className="w-4 h-4" />
                                     </span>
                                     Call Stack ({callStack.length} frames)
@@ -902,22 +901,21 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                 <button
                                     onClick={() => setShowRawOutput(!showRawOutput)}
                                     style={{
-                                        display: 'flex',
+                                        display: 'inline-flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
-                                        width: '100%',
+                                        gap: '0.4rem',
                                         background: 'var(--bg-secondary)',
                                         border: '1px solid var(--border-primary)',
-                                        borderRadius: '0.5rem',
+                                        borderRadius: '0.375rem',
                                         cursor: 'pointer',
-                                        padding: '0.6rem 0.75rem',
+                                        padding: '0.4rem 0.75rem',
                                         color: 'var(--text-primary)',
-                                        fontSize: '0.875rem',
+                                        fontSize: '0.8rem',
                                         fontWeight: '600'
                                     }}
                                     aria-expanded={showRawOutput}
                                 >
-                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
+                                    <span style={{display: 'inline-flex', width: '0.85rem', height: '0.85rem', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
                                         <ChevronRightIcon className="w-4 h-4" />
                                     </span>
                                     <TerminalIcon className="w-4 h-4" />
