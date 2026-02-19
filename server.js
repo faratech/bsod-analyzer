@@ -2004,7 +2004,8 @@ function detectArchiveType(buffer) {
 }
 
 /**
- * Extract .dmp files from a 7z/RAR archive using p7zip CLI
+ * Extract .dmp files from a 7z/RAR archive.
+ * Uses 7z for .7z files and bsdtar for .rar files (Alpine's 7zip lacks RAR codec).
  * Security: archive bomb detection, path traversal prevention, timeout
  */
 async function extractDumpsFromArchive(buffer, originalName, archiveType) {
@@ -2016,57 +2017,101 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
     fs.writeFileSync(archivePath, buffer);
     fs.mkdirSync(extractDir);
 
-    // Step 1: List archive contents to check for archive bombs
-    let listOutput;
-    try {
-      listOutput = await execFileAsync('7z', ['l', '-slt', archivePath], { timeout: 15000 });
-    } catch (err) {
-      if (err.stderr && err.stderr.includes('Wrong password')) {
-        throw new Error('Password-protected archives are not supported');
-      }
-      throw new Error(`Failed to read archive: ${err.message}`);
-    }
-
-    // Parse listing to check sizes and file counts
-    const sizeMatches = listOutput.stdout.matchAll(/^Size = (\d+)$/gm);
-    const packedMatches = listOutput.stdout.matchAll(/^Packed Size = (\d+)$/gm);
-    let totalExtractedSize = 0;
-    let fileCount = 0;
-    const sizes = [];
-    const packedSizes = [];
-
-    for (const match of sizeMatches) {
-      sizes.push(parseInt(match[1], 10));
-      totalExtractedSize += parseInt(match[1], 10);
-      fileCount++;
-    }
-    for (const match of packedMatches) {
-      packedSizes.push(parseInt(match[1], 10));
-    }
-
     // Archive bomb checks
     const MAX_EXTRACTED_SIZE = 200 * 1024 * 1024; // 200MB
     const MAX_FILE_COUNT = 20;
     const MAX_COMPRESSION_RATIO = 100;
 
-    if (totalExtractedSize > MAX_EXTRACTED_SIZE) {
-      throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
-    }
-    if (fileCount > MAX_FILE_COUNT) {
-      throw new Error(`Archive contains too many files (${fileCount}). Maximum is ${MAX_FILE_COUNT}.`);
-    }
-    if (buffer.length > 0 && totalExtractedSize / buffer.length > MAX_COMPRESSION_RATIO) {
-      throw new Error('Archive compression ratio too high — possible archive bomb');
-    }
-
-    // Step 2: Extract files
-    try {
-      await execFileAsync('7z', ['x', `-o${extractDir}`, '-y', archivePath], { timeout: 30000 });
-    } catch (err) {
-      if (err.stderr && err.stderr.includes('Wrong password')) {
-        throw new Error('Password-protected archives are not supported');
+    if (archiveType === 'rar') {
+      // Use bsdtar for RAR files (Alpine's 7zip lacks the RAR codec)
+      // Step 1: List contents for bomb detection
+      let listOutput;
+      try {
+        listOutput = await execFileAsync('bsdtar', ['tf', archivePath], { timeout: 15000 });
+      } catch (err) {
+        if (err.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
+          throw new Error('Password-protected archives are not supported');
+        }
+        throw new Error(`Failed to read RAR archive: ${err.stderr || err.message}`);
       }
-      throw new Error(`Failed to extract archive: ${err.message}`);
+
+      const fileList = listOutput.stdout.trim().split('\n').filter(f => f.length > 0);
+      if (fileList.length > MAX_FILE_COUNT) {
+        throw new Error(`Archive contains too many files (${fileList.length}). Maximum is ${MAX_FILE_COUNT}.`);
+      }
+
+      // Step 2: Extract
+      try {
+        await execFileAsync('bsdtar', ['xf', archivePath, '-C', extractDir], { timeout: 30000 });
+      } catch (err) {
+        if (err.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
+          throw new Error('Password-protected archives are not supported');
+        }
+        throw new Error(`Failed to extract RAR archive: ${err.stderr || err.message}`);
+      }
+
+      // Post-extraction size check
+      let totalSize = 0;
+      function checkSize(dir) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            checkSize(fullPath);
+          } else {
+            totalSize += fs.statSync(fullPath).size;
+          }
+        }
+      }
+      checkSize(extractDir);
+
+      if (totalSize > MAX_EXTRACTED_SIZE) {
+        throw new Error(`Archive too large when extracted (${(totalSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+      }
+      if (buffer.length > 0 && totalSize / buffer.length > MAX_COMPRESSION_RATIO) {
+        throw new Error('Archive compression ratio too high — possible archive bomb');
+      }
+    } else {
+      // Use 7z for .7z files
+      // Step 1: List archive contents for bomb detection
+      let listOutput;
+      try {
+        listOutput = await execFileAsync('7z', ['l', '-slt', archivePath], { timeout: 15000 });
+      } catch (err) {
+        if (err.stderr && err.stderr.includes('Wrong password')) {
+          throw new Error('Password-protected archives are not supported');
+        }
+        throw new Error(`Failed to read archive: ${err.message}`);
+      }
+
+      const sizeMatches = listOutput.stdout.matchAll(/^Size = (\d+)$/gm);
+      let totalExtractedSize = 0;
+      let fileCount = 0;
+
+      for (const match of sizeMatches) {
+        totalExtractedSize += parseInt(match[1], 10);
+        fileCount++;
+      }
+
+      if (totalExtractedSize > MAX_EXTRACTED_SIZE) {
+        throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+      }
+      if (fileCount > MAX_FILE_COUNT) {
+        throw new Error(`Archive contains too many files (${fileCount}). Maximum is ${MAX_FILE_COUNT}.`);
+      }
+      if (buffer.length > 0 && totalExtractedSize / buffer.length > MAX_COMPRESSION_RATIO) {
+        throw new Error('Archive compression ratio too high — possible archive bomb');
+      }
+
+      // Step 2: Extract
+      try {
+        await execFileAsync('7z', ['x', `-o${extractDir}`, '-y', archivePath], { timeout: 30000 });
+      } catch (err) {
+        if (err.stderr && err.stderr.includes('Wrong password')) {
+          throw new Error('Password-protected archives are not supported');
+        }
+        throw new Error(`Failed to extract archive: ${err.message}`);
+      }
     }
 
     // Step 3: Find .dmp files recursively, with path traversal protection
