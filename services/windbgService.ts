@@ -8,6 +8,7 @@
  */
 
 import xxhash from 'xxhash-wasm';
+import { initializeSession, handleSessionError } from '../utils/sessionManager';
 
 // Initialize xxhash
 let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
@@ -344,6 +345,19 @@ export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
                 credentials: 'include'
             });
 
+            if (!response.ok) {
+                if (response.status === 401) {
+                    let errorData: any = {};
+                    try { errorData = await response.json(); } catch {}
+                    if (handleSessionError(errorData)) {
+                        console.log('[WinDBG] Session expired during poll, re-initializing...');
+                        const refreshed = await initializeSession(true);
+                        if (refreshed) continue; // Retry this poll attempt
+                    }
+                }
+                throw new Error(`Status check failed with HTTP ${response.status}`);
+            }
+
             const result: WinDBGStatusResponse = await response.json();
 
             if (!result.success) {
@@ -383,9 +397,28 @@ export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
 export async function downloadAnalysis(uid: string): Promise<string> {
     console.log(`[WinDBG] Downloading analysis for UID: ${uid}`);
 
-    const response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
+    let response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
         credentials: 'include'
     });
+
+    // Handle session expiry during download
+    if (response.status === 401) {
+        let errorData: any = {};
+        try { errorData = await response.json(); } catch {}
+        if (handleSessionError(errorData)) {
+            console.log('[WinDBG] Session expired during download, re-initializing...');
+            const refreshed = await initializeSession(true);
+            if (refreshed) {
+                response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
+                    credentials: 'include'
+                });
+            }
+        }
+    }
+
+    if (!response.ok) {
+        throw new Error(`Download failed with HTTP ${response.status}`);
+    }
 
     const result: WinDBGDownloadResponse = await response.json();
 
@@ -461,6 +494,24 @@ export async function analyzeWithWinDBG(
             });
 
             console.log(`[WinDBG] Poll response status: ${response.status}`);
+
+            if (!response.ok) {
+                if (response.status === 401) {
+                    let errorData: any = {};
+                    try { errorData = await response.json(); } catch {}
+                    if (handleSessionError(errorData)) {
+                        console.log('[WinDBG] Session expired during poll, re-initializing...');
+                        const refreshed = await initializeSession(true);
+                        if (refreshed) {
+                            // Don't count this as a poll attempt, retry immediately
+                            attempts--;
+                            continue;
+                        }
+                    }
+                }
+                throw new Error(`Status check failed with HTTP ${response.status}`);
+            }
+
             const result: WinDBGStatusResponse = await response.json();
             console.log(`[WinDBG] Poll result:`, result.data?.status);
 
