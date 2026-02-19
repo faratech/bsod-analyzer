@@ -2,7 +2,7 @@ import React, { useState, Suspense, lazy } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
-import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ChevronRightIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
+import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
 
 // Lazy load ReactMarkdown and remarkGfm
 const ReactMarkdown = lazy(() => import('react-markdown'));
@@ -830,28 +830,15 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                         {/* Call Stack from WinDBG */}
                         {callStack && callStack.length > 0 && (
                             <div style={{marginTop: '1.5rem'}}>
-                                <button
+                                <h3
                                     onClick={() => setShowCallStack(!showCallStack)}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.4rem',
-                                        background: 'var(--bg-secondary)',
-                                        border: '1px solid var(--border-primary)',
-                                        borderRadius: '0.375rem',
-                                        cursor: 'pointer',
-                                        padding: '0.4rem 0.75rem',
-                                        color: 'var(--text-primary)',
-                                        fontSize: '0.8rem',
-                                        fontWeight: '600'
-                                    }}
+                                    style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem', userSelect: 'none'}}
+                                    role="button"
                                     aria-expanded={showCallStack}
                                 >
-                                    <span style={{display: 'inline-flex', width: '0.85rem', height: '0.85rem', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronRightIcon className="w-4 h-4" />
-                                    </span>
+                                    <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
                                     Call Stack ({callStack.length} frames)
-                                </button>
+                                </h3>
                                 {showCallStack && (
                                     <div style={{
                                         marginTop: '0.75rem',
@@ -897,30 +884,16 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
                         {/* Raw WinDBG Output */}
                         {rawWinDbgOutput && (
-                            <div style={{marginTop: '0.75rem'}}>
-                                <button
+                            <div style={{marginTop: '1.5rem'}}>
+                                <h3
                                     onClick={() => setShowRawOutput(!showRawOutput)}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.4rem',
-                                        background: 'var(--bg-secondary)',
-                                        border: '1px solid var(--border-primary)',
-                                        borderRadius: '0.375rem',
-                                        cursor: 'pointer',
-                                        padding: '0.4rem 0.75rem',
-                                        color: 'var(--text-primary)',
-                                        fontSize: '0.8rem',
-                                        fontWeight: '600'
-                                    }}
+                                    style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem', userSelect: 'none'}}
+                                    role="button"
                                     aria-expanded={showRawOutput}
                                 >
-                                    <span style={{display: 'inline-flex', width: '0.85rem', height: '0.85rem', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronRightIcon className="w-4 h-4" />
-                                    </span>
-                                    <TerminalIcon className="w-4 h-4" />
+                                    <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
                                     Raw WinDBG Output
-                                </button>
+                                </h3>
                                 {showRawOutput && (
                                     <div style={{
                                         marginTop: '0.75rem',
