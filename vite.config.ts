@@ -6,10 +6,13 @@ import { config } from './config.js';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const buildTimestamp = Math.floor(Date.now() / 1000); // Unix timestamp
-    
+    const now = new Date();
+    const buildVersion = `v${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}-${String(now.getUTCHours()).padStart(2, '0')}${String(now.getUTCMinutes()).padStart(2, '0')}`;
+
     return {
       define: {
-        '__BUILD_TIMESTAMP__': buildTimestamp
+        '__BUILD_TIMESTAMP__': buildTimestamp,
+        '__BUILD_VERSION__': JSON.stringify(buildVersion)
       },
       resolve: {
         alias: {
