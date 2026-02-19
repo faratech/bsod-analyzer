@@ -6,6 +6,7 @@ import { validateDumpFile } from '../utils/dumpParser';
 import { useError } from './useError';
 import { FILE_SIZE_THRESHOLDS } from '../constants';
 import { checkCacheStatus } from '../services/windbgService';
+import { isServerSideArchive, extractArchiveServerSide } from '../services/archiveService';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP_MAX_SIZE;
 
@@ -50,19 +51,19 @@ export const useFileProcessor = () => {
             if (file.name.toLowerCase().endsWith('.zip')) {
                 try {
                     const { files: extractedFiles, errors } = await extractZipSafely(file);
-                    
+
                     if (errors.length > 0) {
                         console.error("Errors processing zip file:", errors);
                         setError(errors.join('\n'));
                     }
-                    
+
                     // Check if extracting these files would exceed our limits
                     const totalFiles = newDumpFiles.length + extractedFiles.length;
                     if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
                         setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
                         continue;
                     }
-                    
+
                     for (const extractedFile of extractedFiles) {
                         await processFile(extractedFile);
                     }
@@ -70,13 +71,35 @@ export const useFileProcessor = () => {
                     console.error("Error processing zip file:", e);
                     setError(`Error processing ZIP file: ${file.name}`);
                 }
-            } else if (file.name.toLowerCase().endsWith('.dmp') || 
+            } else if (isServerSideArchive(file.name)) {
+                try {
+                    const extractedFiles = await extractArchiveServerSide(file);
+
+                    if (extractedFiles.length === 0) {
+                        setError(`No dump files found in archive: ${file.name}`);
+                        continue;
+                    }
+
+                    const totalFiles = newDumpFiles.length + extractedFiles.length;
+                    if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
+                        setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                        continue;
+                    }
+
+                    for (const extractedFile of extractedFiles) {
+                        await processFile(extractedFile);
+                    }
+                } catch (e) {
+                    console.error("Error processing archive:", e);
+                    setError(e instanceof Error ? e.message : `Error processing archive: ${file.name}`);
+                }
+            } else if (file.name.toLowerCase().endsWith('.dmp') ||
                        file.name.toLowerCase().endsWith('.mdmp') ||
                        file.name.toLowerCase().endsWith('.hdmp') ||
                        file.name.toLowerCase().endsWith('.kdmp')) {
                 await processFile(file);
             } else {
-                setError(`Invalid file type: ${file.name}. Please upload .dmp, .mdmp, .hdmp, .kdmp files or ZIP archives containing them.`);
+                setError(`Invalid file type: ${file.name}. Please upload .dmp, .mdmp, .hdmp, .kdmp files or .zip, .7z, .rar archives containing them.`);
             }
         }
 

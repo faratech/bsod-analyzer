@@ -88,7 +88,7 @@ const AppContent: React.FC = () => {
                         {
                             icon: <UploadFeatureIcon />,
                             title: "1. Upload Dump File",
-                            description: "Drag and drop your .dmp file or a .zip archive containing it. The system automatically extracts and prepares it for analysis."
+                            description: "Drag and drop your .dmp file or a .zip, .7z, or .rar archive containing it. The system automatically extracts and prepares it for analysis."
                         },
                         {
                             icon: <AnalyzeFeatureIcon />,
