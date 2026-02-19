@@ -5,11 +5,17 @@ export interface ValidationResult {
   error?: string;
 }
 
+const ARCHIVE_EXTENSIONS = ['.zip', '.7z', '.rar'];
+
 export function validateFileSize(file: File): ValidationResult {
-  if (file.size < SECURITY_CONFIG.file.minSize) {
+  const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+  const isArchive = ARCHIVE_EXTENSIONS.includes(ext);
+  const minSize = isArchive ? SECURITY_CONFIG.file.archiveMinSize : SECURITY_CONFIG.file.minSize;
+
+  if (file.size < minSize) {
     return {
       valid: false,
-      error: `File "${file.name}" is too small. Minimum size is ${formatBytes(SECURITY_CONFIG.file.minSize)}.`
+      error: `File "${file.name}" is too small. Minimum size is ${formatBytes(minSize)}.`
     };
   }
   

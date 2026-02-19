@@ -1,6 +1,7 @@
 export const SECURITY_CONFIG = {
   file: {
     minSize: 56 * 1024, // 56KB minimum - realistic size for legitimate dump files
+    archiveMinSize: 16000, // ~16KB minimum for compressed archives (.zip, .7z, .rar)
     maxSize: 100 * 1024 * 1024, // 100MB maximum
     maxFileCount: 10, // Maximum files per upload session
     allowedExtensions: ['.dmp', '.zip', '.7z', '.rar'],
