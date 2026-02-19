@@ -2,7 +2,7 @@ import React, { useState, Suspense, lazy } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
-import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
+import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ChevronRightIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
 
 // Lazy load ReactMarkdown and remarkGfm
 const ReactMarkdown = lazy(() => import('react-markdown'));
@@ -836,18 +836,20 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: '0.5rem',
-                                        background: 'none',
-                                        border: 'none',
+                                        width: '100%',
+                                        background: 'var(--bg-secondary)',
+                                        border: '1px solid var(--border-primary)',
+                                        borderRadius: '0.5rem',
                                         cursor: 'pointer',
-                                        padding: 0,
+                                        padding: '0.6rem 0.75rem',
                                         color: 'var(--text-primary)',
-                                        fontSize: '1rem',
+                                        fontSize: '0.875rem',
                                         fontWeight: '600'
                                     }}
                                     aria-expanded={showCallStack}
                                 >
-                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showCallStack ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronDownIcon className="w-4 h-4" />
+                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronRightIcon className="w-4 h-4" />
                                     </span>
                                     Call Stack ({callStack.length} frames)
                                 </button>
@@ -896,25 +898,27 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
 
                         {/* Raw WinDBG Output */}
                         {rawWinDbgOutput && (
-                            <div style={{marginTop: '1.5rem'}}>
+                            <div style={{marginTop: '0.75rem'}}>
                                 <button
                                     onClick={() => setShowRawOutput(!showRawOutput)}
                                     style={{
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: '0.5rem',
-                                        background: 'none',
-                                        border: 'none',
+                                        width: '100%',
+                                        background: 'var(--bg-secondary)',
+                                        border: '1px solid var(--border-primary)',
+                                        borderRadius: '0.5rem',
                                         cursor: 'pointer',
-                                        padding: 0,
+                                        padding: '0.6rem 0.75rem',
                                         color: 'var(--text-primary)',
-                                        fontSize: '1rem',
+                                        fontSize: '0.875rem',
                                         fontWeight: '600'
                                     }}
                                     aria-expanded={showRawOutput}
                                 >
-                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showRawOutput ? 'none' : 'rotate(180deg)', transition: 'transform 0.2s'}}>
-                                        <ChevronDownIcon className="w-4 h-4" />
+                                    <span style={{display: 'inline-flex', width: '1rem', height: '1rem', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
+                                        <ChevronRightIcon className="w-4 h-4" />
                                     </span>
                                     <TerminalIcon className="w-4 h-4" />
                                     Raw WinDBG Output
