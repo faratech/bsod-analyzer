@@ -22,7 +22,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init 7zip
+RUN apk add --no-cache dumb-init 7zip libarchive-tools
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
