@@ -1,17 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ADSENSE_CONFIG, getAdSlot } from '../config/adsense';
 
-// Declare global adsbygoogle
-declare global {
-  interface Window {
-    adsbygoogle: unknown[];
-  }
-}
-
 interface AdProps {
   className?: string;
   style?: React.CSSProperties;
-  minWidth?: number; // Minimum width required to show ad
+  minWidth?: number;
 }
 
 // Hook to check if element has sufficient width using ResizeObserver
@@ -87,49 +80,6 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
     </div>
   );
 };
-
-// Safe wrapper for any ad component
-export const AdWrapper: React.FC<{
-  children: React.ReactNode;
-  minWidth?: number;
-  fallback?: React.ReactNode;
-}> = ({ children, minWidth = 200, fallback = null }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const hasWidth = useElementWidth(containerRef, minWidth);
-  
-  return (
-    <div ref={containerRef}>
-      {hasWidth ? children : fallback}
-    </div>
-  );
-};
-
-// Error boundary for ads
-export class AdErrorBoundary extends React.Component<
-  { children: React.ReactNode; fallback?: React.ReactNode },
-  { hasError: boolean }
-> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-
-  componentDidCatch() {
-    // Ad rendering error, silently handled
-  }
-  
-  render() {
-    if (this.state.hasError) {
-      return this.props.fallback || null;
-    }
-    
-    return this.props.children;
-  }
-}
 
 // Enhanced ad component with all safety checks
 export const SafeAd: React.FC<{
