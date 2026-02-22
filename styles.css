@@ -2,7 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
-/* CSS Variables for custom colors */
+/* ==========================================================================
+   TABLE OF CONTENTS
+   ==========================================================================
+   1.  CSS Variables (Dark + Light themes)
+   2.  Base / Reset
+   3.  Layout & Containers
+   4.  Header & Navigation
+   5.  Logo
+   6.  Theme Toggle
+   7.  Hero Section & Background
+   8.  Buttons
+   9.  Cards & Upload
+   10. Feature Cards
+   11. Analysis Results & Status
+   12. Comparison Section
+   13. Pros & Cons / Recommendation
+   14. Footer
+   15. Loading Animations
+   16. Mobile Navigation
+   17. Utility Classes
+   18. Enhanced Navigation
+   19. Hero Animations & Floating Elements
+   20. Ad Styles
+   21. Documentation / About Layout
+   22. Donate Page
+   23. Keyframe Animations
+   24. Light Mode Overrides
+   25. Analysis Progress Component
+   26. Responsive / Media Queries
+   ========================================================================== */
+
+/* ==========================================================================
+   1. CSS Variables
+   ========================================================================== */
 /* Dark theme (default) */
 :root,
 .dark {
@@ -21,11 +54,9 @@
   --status-success: #10b981;
   --status-success-bg: rgba(16, 185, 129, 0.15);
   --status-warning: #f59e0b;
-  --status-warning-bg: rgba(245, 158, 11, 0.15);
   --status-error: #ef4444;
   --status-error-bg: rgba(239, 68, 68, 0.15);
   --status-info: #3b82f6;
-  --status-info-bg: rgba(59, 130, 246, 0.15);
   --shadow-color: rgba(0, 0, 0, 0.5);
   --glass-bg: rgba(26, 26, 26, 0.6);
   --glass-border: rgba(255, 255, 255, 0.1);
@@ -52,11 +83,9 @@
   --status-success: #059669;
   --status-success-bg: #d1fae5;
   --status-warning: #d97706;
-  --status-warning-bg: #fef3c7;
   --status-error: #dc2626;
   --status-error-bg: #fee2e2;
   --status-info: #2563eb;
-  --status-info-bg: #dbeafe;
   --shadow-color: rgba(0, 0, 0, 0.1);
   --glass-bg: rgba(255, 255, 255, 0.7);
   --glass-border: rgba(0, 0, 0, 0.08);
@@ -195,19 +224,6 @@ p {
   transform: translateY(0);
 }
 
-.btn-secondary {
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-secondary);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  color: var(--text-primary);
-  border-color: var(--brand-primary);
-  box-shadow: 0 4px 6px -1px var(--shadow-color);
-  text-decoration: none;
-}
-
 .btn-large {
   padding: 1rem 2rem;
   font-size: 1rem;
@@ -289,32 +305,6 @@ p {
   gap: 0.75rem;
   text-decoration: none;
   color: inherit;
-}
-
-.logo-icon {
-  width: 2rem;
-  height: 2rem;
-  color: var(--brand-primary);
-}
-
-.logo-icon img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  transition: transform 0.3s ease;
-}
-
-.logo:hover .logo-icon img {
-  transform: rotate(360deg);
-}
-
-.logo-text {
-  font-size: 1.25rem;
-  font-weight: 700;
-  background: linear-gradient(to right, var(--gradient-start), var(--brand-accent));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
 
 /* Theme Toggle Styles */
@@ -446,49 +436,6 @@ p {
   max-width: 600px;
   margin-left: auto;
   margin-right: auto;
-}
-
-/* Feature cards */
-.feature-card {
-  padding: 1.5rem;
-  text-align: center;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 0.75rem;
-  transition: all 0.3s ease;
-  transform: scale(1);
-}
-
-.feature-card:hover {
-  border-color: var(--border-secondary);
-  transform: scale(1.05);
-  box-shadow: 0 4px 6px -1px var(--shadow-color);
-}
-
-.feature-icon {
-  width: 3rem;
-  height: 3rem;
-  color: var(--brand-primary);
-  margin-bottom: 1rem;
-  margin-left: auto;
-  margin-right: auto;
-  transition: color 0.3s ease;
-}
-
-.feature-card:hover .feature-icon {
-  color: var(--brand-accent);
-}
-
-.feature-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  margin-bottom: 0.75rem;
-  color: var(--text-primary);
-}
-
-.feature-description {
-  line-height: 1.625;
-  color: var(--text-secondary);
 }
 
 /* Upload area */
@@ -726,20 +673,20 @@ p {
 }
 
 .pros {
-    border-left: 3px solid var(--success);
+    border-left: 3px solid var(--status-success);
 }
 
 .cons {
-    border-left: 3px solid var(--error);
+    border-left: 3px solid var(--status-error);
 }
 
 .pros h4 {
-    color: var(--success);
+    color: var(--status-success);
     margin-bottom: 1rem;
 }
 
 .cons h4 {
-    color: var(--error);
+    color: var(--status-error);
     margin-bottom: 1rem;
 }
 
@@ -758,14 +705,14 @@ p {
     content: '✓';
     position: absolute;
     left: 0;
-    color: var(--success);
+    color: var(--status-success);
 }
 
 .cons li::before {
     content: '✗';
     position: absolute;
     left: 0;
-    color: var(--error);
+    color: var(--status-error);
 }
 
 /* Recommendation Box */
@@ -931,10 +878,8 @@ p {
 .h-6 { height: 1.5rem; }
 
 /* ==========================================================================
-   COMPREHENSIVE CSS MIGRATION - CRITICAL MISSING COMPONENTS
+   8. Buttons (Enhanced)
    ========================================================================== */
-
-/* Base Layout and Body Enhancements */
 body.mobile-menu-open {
   overflow: hidden;
 }
@@ -1034,12 +979,27 @@ body.mobile-menu-open {
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--brand-primary);
+}
+
+.logo-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transition: transform 0.3s ease;
+}
+
+.logo:hover .logo-icon img {
+  transform: rotate(360deg);
 }
 
 .logo-text {
   font-size: 1.125rem;
   font-weight: 600;
-  color: var(--text-primary);
+  background: linear-gradient(to right, var(--gradient-start), var(--brand-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .logo-subtitle {
@@ -1225,41 +1185,6 @@ body.mobile-menu-open {
 .feature-icon .icon-pulse {
   animation: icon-pulse 2.5s infinite ease-in-out 1s;
 }
-
-/* Google Ads Styles */
-.ad-container {
-  margin: 2rem auto;
-  text-align: center;
-  min-height: 50px;
-  position: relative;
-}
-
-.ad-container.in-article {
-  margin: 3rem auto;
-  padding: 1rem 0;
-}
-
-.ad-container.multiplex {
-  background-color: var(--bg-secondary);
-  padding: 1rem;
-  border-radius: 0.75rem;
-  border: 1px solid var(--border-primary);
-}
-
-.ad-container.responsive {
-  width: 100%;
-  margin: 2rem 0;
-}
-
-/* Ad label - removed per request */
-/* .ad-container::before {
-  content: 'Advertisement';
-  display: block;
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-  margin-bottom: 0.5rem;
-  text-align: center;
-} */
 
 .hero-nav {
   display: flex;
@@ -1461,7 +1386,9 @@ body.mobile-menu-open {
   background-size: 10px 10px;
 }
 
-/* Enhanced Feature Cards */
+/* ==========================================================================
+   10. Feature Cards
+   ========================================================================== */
 .feature-card {
   padding: 2rem;
   display: flex;
@@ -1813,8 +1740,6 @@ body.mobile-menu-open {
   animation: spin 0.8s linear infinite, pulse-loader 1.5s infinite ease-in-out;
 }
 
-/* Duplicate footer styles removed - see above for optimized styles */
-
 /* Enhanced Grid Layouts */
 .features-grid {
   display: grid;
@@ -1985,7 +1910,9 @@ body.mobile-menu-open {
   color: var(--text-secondary);
 }
 
-/* Animation Keyframes */
+/* ==========================================================================
+   23. Keyframe Animations
+   ========================================================================== */
 @keyframes move-grid {
   0% { transform: translate(0, 0); }
   100% { transform: translate(40px, 40px); }
@@ -2040,7 +1967,9 @@ body.mobile-menu-open {
 }
 
 
-/* AdSense Styles */
+/* ==========================================================================
+   20. Ad Styles
+   ========================================================================== */
 .ad-container {
   margin: 2rem 0;
   min-height: 100px;
@@ -2404,7 +2333,9 @@ body.mobile-menu-open {
   }
 }
 
-/* Responsive Design System */
+/* ==========================================================================
+   26. Responsive / Media Queries
+   ========================================================================== */
 @media (max-width: 480px) {
   .container { 
     padding: 0 0.75rem;
@@ -2551,7 +2482,9 @@ body.mobile-menu-open {
 .mt-2 { margin-top: 2rem; }
 .text-center { text-align: center; }
 
-/* Light mode specific adjustments */
+/* ==========================================================================
+   24. Light Mode Overrides
+   ========================================================================== */
 .light .btn-primary {
   box-shadow: 0 4px 15px rgba(37, 99, 235, 0.2);
 }
@@ -2592,7 +2525,7 @@ body.mobile-menu-open {
 
 /* Feature cards in light mode - better contrast */
 .light .feature-card {
-  background: white;
+  background: var(--bg-primary);
   border: 1px solid rgba(37, 99, 235, 0.15);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
@@ -2600,11 +2533,11 @@ body.mobile-menu-open {
 .light .feature-card:hover {
   border-color: var(--brand-primary);
   box-shadow: 0 8px 24px rgba(37, 99, 235, 0.15);
-  background: white;
+  background: var(--bg-primary);
 }
 
 .light .feature-title {
-  color: #1a1a1a;
+  color: var(--text-primary);
   font-weight: 700;
 }
 
@@ -2651,7 +2584,7 @@ body.mobile-menu-open {
 
 /* Upload area text in light mode */
 .light .upload-text {
-  color: #1a1a1a;
+  color: var(--text-primary);
   font-weight: 600;
 }
 
@@ -2722,7 +2655,7 @@ body.mobile-menu-open {
 
 .light .features-section,
 .light .info-section {
-  background: white;
+  background: var(--bg-primary);
 }
 
 /* Ensure theme toggle is always visible */
