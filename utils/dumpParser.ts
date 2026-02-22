@@ -938,6 +938,19 @@ function validateBugCheckParameters(code: number, p1: number, p2: number, p3: nu
     }
 }
 
+// Try to extract a bug check at a given offset using 32-bit reads (4-byte spacing)
+function tryExtractBugCheck32(view: DataView, offset: number): BugCheckInfo | null {
+    if (offset + 20 > view.byteLength) return null;
+    const code = view.getUint32(offset, true);
+    if (!isValidBugCheckCode(code)) return null;
+    const p1 = view.getUint32(offset + 4, true);
+    const p2 = view.getUint32(offset + 8, true);
+    const p3 = view.getUint32(offset + 12, true);
+    const p4 = view.getUint32(offset + 16, true);
+    if (!validateBugCheckParameters(code, p1, p2, p3, p4)) return null;
+    return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
+}
+
 // Helper function to create BugCheckInfo with validation
 function createBugCheckInfo(code: number, p1: bigint, p2: bigint, p3: bigint, p4: bigint): BugCheckInfo {
     const params = [p1, p2, p3, p4];
@@ -1112,23 +1125,8 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                 // If no exception stream, check common offsets in minidumps
                 const commonOffsets = [0x80, 0x88, 0x90, 0xA0, 0xB0, 0xC0, 0x100, 0x104, 0x120, 0x200];
                 for (const offset of commonOffsets) {
-                    if (offset + 20 > buffer.byteLength) continue;
-                    
-                    const code = view.getUint32(offset, true);
-                    if (isValidBugCheckCode(code)) {
-                        try {
-                            const p1 = view.getUint32(offset + 4, true);
-                            const p2 = view.getUint32(offset + 8, true);
-                            const p3 = view.getUint32(offset + 12, true);
-                            const p4 = view.getUint32(offset + 16, true);
-                            
-                            if (validateBugCheckParameters(code, p1, p2, p3, p4)) {
-                                return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
-                            }
-                        } catch (e) {
-                            continue;
-                        }
-                    }
+                    const result = tryExtractBugCheck32(view, offset);
+                    if (result) return result;
                 }
             } catch (e) {
                 // Continue to next strategy
@@ -1149,28 +1147,8 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
         if (found) {
             // Bug check data typically follows within 64 bytes
             for (let offset = i; offset < i + 64 && offset < buffer.byteLength - 20; offset += 4) {
-                const code = view.getUint32(offset, true);
-                if (isValidBugCheckCode(code)) {
-                    try {
-                        const p1 = view.getUint32(offset + 4, true);
-                        const p2 = view.getUint32(offset + 8, true);
-                        const p3 = view.getUint32(offset + 12, true);
-                        const p4 = view.getUint32(offset + 16, true);
-                        
-                        if (validateBugCheckParameters(code, p1, p2, p3, p4)) {
-                            return {
-                                code: code,
-                                name: BUG_CHECK_CODES[code] || `UNKNOWN_BUG_CHECK_0x${code.toString(16).toUpperCase()}`,
-                                parameter1: BigInt(p1),
-                                parameter2: BigInt(p2),
-                                parameter3: BigInt(p3),
-                                parameter4: BigInt(p4),
-                            };
-                        }
-                    } catch (e) {
-                        continue;
-                    }
-                }
+                const result = tryExtractBugCheck32(view, offset);
+                if (result) return result;
             }
         }
     }
@@ -1224,53 +1202,36 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
     // Last resort - search for any valid bug check pattern
     const searchLimit = Math.min(buffer.byteLength, 131072); // Search first 128KB
     for (let i = 0; i < searchLimit - 20; i += 4) {
-        const code = view.getUint32(i, true);
-        
-        if (isValidBugCheckCode(code)) {
-            try {
-                const p1 = view.getUint32(i + 4, true);
-                const p2 = view.getUint32(i + 8, true);
-                const p3 = view.getUint32(i + 12, true);
-                const p4 = view.getUint32(i + 16, true);
-                
-                if (validateBugCheckParameters(code, p1, p2, p3, p4)) {
-                    // Additional context validation for common bug checks
-                    let isLikelyValid = false;
-                    
-                    // Check if this matches known patterns
-                    switch (code) {
-                        case 0x1E: // KMODE_EXCEPTION_NOT_HANDLED
-                            // Check if p2 looks like a kernel address
-                            isLikelyValid = p2 > 0x80000000 || (p2 >= 0xFFFFF800 && p2 <= 0xFFFFFFFF);
-                            break;
-                            
-                        case 0x50: // PAGE_FAULT_IN_NONPAGED_AREA
-                        case 0xA: // IRQL_NOT_LESS_OR_EQUAL
-                            // Check if p1 (address) and p4 (instruction) look valid
-                            isLikelyValid = (p4 > 0x80000000 || (p4 >= 0xFFFFF800 && p4 <= 0xFFFFFFFF));
-                            break;
-                            
-                        case 0x133: // DPC_WATCHDOG_VIOLATION
-                            // P1 should be 0 or 1
-                            isLikelyValid = (p1 === 0 || p1 === 1) && p2 > 0 && p2 < 0x10000;
-                            break;
-                            
-                        default:
-                            // For other codes, check if we have at least one kernel address
-                            isLikelyValid = (p1 > 0x80000000 || p2 > 0x80000000 || 
-                                           p3 > 0x80000000 || p4 > 0x80000000) ||
-                                          (code >= 0xC0000000); // STATUS codes
-                            break;
-                    }
-                    
-                    if (isLikelyValid) {
-                        return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
-                    }
-                }
-            } catch (e) {
-                continue;
-            }
+        const candidate = tryExtractBugCheck32(view, i);
+        if (!candidate) continue;
+
+        // Additional context validation for common bug checks
+        const p1 = Number(candidate.parameter1);
+        const p2 = Number(candidate.parameter2);
+        const p3 = Number(candidate.parameter3);
+        const p4 = Number(candidate.parameter4);
+        const code = candidate.code;
+        let isLikelyValid = false;
+
+        switch (code) {
+            case 0x1E: // KMODE_EXCEPTION_NOT_HANDLED
+                isLikelyValid = p2 > 0x80000000 || (p2 >= 0xFFFFF800 && p2 <= 0xFFFFFFFF);
+                break;
+            case 0x50: // PAGE_FAULT_IN_NONPAGED_AREA
+            case 0xA: // IRQL_NOT_LESS_OR_EQUAL
+                isLikelyValid = (p4 > 0x80000000 || (p4 >= 0xFFFFF800 && p4 <= 0xFFFFFFFF));
+                break;
+            case 0x133: // DPC_WATCHDOG_VIOLATION
+                isLikelyValid = (p1 === 0 || p1 === 1) && p2 > 0 && p2 < 0x10000;
+                break;
+            default:
+                isLikelyValid = (p1 > 0x80000000 || p2 > 0x80000000 ||
+                               p3 > 0x80000000 || p4 > 0x80000000) ||
+                              (code >= 0xC0000000);
+                break;
         }
+
+        if (isLikelyValid) return candidate;
     }
     
     return null;

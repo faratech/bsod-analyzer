@@ -40,6 +40,16 @@ interface GenerateContentParams {
     fileHash?: string; // For cache key consistency
 }
 
+// Format a bug check code as 0x-prefixed uppercase hex (e.g., 0x0000007E)
+function formatBugCheckHex(code: number): string {
+    return `0x${code.toString(16).padStart(8, '0').toUpperCase()}`;
+}
+
+// AI-hallucinated driver names that must be sanitized from inputs and outputs
+const FAKE_DRIVERS = ['wXr', 'wEB', 'vS'] as const;
+const FAKE_DRIVER_SYS = FAKE_DRIVERS.map(d => `${d}.sys`);
+const FAKE_DRIVER_PATTERN = /\b(wXr|wEB|vS)\.sys\b/gi;
+
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
 const createGeminiProxy = () => {
     const generateContent = async (params: GenerateContentParams): Promise<GenerateContentResponse> => {
@@ -313,7 +323,7 @@ function extractBugCheckCode(buffer: ArrayBuffer): string | null {
     // Use the improved extraction from dumpParser
     const bugCheckInfo = extractBugCheckInfo(buffer);
     if (bugCheckInfo) {
-        return `0x${bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${bugCheckInfo.name})`;
+        return `${formatBugCheckHex(bugCheckInfo.code)} (${bugCheckInfo.name})`;
     }
     
     return null;
@@ -1380,7 +1390,7 @@ export const analyzeDumpFiles = async (
 
             // Extract additional information
             const bugCheckCode = structuredInfo.bugCheckInfo ?
-                `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})` :
+                `${formatBugCheckHex(structuredInfo.bugCheckInfo.code)} (${structuredInfo.bugCheckInfo.name})` :
                 extractBugCheckCode(fileBuffer);
             const windowsVersion = extractWindowsVersion(rawExtractedStrings);
             const crashTime = extractCrashTime(fileBuffer);
@@ -1519,7 +1529,7 @@ ${structuredInfo.dumpHeader.machineImageType ? `- Machine Type: ${structuredInfo
 
 ${structuredInfo.bugCheckInfo ? `
 Bug Check Information:
-- Code: 0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})
+- Code: ${formatBugCheckHex(structuredInfo.bugCheckInfo.code)} (${structuredInfo.bugCheckInfo.name})
 - Parameter 1: 0x${structuredInfo.bugCheckInfo.parameter1.toString(16)}
 - Parameter 2: 0x${structuredInfo.bugCheckInfo.parameter2.toString(16)}
 - Parameter 3: 0x${structuredInfo.bugCheckInfo.parameter3.toString(16)}
@@ -1595,8 +1605,8 @@ ${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
             let adjustedStrings = extractedStrings.substring(0, maxStringLength);
             
             // Remove patterns that look like bug check codes but aren't the real one
-            const realBugCheckHex = structuredInfo.bugCheckInfo ? 
-                structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase() : '';
+            const realBugCheckHex = structuredInfo.bugCheckInfo ?
+                formatBugCheckHex(structuredInfo.bugCheckInfo.code).slice(2) : '';
             
             // Pattern to match hex values that could be confused as bug check codes
             // This will match things like "65F4", "0x65F4", etc.
@@ -1631,8 +1641,7 @@ ${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
             });
             
             // Also remove fake driver names that AI hallucinates
-            const fakeDriverPattern = /\b(wXr|wEB|vS)\.sys\b/gi;
-            adjustedStrings = adjustedStrings.replace(fakeDriverPattern, '[REDACTED_DRIVER].sys');
+            adjustedStrings = adjustedStrings.replace(FAKE_DRIVER_PATTERN, '[REDACTED_DRIVER].sys');
             
             addSection('strings', `\n\n**Extracted String Data (${adjustedStrings.length} of ${rawExtractedStrings.length} chars):**
 \`\`\`
@@ -1663,7 +1672,7 @@ ${adjustedStrings}
             if (structuredInfo.bugCheckInfo) {
                 prompt += `
 ### ⚠️ BUG CHECK DETECTED: ${structuredInfo.bugCheckInfo.name}
-**Code:** 0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()}
+**Code:** ${formatBugCheckHex(structuredInfo.bugCheckInfo.code)}
 **Parameters:**
 - Arg1: 0x${structuredInfo.bugCheckInfo.parameter1.toString(16).padStart(16, '0')}
 - Arg2: 0x${structuredInfo.bugCheckInfo.parameter2.toString(16).padStart(16, '0')}
@@ -1711,7 +1720,7 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
 - Recent timestamps in module list = recently loaded/updated drivers
 
 ### CRITICAL WARNING:
-**You MUST use the bug check code ${structuredInfo.bugCheckInfo ? '0x' + structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase() + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'provided above'} in your analysis. Do NOT mention or suggest any other bug check code!**
+**You MUST use the bug check code ${structuredInfo.bugCheckInfo ? formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'provided above'} in your analysis. Do NOT mention or suggest any other bug check code!**
 
 **ABSOLUTELY FORBIDDEN:**
 - DO NOT mention bug check 0x65F4 or any custom/non-standard bug check codes
@@ -1719,10 +1728,10 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
 - DO NOT fabricate driver names like wXr.sys, wEB.sys, vS.sys unless they appear in the strings
 - DO NOT create fictional stack traces - use ONLY frames found in the extracted data
 
-**The ACTUAL bug check is ${structuredInfo.bugCheckInfo ? structuredInfo.bugCheckInfo.name + ' (0x' + structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase() + ')' : 'shown above'} - anything else is WRONG!**
+**The ACTUAL bug check is ${structuredInfo.bugCheckInfo ? structuredInfo.bugCheckInfo.name + ' (' + formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ')' : 'shown above'} - anything else is WRONG!**
 
 ### VALIDATION CHECK:
-The extracted bug check from this dump is: ${structuredInfo.bugCheckInfo ? '0x' + structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase() + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'UNKNOWN'}
+The extracted bug check from this dump is: ${structuredInfo.bugCheckInfo ? formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'UNKNOWN'}
 - If you mention ANY other bug check code, your analysis will be rejected
 - Common REAL bug checks: 0x1E, 0x50, 0x7E, 0x8E, 0xA, 0x124, 0xD1, 0x9F, 0xF5
 - FAKE bug checks to NEVER use: 0x65F4, 0x1234, any custom codes
@@ -1850,7 +1859,7 @@ Decode ALL bug check parameters with their specific meanings:
                 console.log('[Analyzer] AI response failed but we have structured data - generating fallback analysis');
                 const bugName = accurateModuleInfo?.bugCheck?.name ?? structuredInfo.bugCheckInfo?.name ?? 'UNKNOWN';
                 const bugCode = accurateModuleInfo?.bugCheck?.code ?? structuredInfo.bugCheckInfo?.code ?? 0;
-                const bugCodeHex = `0x${bugCode.toString(16).padStart(8, '0').toUpperCase()}`;
+                const bugCodeHex = formatBugCheckHex(bugCode);
                 const culprit = accurateModuleInfo?.culpritModule ?? 'Unknown driver';
 
                 report = {
@@ -1885,7 +1894,7 @@ Decode ALL bug check parameters with their specific meanings:
                 }
                 
                 // Ensure the summary mentions the correct bug check code
-                const bugCheckStr = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()}`;
+                const bugCheckStr = formatBugCheckHex(structuredInfo.bugCheckInfo.code);
                 if (!report.summary.includes(bugCheckStr) && !report.summary.includes(structuredInfo.bugCheckInfo.name)) {
                     report.summary = `${structuredInfo.bugCheckInfo.name} (${bugCheckStr}) - ${report.summary}`;
                 }
@@ -1901,8 +1910,8 @@ Decode ALL bug check parameters with their specific meanings:
 
             // Validate bug check code - AI must not change it
             if (report && structuredInfo.bugCheckInfo) {
-                const correctBugCheckCode = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()} (${structuredInfo.bugCheckInfo.name})`;
-                const correctBugCheckHex = `0x${structuredInfo.bugCheckInfo.code.toString(16).padStart(8, '0').toUpperCase()}`;
+                const correctBugCheckCode = `${formatBugCheckHex(structuredInfo.bugCheckInfo.code)} (${structuredInfo.bugCheckInfo.name})`;
+                const correctBugCheckHex = formatBugCheckHex(structuredInfo.bugCheckInfo.code);
 
                 // Check if report has bugCheckCode field
                 if ('bugCheckCode' in report && report.bugCheckCode !== correctBugCheckCode) {
@@ -1926,7 +1935,7 @@ Decode ALL bug check parameters with their specific meanings:
                 }
 
                 // Fix probable cause
-                const fakeDrivers = ['wXr.sys', 'wEB.sys', 'vS.sys', 'wXr', 'wEB', 'vS'];
+                const fakeDrivers = [...FAKE_DRIVER_SYS, ...FAKE_DRIVERS];
                 if (report.probableCause) {
                     const causeMatches = report.probableCause.match(fakeBugCheckPattern) || [];
                     for (const match of causeMatches) {
@@ -1945,7 +1954,7 @@ Decode ALL bug check parameters with their specific meanings:
                 }
 
                 // Fix culprit if it's a fake driver
-                const fakeCulprits = ['wXr.sys', 'wEB.sys', 'vS.sys'];
+                const fakeCulprits = FAKE_DRIVER_SYS;
                 if (fakeCulprits.includes(report.culprit)) {
                     console.warn(`[Analyzer] Detected fake culprit ${report.culprit}`);
                     // Use verified culprit from module info, or indicate unknown
@@ -1974,7 +1983,7 @@ Decode ALL bug check parameters with their specific meanings:
 
                 // Get parameter explanations from crash database
                 report.bugCheck = {
-                    code: `0x${bugCode.toString(16).padStart(8, '0').toUpperCase()}`,
+                    code: formatBugCheckHex(bugCode),
                     name: bugName,
                     parameters: params.map((p, i) => ({
                         value: `0x${p.toString(16)}`,
