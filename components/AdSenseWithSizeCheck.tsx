@@ -14,37 +14,28 @@ interface AdProps {
   minWidth?: number; // Minimum width required to show ad
 }
 
-// Hook to check if element has sufficient width
+// Hook to check if element has sufficient width using ResizeObserver
+// (avoids forced reflows from reading offsetWidth synchronously)
 const useElementWidth = (ref: React.RefObject<HTMLElement | null>, minWidth: number = 100) => {
   const [hasWidth, setHasWidth] = useState(false);
-  
+
   useEffect(() => {
-    const checkWidth = () => {
-      if (ref.current) {
-        const width = ref.current.offsetWidth;
-        console.log(`[AdSense] Container width: ${width}px`);
+    if (!ref.current) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
         setHasWidth(width >= minWidth);
       }
-    };
-    
-    // Check immediately
-    checkWidth();
-    
-    // Check on resize
-    const resizeObserver = new ResizeObserver(checkWidth);
-    if (ref.current) {
-      resizeObserver.observe(ref.current);
-    }
-    
-    // Also check after a delay for dynamic content
-    const timer = setTimeout(checkWidth, 1000);
-    
+    });
+
+    resizeObserver.observe(ref.current);
+
     return () => {
       resizeObserver.disconnect();
-      clearTimeout(timer);
     };
   }, [ref, minWidth]);
-  
+
   return hasWidth;
 };
 
@@ -60,21 +51,18 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
   
   useEffect(() => {
     if (hasWidth && !adPushed) {
-      console.log('[AdSense] Container has sufficient width, pushing ad');
       try {
         (window.adsbygoogle = window.adsbygoogle || []).push({});
         setAdPushed(true);
       } catch (err) {
-        console.error('[AdSense] Error pushing ad:', err);
-        // Check if it's the "No slot size" error
+        // Retry once after delay for "No slot size" errors
         if (err instanceof Error && err.message.includes('No slot size')) {
-          console.log('[AdSense] Retrying after delay due to slot size error');
           setTimeout(() => {
             try {
               (window.adsbygoogle = window.adsbygoogle || []).push({});
               setAdPushed(true);
-            } catch (retryErr) {
-              console.error('[AdSense] Retry failed:', retryErr);
+            } catch (_) {
+              // Ad failed to load, silently ignore
             }
           }, 2000);
         }
@@ -126,13 +114,12 @@ export class AdErrorBoundary extends React.Component<
     this.state = { hasError: false };
   }
   
-  static getDerivedStateFromError(error: Error) {
-    console.error('[AdSense] Error boundary caught:', error);
+  static getDerivedStateFromError() {
     return { hasError: true };
   }
-  
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('[AdSense] Error details:', error, errorInfo);
+
+  componentDidCatch() {
+    // Ad rendering error, silently handled
   }
   
   render() {
@@ -174,11 +161,10 @@ export const SafeAd: React.FC<{
   // Only push ad when visible and has width
   useEffect(() => {
     if (hasWidth && isVisible) {
-      console.log(`[AdSense] Pushing ${type} ad - visible and has width`);
       try {
         (window.adsbygoogle = window.adsbygoogle || []).push({});
-      } catch (err) {
-        console.error(`[AdSense] Error pushing ${type} ad:`, err);
+      } catch (_) {
+        // Ad failed to load, silently ignore
       }
     }
   }, [hasWidth, isVisible, type]);

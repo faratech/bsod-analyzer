@@ -38,9 +38,7 @@ body .ad-container {
   max-height: 100px;
 }
 
-/* Ensure ads don't show in collapsed accordions or tabs */
-.collapsed .ad-container,
-.hidden .ad-container,
+/* Ensure ads don't show in hidden containers */
 [style*="display: none"] .ad-container,
 [style*="display:none"] .ad-container,
 [hidden] .ad-container {
@@ -52,47 +50,14 @@ body .ad-container {
   .ad-container {
     min-height: 50px;
   }
-  
+
   .adsbygoogle {
     min-height: 50px;
   }
 }
 
-/* Loading state for ads */
-.ad-container.loading {
-  background: #f0f0f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ad-container.loading::after {
-  content: "Loading ad...";
-  color: #666;
-  font-size: 12px;
-}
-
-/* Error state */
-.ad-container.error {
-  display: none;
-}
-
 /* Ensure parent containers have width */
-.page-content .ad-container,
-.article-content .ad-container,
-.main-content .ad-container {
+.page-content .ad-container {
   width: 100%;
   max-width: 100%;
-}
-
-/* Fix for flex containers */
-.flex-container .ad-container {
-  flex: 1 1 auto;
-  min-width: 200px;
-}
-
-/* Fix for grid containers */
-.grid-container .ad-container {
-  grid-column: 1 / -1;
-  min-width: 200px;
 }

@@ -11,10 +11,12 @@ const ComparisonSection: React.FC = () => {
                 
                 <div className="comparison-wrapper">
                     <div className="comparison-image-container">
-                        <img 
-                            src="/images/comparison-windbg.webp" 
+                        <img
+                            src="/images/comparison-windbg.webp"
                             alt="Side-by-side comparison of BSOD Analyzer vs WinDbg showing the same crash analysis"
                             loading="lazy"
+                            width={1656}
+                            height={428}
                             className="comparison-image"
                         />
                     </div>
