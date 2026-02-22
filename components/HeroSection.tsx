@@ -76,7 +76,7 @@ const HeroSection: React.FC<HeroSectionProps> = ({
             )}
             
             <div className="container">
-                <div className="hero-content fade-in">
+                <div className="hero-content">
                     <h1 className="hero-title">{title}</h1>
                     <p className="hero-subtitle">{subtitle}</p>
                     

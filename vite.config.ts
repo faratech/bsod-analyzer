@@ -37,9 +37,10 @@ export default defineConfig(({ mode }) => {
         rollupOptions: {
           output: {
             // Manual chunk splitting for better caching
+            // react-markdown/remark-gfm excluded: they're only used in lazy-loaded
+            // Documentation/About pages and will be code-split automatically
             manualChunks: {
-              'react-vendor': ['react', 'react-dom'],
-              'ui-vendor': ['react-markdown', 'remark-gfm']
+              'react-vendor': ['react', 'react-dom']
             }
           }
         }
