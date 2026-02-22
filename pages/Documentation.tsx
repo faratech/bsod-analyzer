@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
 import { InArticleAd, HorizontalAd } from '../components/AdSense';
+import { useActiveSection } from '../hooks/useActiveSection';
 
 const Documentation: React.FC = () => {
     const location = useLocation();
-    const [activeSection, setActiveSection] = useState('');
+    const activeSection = useActiveSection('.docs-section');
 
     // Smooth scroll to section on hash change
     useEffect(() => {
@@ -17,27 +18,6 @@ const Documentation: React.FC = () => {
             }
         }
     }, [location]);
-
-    // Track active section for navigation highlighting
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                entries.forEach((entry) => {
-                    if (entry.isIntersecting) {
-                        setActiveSection(entry.target.id);
-                    }
-                });
-            },
-            { rootMargin: '-100px 0px -70% 0px' }
-        );
-
-        const sections = document.querySelectorAll('.docs-section');
-        sections.forEach((section) => observer.observe(section));
-
-        return () => {
-            sections.forEach((section) => observer.unobserve(section));
-        };
-    }, []);
 
     // FAQ Structured Data
     const faqData = {

@@ -9,6 +9,19 @@ export default defineConfig(({ mode }) => {
     const now = new Date();
     const buildVersion = `v${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}-${String(now.getUTCHours()).padStart(2, '0')}${String(now.getUTCMinutes()).padStart(2, '0')}`;
 
+    // Cache-bust favicon, icons, and manifest references
+    const cacheBustAssets = (html: string) => html
+        .replace(/href="\/favicon(-\d+x\d+)?\.webp"/g,
+            (_match, size) => `href="/favicon${size || ''}.webp?v=${buildTimestamp}"`)
+        .replace('href="/favicon.ico"',
+            `href="/favicon.ico?v=${buildTimestamp}"`)
+        .replace('href="/apple-touch-icon.webp"',
+            `href="/apple-touch-icon.webp?v=${buildTimestamp}"`)
+        .replace(/href="\/android-chrome-(\d+x\d+)\.webp"/g,
+            (_match, size) => `href="/android-chrome-${size}.webp?v=${buildTimestamp}"`)
+        .replace('href="/site.webmanifest"',
+            `href="/site.webmanifest?v=${buildTimestamp}"`);
+
     return {
       define: {
         '__BUILD_TIMESTAMP__': buildTimestamp,
@@ -64,34 +77,7 @@ export default defineConfig(({ mode }) => {
                 `window.__GA_ID__ = '${config.analytics.gaId}';`
               );
             
-            // Add cache busting to static assets (NOT CSS - Vite handles that)
-            html = html
-              // Add timestamp to favicon references
-              .replace(
-                /href="\/favicon(-\d+x\d+)?\.webp"/g,
-                (match, size) => `href="/favicon${size || ''}.webp?v=${buildTimestamp}"`
-              )
-              .replace(
-                'href="/favicon.ico"',
-                `href="/favicon.ico?v=${buildTimestamp}"`
-              )
-              // Add timestamp to apple touch icon
-              .replace(
-                'href="/apple-touch-icon.webp"',
-                `href="/apple-touch-icon.webp?v=${buildTimestamp}"`
-              )
-              // Add timestamp to Android chrome icons
-              .replace(
-                /href="\/android-chrome-(\d+x\d+)\.webp"/g,
-                (match, size) => `href="/android-chrome-${size}.webp?v=${buildTimestamp}"`
-              )
-              // Add timestamp to manifest
-              .replace(
-                'href="/site.webmanifest"',
-                `href="/site.webmanifest?v=${buildTimestamp}"`
-              );
-              
-            return html;
+            return cacheBustAssets(html);
           }
         },
         {
@@ -112,23 +98,7 @@ export default defineConfig(({ mode }) => {
             for (const file of ampFiles) {
               try {
                 if (file.endsWith('.html')) {
-                  // Read the file content
-                  let content = await readFile(file, 'utf-8');
-                  
-                  // Add cache busting to static assets in AMP files
-                  content = content
-                    .replace(/href="\/favicon(-\d+x\d+)?\.webp"/g, 
-                      (match, size) => `href="/favicon${size || ''}.webp?v=${buildTimestamp}"`)
-                    .replace('href="/favicon.ico"', 
-                      `href="/favicon.ico?v=${buildTimestamp}"`)
-                    .replace('href="/apple-touch-icon.webp"', 
-                      `href="/apple-touch-icon.webp?v=${buildTimestamp}"`)
-                    .replace(/href="\/android-chrome-(\d+x\d+)\.webp"/g, 
-                      (match, size) => `href="/android-chrome-${size}.webp?v=${buildTimestamp}"`)
-                    .replace('href="/site.webmanifest"', 
-                      `href="/site.webmanifest?v=${buildTimestamp}"`);
-                  
-                  // Write the modified content
+                  const content = cacheBustAssets(await readFile(file, 'utf-8'));
                   await writeFile(`dist/${file}`, content, 'utf-8');
                   console.log(`✓ Copied and cache-busted ${file} to dist/`);
                 } else {

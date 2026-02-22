@@ -298,52 +298,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// CRITICAL: Set MIME types for assets BEFORE any other middleware
-// This ensures Cloud Run serves files with correct Content-Type
-app.use((req, res, next) => {
-  // Log asset requests for debugging
-  if (req.path.startsWith('/assets/')) {
-    console.log(`Asset request: ${req.path}`);
-  }
+// MIME type lookup for static assets
+const MIME_TYPES = {
+  '.js': 'application/javascript', '.mjs': 'application/javascript',
+  '.css': 'text/css', '.html': 'text/html', '.json': 'application/json',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
+  '.otf': 'font/otf', '.eot': 'application/vnd.ms-fontobject',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+};
 
-  // Handle assets directory specifically
+// Set MIME types for assets BEFORE any other middleware
+// Ensures Cloud Run serves files with correct Content-Type
+app.use((req, res, next) => {
   if (req.path.startsWith('/assets/')) {
-    // JavaScript
-    if (req.path.endsWith('.js') || req.path.endsWith('.mjs')) {
-      res.type('application/javascript');
-      console.log(`Setting JS MIME type for: ${req.path}`);
-    }
-    // CSS
-    else if (req.path.endsWith('.css')) {
-      res.type('text/css');
-      console.log(`Setting CSS MIME type for: ${req.path}`);
-    }
-    // Fonts
-    else if (req.path.endsWith('.woff2')) {
-      res.type('font/woff2');
-    }
-    else if (req.path.endsWith('.woff')) {
-      res.type('font/woff');
-    }
-    else if (req.path.endsWith('.ttf')) {
-      res.type('font/ttf');
-    }
-    else if (req.path.endsWith('.otf')) {
-      res.type('font/otf');
-    }
-    // Images
-    else if (req.path.endsWith('.png')) {
-      res.type('image/png');
-    }
-    else if (req.path.endsWith('.jpg') || req.path.endsWith('.jpeg')) {
-      res.type('image/jpeg');
-    }
-    else if (req.path.endsWith('.webp')) {
-      res.type('image/webp');
-    }
-    else if (req.path.endsWith('.svg')) {
-      res.type('image/svg+xml');
-    }
+    const ext = path.extname(req.path).toLowerCase();
+    const mime = MIME_TYPES[ext];
+    if (mime) res.type(mime);
   }
   next();
 });
@@ -389,84 +360,40 @@ app.use((req, res, next) => {
   next();
 });
 
-// Static file serving with explicit MIME types and efficient caching
+// Static file serving with MIME types and caching via shared lookup
+const TEXT_EXTS = new Set(['.js', '.mjs', '.css', '.html', '.json']);
+const NOSNIFF_EXTS = new Set(['.js', '.mjs', '.css', '.html']);
+const FONT_EXTS = new Set(['.woff2', '.woff', '.ttf', '.otf', '.eot']);
+
 app.use(express.static(path.join(__dirname, 'dist'), {
-  maxAge: '1y', // Cache static assets for 1 year
+  maxAge: '1y',
   etag: true,
   lastModified: true,
   setHeaders: (res, filePath) => {
-    // CRITICAL: Set MIME types FIRST before any other headers
-    // This ensures Cloud Run doesn't override them
+    const ext = path.extname(filePath).toLowerCase();
+    const mime = MIME_TYPES[ext];
 
-    // JavaScript files - MUST be set correctly for Cloud Run
-    if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-      res.setHeader('X-Content-Type-Options', 'nosniff'); // Prevent MIME sniffing
+    if (mime) {
+      res.setHeader('Content-Type', TEXT_EXTS.has(ext) ? `${mime}; charset=utf-8` : mime);
     }
-
-    // CSS files - MUST be set correctly for Cloud Run
-    else if (filePath.endsWith('.css')) {
-      res.setHeader('Content-Type', 'text/css; charset=utf-8');
-      res.setHeader('X-Content-Type-Options', 'nosniff'); // Prevent MIME sniffing
-    }
-
-    // HTML files
-    else if (filePath.endsWith('.html')) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, must-revalidate'); // Always revalidate HTML
+    if (NOSNIFF_EXTS.has(ext)) {
       res.setHeader('X-Content-Type-Options', 'nosniff');
     }
 
-    // JSON files
-    else if (filePath.endsWith('.json')) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
-      // Allow cross-origin for symbol files
+    // Cache strategy
+    if (ext === '.html') {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    } else if (ext === '.json') {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
       if (filePath.includes('/symbols/')) {
         res.setHeader('Access-Control-Allow-Origin', '*');
       }
+    } else if (mime) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     }
 
-    // Web fonts
-    else if (filePath.endsWith('.woff2')) {
-      res.setHeader('Content-Type', 'font/woff2');
-    } else if (filePath.endsWith('.woff')) {
-      res.setHeader('Content-Type', 'font/woff');
-    } else if (filePath.endsWith('.ttf')) {
-      res.setHeader('Content-Type', 'font/ttf');
-    } else if (filePath.endsWith('.otf')) {
-      res.setHeader('Content-Type', 'font/otf');
-    } else if (filePath.endsWith('.eot')) {
-      res.setHeader('Content-Type', 'application/vnd.ms-fontobject');
-    }
-
-    // Images
-    else if (filePath.endsWith('.png')) {
-      res.setHeader('Content-Type', 'image/png');
-    } else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
-      res.setHeader('Content-Type', 'image/jpeg');
-    } else if (filePath.endsWith('.webp')) {
-      res.setHeader('Content-Type', 'image/webp');
-    } else if (filePath.endsWith('.svg')) {
-      res.setHeader('Content-Type', 'image/svg+xml');
-    } else if (filePath.endsWith('.ico')) {
-      res.setHeader('Content-Type', 'image/x-icon');
-    }
-
-    // Set cache headers AFTER MIME types
-    if (filePath.endsWith('.html')) {
-      // HTML files - always revalidate to ensure users get latest bundle references
-      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-    } else if (filePath.match(/\.(js|mjs|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico)$/)) {
-      // Static assets - long cache with fingerprinting
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year
-    } else if (filePath.endsWith('.json')) {
-      // JSON files - medium cache
-      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
-    }
-
-    // Allow CORS for fonts and certain resources
-    if (filePath.match(/\.(woff2|woff|ttf|otf|eot)$/)) {
+    // CORS for fonts
+    if (FONT_EXTS.has(ext)) {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
   }
@@ -608,6 +535,20 @@ function generateSessionCookie(ip) {
     sessionId,
     sessionHash
   };
+}
+
+// Set session cookies on a response
+function setSessionCookies(res, sessionId, sessionHash) {
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: SESSION_EXPIRY,
+    path: '/',
+  };
+  res.cookie('bsod_session_id', sessionId, cookieOptions);
+  res.cookie('bsod_session_hash', sessionHash, cookieOptions);
+  return cookieOptions;
 }
 
 // Validate session cookie
@@ -796,19 +737,8 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
     
     // If verification successful, create session
     const { sessionId, sessionHash } = generateSessionCookie(clientIp);
-    
-    // Set secure cookies with modern attributes
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax', // Changed from 'strict' to allow cookies on navigation
-      maxAge: SESSION_EXPIRY,
-      path: '/', // Ensure cookies are available for all paths
-      // Don't set domain - let browser handle it to work with any domain
-    };
 
-    res.cookie('bsod_session_id', sessionId, cookieOptions);
-    res.cookie('bsod_session_hash', sessionHash, cookieOptions);
+    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
     res.cookie('bsod_turnstile_verified', 'true', { ...cookieOptions, maxAge: 2 * 60 * 60 * 1000 }); // 2 hours
     
     // Return success with verification details
@@ -857,25 +787,14 @@ app.get('/api/auth/session', async (req, res) => {
 
     const clientIp = getClientIp(req);
     const { sessionId, sessionHash } = generateSessionCookie(clientIp);
-    
+
     console.log('Creating session:', {
       sessionIdPrefix: sessionId.substring(0, 10) + '...',
       clientIp,
       cookieDomain: req.get('host')
     });
-    
-    // Set secure cookies with modern attributes
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax', // Changed from 'strict' to allow cookies on navigation
-      maxAge: SESSION_EXPIRY,
-      path: '/', // Ensure cookies are available for all paths
-      // Don't set domain - let browser handle it to work with any domain
-    };
-    
-    res.cookie('bsod_session_id', sessionId, cookieOptions);
-    res.cookie('bsod_session_hash', sessionHash, cookieOptions);
+
+    setSessionCookies(res, sessionId, sessionHash);
     
     res.json({ success: true });
   } catch (error) {
@@ -1343,6 +1262,34 @@ app.post('/api/cache/check', express.json(), async (req, res) => {
   }
 });
 
+/**
+ * Build multipart form body for WinDBG uploads
+ */
+function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
+  const boundary = '----WinDBGBoundary' + Date.now();
+  const CRLF = '\r\n';
+
+  let body = '';
+  body += `--${boundary}${CRLF}`;
+  body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
+  body += `${apiKey}${CRLF}`;
+  body += `--${boundary}${CRLF}`;
+  body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
+  body += `${uid}${CRLF}`;
+
+  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+  const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
+
+  const fullBody = Buffer.concat([
+    Buffer.from(body, 'utf8'),
+    Buffer.from(fileHeader, 'utf8'),
+    fileBuffer,
+    Buffer.from(fileFooter, 'utf8')
+  ]);
+
+  return { fullBody, boundary };
+}
+
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res) => {
@@ -1383,39 +1330,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
 
     console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
-    // Build multipart form data manually for compatibility with Node.js fetch
-    const boundary = '----WinDBGBoundary' + Date.now();
-    const CRLF = '\r\n';
-
-    // Build the multipart body
-    let body = '';
-
-    // APIKEY field
-    body += `--${boundary}${CRLF}`;
-    body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
-    body += `${WINDBG_API_KEY}${CRLF}`;
-
-    // UID field
-    body += `--${boundary}${CRLF}`;
-    body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
-    body += `${uid}${CRLF}`;
-
-    // File field - need to handle binary data
-    const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
-    const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
-
-    // Combine all parts into final body
-    const preFileBuffer = Buffer.from(body, 'utf8');
-    const fileHeaderBuffer = Buffer.from(fileHeader, 'utf8');
-    const fileFooterBuffer = Buffer.from(fileFooter, 'utf8');
-
-    const fullBody = Buffer.concat([
-      preFileBuffer,
-      fileHeaderBuffer,
-      fileBuffer,
-      fileFooterBuffer
-    ]);
-
+    const { fullBody, boundary } = buildWinDBGMultipartBody(WINDBG_API_KEY, uid, fileBuffer, fileName);
     console.log('[WinDBG] Request body size:', fullBody.length);
 
     // Upload to WinDBG server
@@ -1691,30 +1606,7 @@ function generateWinDBGUID() {
  * Upload file buffer to WinDBG server
  */
 async function uploadBufferToWinDBG(fileBuffer, fileName, uid) {
-  const boundary = '----WinDBGBoundary' + Date.now();
-  const CRLF = '\r\n';
-
-  let body = '';
-  body += `--${boundary}${CRLF}`;
-  body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
-  body += `${WINDBG_API_KEY}${CRLF}`;
-  body += `--${boundary}${CRLF}`;
-  body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
-  body += `${uid}${CRLF}`;
-
-  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
-  const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
-
-  const preFileBuffer = Buffer.from(body, 'utf8');
-  const fileHeaderBuffer = Buffer.from(fileHeader, 'utf8');
-  const fileFooterBuffer = Buffer.from(fileFooter, 'utf8');
-
-  const fullBody = Buffer.concat([
-    preFileBuffer,
-    fileHeaderBuffer,
-    fileBuffer,
-    fileFooterBuffer
-  ]);
+  const { fullBody, boundary } = buildWinDBGMultipartBody(WINDBG_API_KEY, uid, fileBuffer, fileName);
 
   const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
     method: 'POST',
@@ -1966,40 +1858,23 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
   return results;
 }
 
-function isZipFile(buffer) {
-  return buffer.length >= 4 &&
-         buffer[0] === 0x50 && buffer[1] === 0x4B &&
-         buffer[2] === 0x03 && buffer[3] === 0x04;
-}
-
-function is7zFile(buffer) {
-  return buffer.length >= 6 &&
-         buffer[0] === 0x37 && buffer[1] === 0x7A &&
-         buffer[2] === 0xBC && buffer[3] === 0xAF &&
-         buffer[4] === 0x27 && buffer[5] === 0x1C;
-}
-
-function isRarFile(buffer) {
-  if (buffer.length < 7) return false;
-  // RAR v5: Rar!\x1a\x07\x01\x00
-  if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 &&
-      buffer[3] === 0x21 && buffer[4] === 0x1A && buffer[5] === 0x07 &&
-      buffer[6] === 0x01) return true;
-  // RAR v4: Rar!\x1a\x07\x00
-  if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 &&
-      buffer[3] === 0x21 && buffer[4] === 0x1A && buffer[5] === 0x07 &&
-      buffer[6] === 0x00) return true;
-  return false;
-}
+const ARCHIVE_SIGNATURES = [
+  { type: 'zip', bytes: [0x50, 0x4B, 0x03, 0x04] },
+  { type: '7z',  bytes: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] },
+  { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01] }, // RAR v5
+  { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00] }, // RAR v4
+];
 
 /**
  * Detect archive type from buffer magic bytes
  * @returns 'zip' | '7z' | 'rar' | null
  */
 function detectArchiveType(buffer) {
-  if (isZipFile(buffer)) return 'zip';
-  if (is7zFile(buffer)) return '7z';
-  if (isRarFile(buffer)) return 'rar';
+  for (const { type, bytes } of ARCHIVE_SIGNATURES) {
+    if (buffer.length >= bytes.length && bytes.every((b, i) => buffer[i] === b)) {
+      return type;
+    }
+  }
   return null;
 }
 

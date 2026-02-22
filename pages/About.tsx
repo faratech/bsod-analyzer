@@ -1,31 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import PageLayout from '../components/PageLayout';
 import StructuredData from '../components/StructuredData';
 import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
+import { useActiveSection } from '../hooks/useActiveSection';
 
 const About: React.FC = () => {
-    const [activeSection, setActiveSection] = useState('');
+    const activeSection = useActiveSection('.about-section');
 
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                entries.forEach((entry) => {
-                    if (entry.isIntersecting) {
-                        setActiveSection(entry.target.id);
-                    }
-                });
-            },
-            { rootMargin: '-100px 0px -70% 0px' }
-        );
-
-        const sections = document.querySelectorAll('.about-section');
-        sections.forEach((section) => observer.observe(section));
-
-        return () => {
-            sections.forEach((section) => observer.unobserve(section));
-        };
-    }, []);
     // Article Structured Data
     const articleData = {
         "@context": "https://schema.org",
