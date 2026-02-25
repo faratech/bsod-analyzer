@@ -44,7 +44,7 @@
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "latest",
-    "autoprefixer": "^10.4.24",
+    "autoprefixer": "^10.4.25",
     "postcss": "latest",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.2.1",
