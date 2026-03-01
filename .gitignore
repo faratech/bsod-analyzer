@@ -30,6 +30,14 @@ logs/
 *.bak
 services/geminiService.ts.backup
 
+# Screenshots
+*.png
+!public/**/*.png
+
+# Hidden files/folders (dotfiles)
+.*
+!.gitignore
+
 # Claude AI settings (local preferences)
 .claude/
 
