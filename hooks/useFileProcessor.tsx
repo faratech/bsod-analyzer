@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { extractZipSafely } from '../utils/zipSecurity';
 import { SECURITY_CONFIG } from '../config/security';
@@ -8,7 +8,7 @@ import { FILE_SIZE_THRESHOLDS } from '../constants';
 import { checkCacheStatus } from '../services/windbgService';
 import { isServerSideArchive, extractArchiveServerSide } from '../services/archiveService';
 
-const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP_MAX_SIZE;
+const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP;
 
 export const useFileProcessor = () => {
     const { error, setError, clearError } = useError();
@@ -44,7 +44,7 @@ export const useFileProcessor = () => {
                     }
                 } catch (e) {
                     console.error("Error validating file:", e);
-                    setError(`Error processing file ${f.name}: ${e.message}`);
+                    setError(`Error processing file ${f.name}: ${e instanceof Error ? e.message : String(e)}`);
                 }
             };
 

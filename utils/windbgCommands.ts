@@ -3,8 +3,7 @@
  */
 
 import { MinidumpParser } from './minidumpStreams.js';
-import { parseContext, formatContext } from './contextParser.js';
-import { DumpValidator } from './dumpValidator.js';
+import { formatContext } from './contextParser.js';
 import { parseKernelDumpHeader } from './kernelDumpModuleParser.js';
 
 interface WinDbgCommandResult {
@@ -76,7 +75,7 @@ export function executeAnalyzeV(buffer: ArrayBuffer): WinDbgCommandResult {
                 
                 // Find faulting module
                 if (exception) {
-                    const faultingModule = findModuleByAddress(modules, exception.exceptionAddress);
+                    const faultingModule = findModuleByAddress(modules.map(m => ({ name: m.name, baseAddress: m.baseAddress, sizeOfImage: m.size })), exception.exceptionAddress);
                     if (faultingModule) {
                         lines.push(`MODULE_NAME: ${faultingModule.name}`);
                         lines.push(`IMAGE_NAME:  ${faultingModule.name}`);
@@ -90,7 +89,7 @@ export function executeAnalyzeV(buffer: ArrayBuffer): WinDbgCommandResult {
             if (threads.length > 0) {
                 // Generate stack trace from thread context
                 const stackFrames = generateStackTrace(buffer, threads[0], modules);
-                stackFrames.forEach((frame, idx) => {
+                stackFrames.forEach((frame) => {
                     lines.push(frame);
                 });
             }
@@ -172,15 +171,19 @@ export function executeLmKv(buffer: ArrayBuffer): WinDbgCommandResult {
             
             modules.forEach(module => {
                 const start = module.baseAddress.toString(16).padStart(16, '0');
-                const end = (module.baseAddress + BigInt(module.sizeOfImage)).toString(16).padStart(16, '0');
-                const timestamp = new Date(module.timeDateStamp * 1000).toISOString().split('T')[0];
-                
+                const end = (module.baseAddress + BigInt(module.size)).toString(16).padStart(16, '0');
+                const timestamp = new Intl.DateTimeFormat(undefined, {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                }).format(new Date(module.timestamp * 1000));
+
                 lines.push(`${start} ${end}   ${module.name.padEnd(20)} (deferred)`);
                 lines.push(`    Image path: ${module.name}`);
                 lines.push(`    Image name: ${module.name}`);
                 lines.push(`    Timestamp:  ${timestamp}`);
-                lines.push(`    CheckSum:   ${module.checkSum.toString(16).padStart(8, '0')}`);
-                lines.push(`    ImageSize:  ${module.sizeOfImage.toString(16).padStart(8, '0')}`);
+                lines.push(`    CheckSum:   ${module.checksum.toString(16).padStart(8, '0')}`);
+                lines.push(`    ImageSize:  ${module.size.toString(16).padStart(8, '0')}`);
                 lines.push('');
             });
             
@@ -219,9 +222,8 @@ export function executeProcess00(buffer: ArrayBuffer): WinDbgCommandResult {
         
         if (signature === 0x504D444D) { // 'MDMP'
             const parser = new MinidumpParser(buffer);
-            const systemInfo = parser.getSystemInfo();
             const modules = parser.getModules();
-            
+
             // In a minidump, we typically only have info about the crashing process
             lines.push('**** NT ACTIVE PROCESS DUMP ****');
             lines.push('');
@@ -266,9 +268,6 @@ export function executeVm(buffer: ArrayBuffer): WinDbgCommandResult {
         lines.push('*** Virtual Memory Usage ***');
         
         if (signature === 0x504D444D) { // 'MDMP'
-            const parser = new MinidumpParser(buffer);
-            const systemInfo = parser.getSystemInfo();
-            
             // Limited info in minidump
             lines.push('Physical Memory:          (Data Not Accessible)');
             lines.push('Available Pages:          (Data Not Accessible)');
@@ -352,7 +351,7 @@ function getMachineTypeName(arch: number): string {
     return types[arch] || `Unknown (0x${arch.toString(16)})`;
 }
 
-function generateStackTrace(buffer: ArrayBuffer, thread: any, modules: any[]): string[] {
+function generateStackTrace(_buffer: ArrayBuffer, thread: any, modules: any[]): string[] {
     const frames: string[] = [];
     let frameNum = 0;
     

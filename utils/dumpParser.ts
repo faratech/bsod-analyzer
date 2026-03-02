@@ -2,8 +2,7 @@
 // Supports both minidump and full kernel dumps
 
 import { MinidumpParser } from './minidumpStreams.js';
-import { validateBugCheckParameters, analyzeBugCheckParameters, DumpValidator } from './dumpValidator.js';
-import { parseContext, ParsedContext } from './contextParser.js';
+import { validateBugCheckParameters as validateBugCheckParamsImported, analyzeBugCheckParameters, DumpValidator } from './dumpValidator.js';
 import { parseKernelDumpHeader } from './kernelDumpModuleParser.js';
 
 export interface FileValidationResult {
@@ -563,15 +562,9 @@ export const BUG_CHECK_CODES: Record<number, string> = {
     0xDEADDEAD: 'MANUALLY_INITIATED_CRASH1',
 };
 
-// Machine types
-const MACHINE_TYPES: Record<number, string> = {
-    0x014C: 'x86',
-    0x0200: 'IA64',
-    0x8664: 'x64',
-    0xAA64: 'ARM64',
-};
 
-export function validateDumpFile(buffer: ArrayBuffer, filename: string): FileValidationResult {
+
+export function validateDumpFile(buffer: ArrayBuffer, _filename: string): FileValidationResult {
     if (buffer.byteLength < 32) {
         return {
             isValid: false,
@@ -702,7 +695,7 @@ export function extractDumpHeader(buffer: ArrayBuffer): DumpHeader | null {
 function extractPageDumpHeader(view: DataView): DumpHeader {
     // Try to use the comprehensive kernel dump parser first
     try {
-        const kernelHeader = parseKernelDumpHeader(view.buffer);
+        const kernelHeader = parseKernelDumpHeader(view.buffer as ArrayBuffer);
         if (kernelHeader) {
             const header: DumpHeader = {
                 signature: kernelHeader.signature,
@@ -766,7 +759,7 @@ function extractPageDumpHeader(view: DataView): DumpHeader {
     }
     
     // Try to extract physical memory runs
-    header.physicalMemoryRuns = extractPhysicalMemoryRuns(view);
+    header.physicalMemoryRuns = extractPhysicalMemoryRuns(view) ?? undefined;
     
     return header;
 }
@@ -908,7 +901,7 @@ function isValidBugCheckCode(code: number): boolean {
 }
 
 // Helper to validate parameters based on bug check code
-function validateBugCheckParameters(code: number, p1: number, p2: number, p3: number, p4: number): boolean {
+function validateBugCheckParamsBasic(code: number, p1: number, p2: number, p3: number, p4: number): boolean {
     // Special validation for known bug check codes
     switch (code) {
         case 0x1E: // KMODE_EXCEPTION_NOT_HANDLED
@@ -947,14 +940,14 @@ function tryExtractBugCheck32(view: DataView, offset: number): BugCheckInfo | nu
     const p2 = view.getUint32(offset + 8, true);
     const p3 = view.getUint32(offset + 12, true);
     const p4 = view.getUint32(offset + 16, true);
-    if (!validateBugCheckParameters(code, p1, p2, p3, p4)) return null;
+    if (!validateBugCheckParamsBasic(code, p1, p2, p3, p4)) return null;
     return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
 }
 
 // Helper function to create BugCheckInfo with validation
 function createBugCheckInfo(code: number, p1: bigint, p2: bigint, p3: bigint, p4: bigint): BugCheckInfo {
     const params = [p1, p2, p3, p4];
-    const validation = validateBugCheckParameters(code, params);
+    const validation = validateBugCheckParamsImported(code, params);
     const analysis = analyzeBugCheckParameters(code, params);
     
     return {
@@ -999,9 +992,9 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                     console.log(`[BugCheck] Parameters: 0x${p1.toString(16)}, 0x${p2.toString(16)}, 0x${p3.toString(16)}, 0x${p4.toString(16)}`);
                     
                     // Validate parameters are reasonable
-                    const validation = validateBugCheckParameters(code, Number(p1), Number(p2), Number(p3), Number(p4));
-                    const analysis = analyzeBugCheckParameters(code, [Number(p1), Number(p2), Number(p3), Number(p4)]);
-                    
+                    const validation = validateBugCheckParamsImported(code, [p1, p2, p3, p4]);
+                    const analysis = analyzeBugCheckParameters(code, [p1, p2, p3, p4]);
+
                     return {
                         code,
                         name: BUG_CHECK_CODES[code] || `UNKNOWN_BUG_CHECK_${code.toString(16).toUpperCase()}`,
@@ -1009,11 +1002,7 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                         parameter2: p2,
                         parameter3: p3,
                         parameter4: p4,
-                        validation: {
-                            valid: validation.valid,
-                            errors: validation.errors,
-                            description: validation.description
-                        },
+                        validation,
                         analysis
                     };
                 }
@@ -1078,7 +1067,6 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                 // Look through streams for exception stream (type 6)
                 for (let i = 0; i < streamCount && streamDirRva + (i * 12) < buffer.byteLength - 12; i++) {
                     const streamType = view.getUint32(streamDirRva + (i * 12), true);
-                    const dataSize = view.getUint32(streamDirRva + (i * 12) + 4, true);
                     const rva = view.getUint32(streamDirRva + (i * 12) + 8, true);
                     
                     if (streamType === 6 && rva + 168 < buffer.byteLength) { // Exception stream
@@ -1114,7 +1102,7 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                             
                             if (isValidBugCheckCode(bugCheckCode)) {
                                 console.log(`[BugCheck] Found bug check in ExceptionInformation: 0x${bugCheckCode.toString(16).padStart(8, '0')} (${BUG_CHECK_CODES[bugCheckCode] || 'UNKNOWN'})`);
-                                if (validateBugCheckParameters(bugCheckCode, p1, p2, p3, p4)) {
+                                if (validateBugCheckParamsBasic(bugCheckCode, p1, p2, p3, p4)) {
                                     return createBugCheckInfo(bugCheckCode, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
                                 }
                             }
@@ -1187,7 +1175,7 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                     const p3 = parseInt(paramMatch[3].replace('0x', ''), 16);
                     const p4 = parseInt(paramMatch[4].replace('0x', ''), 16);
                     
-                    if (validateBugCheckParameters(code, p1, p2, p3, p4)) {
+                    if (validateBugCheckParamsBasic(code, p1, p2, p3, p4)) {
                         return createBugCheckInfo(code, BigInt(p1), BigInt(p2), BigInt(p3), BigInt(p4));
                     }
                 }
@@ -1262,6 +1250,29 @@ export function isLegitimateModuleName(name: string): boolean {
     }
     
     return true;
+}
+
+function extractNearbyString(buffer: ArrayBuffer, offset: number, range: number): string | null {
+    const bytes = new Uint8Array(buffer);
+    const start = Math.max(0, offset - range);
+    const end = Math.min(bytes.length, offset + range);
+    let current = '';
+    let best = '';
+    for (let i = start; i < end; i++) {
+        const b = bytes[i];
+        if (b >= 0x20 && b < 0x7F) {
+            current += String.fromCharCode(b);
+        } else {
+            if (current.length > best.length && /\.(sys|dll|exe)/i.test(current)) {
+                best = current;
+            }
+            current = '';
+        }
+    }
+    if (current.length > best.length && /\.(sys|dll|exe)/i.test(current)) {
+        best = current;
+    }
+    return best || null;
 }
 
 export function extractModuleList(buffer: ArrayBuffer, strings: string): ModuleInfo[] {
@@ -1339,7 +1350,7 @@ export function extractModuleList(buffer: ArrayBuffer, strings: string): ModuleI
     }
     
     // Second pass: Prioritize important modules
-    const priorityModules = modules.sort((a, b) => {
+    modules.sort((a, b) => {
         // System modules first
         const aIsSystem = a.name.startsWith('nt') || a.name.startsWith('hal') || 
                          a.name.includes('kernel') || a.name.startsWith('win32k');
@@ -1369,7 +1380,6 @@ export function extractModuleList(buffer: ArrayBuffer, strings: string): ModuleI
                     const peSignature = view.getUint32(i + e_lfanew, true);
                     if (peSignature === 0x00004550) { // "PE\0\0"
                         // Found a PE header, extract info
-                        const machine = view.getUint16(i + e_lfanew + 4, true);
                         const timestamp = view.getUint32(i + e_lfanew + 8, true);
                         const sizeOfImage = view.getUint32(i + e_lfanew + 80, true);
                         
@@ -1469,9 +1479,9 @@ export function getStructuredDumpInfo(buffer: ArrayBuffer, strings: string): Str
                 structuredInfo.moduleList = minidumpModules.map(m => ({
                     name: m.name,
                     base: m.baseAddress,
-                    size: m.sizeOfImage,
-                    timestamp: m.timeDateStamp,
-                    checksum: m.checkSum,
+                    size: m.size,
+                    timestamp: m.timestamp,
+                    checksum: m.checksum,
                 }));
             }
             

@@ -13,7 +13,7 @@ import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { useFileProcessor } from '../hooks/useFileProcessor';
 import { useAnalysis } from '../hooks/useAnalysis';
-import { InArticleAd, VerticalAd, InFeedAd } from '../components/AdSense';
+import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
 import { initializeSession, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 
@@ -25,7 +25,7 @@ const Analyzer: React.FC = () => {
     const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile, updateAdvancedAnalysis } = useAnalysis();
     
     const error = fileError || analysisError;
-    const [sessionReady, setSessionReady] = useState(false);
+    const [, setSessionReady] = useState(false);
 
     // Initialize session on component mount
     useEffect(() => {

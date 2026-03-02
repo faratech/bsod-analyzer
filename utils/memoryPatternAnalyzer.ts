@@ -283,7 +283,7 @@ export class MemoryPatternAnalyzer {
         // Look for corrupted heap headers
         // Heap blocks typically have size/flags at -8 and -4 offsets
         for (let i = 16; i < this.buffer.byteLength - 32; i += 8) {
-            const prevSize = this.view.getUint32(i - 8, true);
+            this.view.getUint32(i - 8, true);
             const size = this.view.getUint32(i - 4, true);
             
             // Check for reasonable heap block sizes

@@ -61,7 +61,7 @@ export const useAnalysis = () => {
             // Track analysis start for each file
             if (analytics?.trackAnalysisStart) {
                 filesToAnalyze.forEach(file => {
-                    analytics.trackAnalysisStart(file.dumpType);
+                    analytics.trackAnalysisStart!(file.dumpType);
                 });
             }
 
@@ -224,7 +224,7 @@ export const useAnalysis = () => {
         fileId: string,
         tool: string,
         result: string,
-        dumpFiles: DumpFile[],
+        _dumpFiles: DumpFile[],
         onUpdate: (updater: (prevFiles: DumpFile[]) => DumpFile[]) => void
     ) => {
         onUpdate(prevFiles =>

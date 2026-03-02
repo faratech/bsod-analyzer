@@ -211,7 +211,7 @@ export class PEParser {
         return undefined;
     }
     
-    private checkCertificate(baseOffset: number, optionalHeader: OptionalHeader): CertificateInfo {
+    private checkCertificate(_baseOffset: number, _optionalHeader: OptionalHeader): CertificateInfo {
         // Check if certificate table exists in data directories
         // This is a simplified check - real implementation would parse the certificate
         

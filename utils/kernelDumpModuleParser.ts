@@ -173,7 +173,7 @@ export function parseKernelDump64(buffer: ArrayBuffer): KernelDumpResult | null 
 
   // Parse DUMP_0x2000 structure
   const dump2000Base = 0x2000;
-  const stackRva = view.getUint32(dump2000Base + DUMP_0x2000_OFFSETS.StackRva, true);
+  view.getUint32(dump2000Base + DUMP_0x2000_OFFSETS.StackRva, true);
   const modulesRva = view.getUint32(dump2000Base + DUMP_0x2000_OFFSETS.LoadedModules, true);
   const stringsRva = view.getUint32(dump2000Base + DUMP_0x2000_OFFSETS.StringsRva, true);
 

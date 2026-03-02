@@ -48,7 +48,7 @@ const HeroAnimation: React.FC = React.memo(() => {
         sortProgress?: number;
     }[]>([]);
     const frameCountRef = useRef(0);
-    const animationIdRef = useRef<number>();
+    const animationIdRef = useRef<number>(undefined);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -126,7 +126,7 @@ const HeroAnimation: React.FC = React.memo(() => {
         window.addEventListener('resize', resizeCanvas);
 
         // Throttled mouse tracking
-        let mouseThrottle: NodeJS.Timeout;
+        let mouseThrottle: NodeJS.Timeout | null = null;
         const handleMouseMove = (e: MouseEvent) => {
             if (!mouseThrottle) {
                 mouseThrottle = setTimeout(() => {
@@ -148,7 +148,7 @@ const HeroAnimation: React.FC = React.memo(() => {
             // Draw matrix rain (skip frames for performance)
             if (frameCountRef.current % 2 === 0) {
                 ctx.font = '14px monospace';
-                matrixColumnsRef.current.forEach((column, index) => {
+                matrixColumnsRef.current.forEach((column) => {
                     // Reduce sorting frequency
                     if (!column.sorting && Math.random() > 0.999) {
                         column.sorting = true;

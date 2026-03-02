@@ -20,7 +20,7 @@ export const useAnalytics = () => {
         trackEvent('file_upload', 'engagement', fileType, Math.round(fileSize / 1024)); // Size in KB
     };
 
-    const trackAnalysisStart = (dumpType: 'minidump' | 'kernel') => {
+    const trackAnalysisStart = (dumpType: string) => {
         trackEvent('analysis_start', 'engagement', dumpType);
     };
 
