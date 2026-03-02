@@ -47,7 +47,7 @@ interface CertificateInfo {
     trusted?: boolean;
 }
 
-export class PEParser {
+class PEParser {
     private view: DataView;
     private buffer: ArrayBuffer;
     

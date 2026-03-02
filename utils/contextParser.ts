@@ -3,7 +3,7 @@
  */
 
 // x64 CONTEXT structure offsets and flags
-export const CONTEXT_AMD64 = {
+const CONTEXT_AMD64 = {
   // Context flags
   CONTEXT_AMD64_CONTROL: 0x00100001,
   CONTEXT_AMD64_INTEGER: 0x00100002,
@@ -104,7 +104,7 @@ export const CONTEXT_AMD64 = {
 };
 
 // x86 CONTEXT structure for 32-bit dumps
-export const CONTEXT_X86 = {
+const CONTEXT_X86 = {
   CONTEXT_i386_CONTROL: 0x00010001,
   CONTEXT_i386_INTEGER: 0x00010002,
   CONTEXT_i386_SEGMENTS: 0x00010004,
@@ -343,7 +343,7 @@ function parseX86Context(view: DataView, offset: number): ParsedContext {
 /**
  * Analyze EFLAGS register for state information
  */
-export function analyzeEflags(eflags: number): {
+function analyzeEflags(eflags: number): {
   carry: boolean;
   parity: boolean;
   adjust: boolean;
@@ -445,55 +445,3 @@ export function formatContext(context: ParsedContext): string {
   return lines.join('\n');
 }
 
-/**
- * Detect anomalies in context that might indicate corruption
- */
-export function detectContextAnomalies(context: ParsedContext): string[] {
-  const anomalies: string[] = [];
-  
-  // Check for null instruction pointer
-  if (context.instructionPointer === 0n) {
-    anomalies.push('Instruction pointer is NULL');
-  }
-  
-  // Check for null stack pointer
-  if (context.stackPointer === 0n) {
-    anomalies.push('Stack pointer is NULL');
-  }
-  
-  // Check for misaligned stack
-  if (context.is64Bit && (context.stackPointer & 0xFn) !== 0n) {
-    anomalies.push('Stack pointer is not 16-byte aligned');
-  } else if (!context.is64Bit && (context.stackPointer & 0x3n) !== 0n) {
-    anomalies.push('Stack pointer is not 4-byte aligned');
-  }
-  
-  // Check for kernel/user mode mismatch
-  if (context.cs === 0x33) { // User mode CS on x64
-    if (context.is64Bit && context.rip && context.rip >= 0xFFFF800000000000n) {
-      anomalies.push('User mode CS but kernel address in RIP');
-    }
-  } else if (context.cs === 0x10) { // Kernel mode CS on x64
-    if (context.is64Bit && context.rip && context.rip < 0xFFFF800000000000n) {
-      anomalies.push('Kernel mode CS but user address in RIP');
-    }
-  }
-  
-  // Check for stack overflow
-  if (context.stackPointer < context.framePointer - 0x100000n) {
-    anomalies.push('Possible stack overflow detected');
-  }
-  
-  // Check debug registers
-  if (context.dr0 !== 0n || context.dr1 !== 0n || context.dr2 !== 0n || context.dr3 !== 0n) {
-    anomalies.push('Hardware breakpoints are set');
-  }
-  
-  // Check for single-step mode
-  const flags = analyzeEflags(context.eflags);
-  if (flags.trap) {
-    anomalies.push('Single-step flag (TF) is set');
-  }
-  
-  return anomalies;
-}

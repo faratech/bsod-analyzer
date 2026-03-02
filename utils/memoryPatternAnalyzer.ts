@@ -17,7 +17,7 @@ export interface CorruptionIndicator {
     confidence: number; // 0-100
 }
 
-export class MemoryPatternAnalyzer {
+class MemoryPatternAnalyzer {
     private buffer: ArrayBuffer;
     private view: DataView;
     

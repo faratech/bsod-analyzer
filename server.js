@@ -770,21 +770,6 @@ app.get('/api/auth/session', async (req, res) => {
         return res.status(503).json({ error: 'Session service not ready' });
       }
     }
-    // Temporarily disabled Turnstile check to debug session issues
-    // TODO: Re-enable after fixing session validation
-    /*
-    if (process.env.NODE_ENV === 'production') {
-      const turnstileVerified = req.cookies.bsod_turnstile_verified;
-      if (!turnstileVerified) {
-        // Don't create a session without Turnstile verification in production
-        return res.status(403).json({ 
-          error: 'Turnstile verification required', 
-          code: 'TURNSTILE_REQUIRED' 
-        });
-      }
-    }
-    */
-
     const clientIp = getClientIp(req);
     const { sessionId, sessionHash } = generateSessionCookie(clientIp);
 

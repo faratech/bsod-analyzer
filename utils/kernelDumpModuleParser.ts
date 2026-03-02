@@ -5,7 +5,7 @@
  */
 
 // Bug check code database
-export const BUG_CHECK_CODES: Record<number, string> = {
+const BUG_CHECK_CODES: Record<number, string> = {
   0x0000000A: "IRQL_NOT_LESS_OR_EQUAL",
   0x0000001A: "MEMORY_MANAGEMENT",
   0x0000001E: "KMODE_EXCEPTION_NOT_HANDLED",
@@ -142,7 +142,7 @@ function extractFilename(path: string): string {
 /**
  * Parse a PAGEDU64 (64-bit Windows kernel crash dump) file
  */
-export function parseKernelDump64(buffer: ArrayBuffer): KernelDumpResult | null {
+function parseKernelDump64(buffer: ArrayBuffer): KernelDumpResult | null {
   if (buffer.byteLength < 0x2040) {
     console.error("Buffer too small for PAGEDU64 dump");
     return null;
@@ -265,42 +265,6 @@ export function parseDumpFile(buffer: ArrayBuffer): KernelDumpResult | null {
   return null;
 }
 
-/**
- * Format bigint as hex string
- */
-export function formatHex(value: bigint, width: number = 16): string {
-  return "0x" + value.toString(16).padStart(width, "0");
-}
-
-/**
- * Convert result to JSON-safe format (bigints as hex strings)
- */
-export function toJsonSafe(result: KernelDumpResult): Record<string, unknown> {
-  return {
-    format: result.format,
-    architecture: result.architecture,
-    bugCheck: {
-      code: "0x" + result.bugCheck.code.toString(16),
-      name: result.bugCheck.name,
-      parameters: result.bugCheck.parameters.map(p => formatHex(p)),
-    },
-    exception: {
-      code: "0x" + result.exception.code.toString(16),
-      address: formatHex(result.exception.address),
-      flags: "0x" + result.exception.flags.toString(16),
-      module: result.exception.module,
-    },
-    modules: result.modules.map(m => ({
-      name: m.name,
-      base: formatHex(m.base),
-      size: formatHex(m.size),
-      end: formatHex(m.end),
-    })),
-    culpritModule: result.culpritModule,
-    fileSize: result.fileSize,
-  };
-}
-
 // ============================================================================
 // Legacy compatibility layer for kernelDumpParser.ts
 // ============================================================================
@@ -356,18 +320,6 @@ export interface KernelDumpHeader {
   physicalMemoryDescriptor?: PhysicalMemoryDescriptor;
   context?: ParsedContext;
   kernelBase?: bigint;
-}
-
-export interface KernelModule {
-  dllBase: bigint;
-  entryPoint: bigint;
-  sizeOfImage: number;
-  fullDllName: string;
-  baseDllName: string;
-  flags: number;
-  loadCount: number;
-  checkSum: number;
-  timeDateStamp: number;
 }
 
 /**
@@ -452,96 +404,5 @@ export function parseKernelDumpHeader(buffer: ArrayBuffer): KernelDumpHeader | n
 }
 
 /**
- * Get processor architecture name from machine type
- */
-export function getMachineTypeName(machineType: number): string {
-  const machineTypes: Record<number, string> = {
-    0x014c: 'x86',
-    0x0200: 'IA64',
-    0x8664: 'AMD64',
-    0x01c0: 'ARM',
-    0x01c4: 'ARMv7',
-    0xAA64: 'ARM64',
-  };
-  return machineTypes[machineType] || `Unknown (0x${machineType.toString(16)})`;
-}
-
-/**
  * Validate kernel dump header
  */
-export function validateKernelDumpHeader(header: KernelDumpHeader): {
-  valid: boolean;
-  errors: string[];
-} {
-  const errors: string[] = [];
-
-  if (header.majorVersion < 1 || header.majorVersion > 100) {
-    errors.push(`Invalid major version: ${header.majorVersion}`);
-  }
-
-  const validMachineTypes = [0x014c, 0x0200, 0x8664, 0x01c0, 0x01c4, 0xAA64];
-  if (!validMachineTypes.includes(header.machineImageType)) {
-    errors.push(`Unknown machine type: 0x${header.machineImageType.toString(16)}`);
-  }
-
-  if (header.numberOfProcessors < 1 || header.numberOfProcessors > 1024) {
-    errors.push(`Invalid processor count: ${header.numberOfProcessors}`);
-  }
-
-  if (header.directoryTableBase === 0n) {
-    errors.push('Directory table base (CR3) is zero');
-  }
-
-  return { valid: errors.length === 0, errors };
-}
-
-/**
- * Format kernel dump header for display
- */
-export function formatKernelDumpHeader(header: KernelDumpHeader): string {
-  const lines: string[] = [];
-
-  lines.push('=== Kernel Dump Header ===');
-  lines.push(`Signature: ${header.signature}`);
-  lines.push(`Version: ${header.majorVersion}.${header.minorVersion}`);
-  lines.push(`Architecture: ${getMachineTypeName(header.machineImageType)}`);
-  lines.push(`Processors: ${header.numberOfProcessors}`);
-  lines.push('');
-
-  if (header.bugCheckCode !== 0) {
-    lines.push('Bug Check Information:');
-    lines.push(`  Code: 0x${header.bugCheckCode.toString(16).padStart(8, '0')}`);
-    lines.push(`  Parameter 1: 0x${header.bugCheckParameters[0].toString(16).padStart(16, '0')}`);
-    lines.push(`  Parameter 2: 0x${header.bugCheckParameters[1].toString(16).padStart(16, '0')}`);
-    lines.push(`  Parameter 3: 0x${header.bugCheckParameters[2].toString(16).padStart(16, '0')}`);
-    lines.push(`  Parameter 4: 0x${header.bugCheckParameters[3].toString(16).padStart(16, '0')}`);
-    lines.push('');
-  }
-
-  lines.push('System Information:');
-  lines.push(`  Directory Table Base: 0x${header.directoryTableBase.toString(16).padStart(16, '0')}`);
-  lines.push(`  PFN Database: 0x${header.pfnDatabase.toString(16).padStart(16, '0')}`);
-  lines.push(`  Module List: 0x${header.psLoadedModuleList.toString(16).padStart(16, '0')}`);
-  lines.push(`  Process List: 0x${header.psActiveProcessHead.toString(16).padStart(16, '0')}`);
-
-  if (header.physicalMemoryDescriptor) {
-    lines.push('');
-    lines.push('Physical Memory:');
-    lines.push(`  Total Pages: ${header.physicalMemoryDescriptor.numberOfPages}`);
-    lines.push(`  Memory Runs: ${header.physicalMemoryDescriptor.numberOfRuns}`);
-  }
-
-  return lines.join('\n');
-}
-
-/**
- * Parse module list from kernel dump (stub - requires virtual address translation)
- */
-export function parseKernelModuleList(
-  _buffer: ArrayBuffer,
-  _psLoadedModuleList: bigint,
-  _directoryTableBase: bigint
-): KernelModule[] {
-  // Full implementation requires virtual to physical address translation
-  return [];
-}
