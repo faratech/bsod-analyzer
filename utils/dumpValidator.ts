@@ -50,7 +50,7 @@ const validators = {
 };
 
 // Bug check parameter validations
-export const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
+const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
   [0x0A, {
     code: 0x0A,
     name: 'IRQL_NOT_LESS_OR_EQUAL',
