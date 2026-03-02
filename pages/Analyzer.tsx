@@ -8,6 +8,8 @@ import AnalysisResults from '../components/AnalysisResults';
 import AnalysisProgress from '../components/AnalysisProgress';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
+import StructuredData from '../components/StructuredData';
+import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { useFileProcessor } from '../hooks/useFileProcessor';
 import { useAnalysis } from '../hooks/useAnalysis';
@@ -117,14 +119,53 @@ const Analyzer: React.FC = () => {
 
     const pendingFilesCount = dumpFiles.filter(df => df.status === FileStatus.PENDING).length;
 
+    const analyzerStructuredData = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebPage",
+                "@id": `${SITE_URL}/analyzer#webpage`,
+                "url": `${SITE_URL}/analyzer`,
+                "name": "BSOD Dump File Analyzer - Upload & Analyze Crash Dumps",
+                "isPartOf": { "@id": IDS.website },
+                "description": "Upload your Windows crash dump files (.dmp) for instant AI-powered analysis. Support for minidumps, kernel dumps, and complete memory dumps.",
+                "inLanguage": "en-US"
+            },
+            {
+                "@type": "WebApplication",
+                "@id": `${SITE_URL}/analyzer#tool`,
+                "name": "BSOD Dump Analyzer",
+                "url": `${SITE_URL}/analyzer`,
+                "applicationCategory": "UtilitiesApplication",
+                "operatingSystem": "Web Browser",
+                "description": "Upload your Windows crash dump files for instant AI-powered analysis",
+                "image": IMAGES.ogImage,
+                "offers": {
+                    "@type": "Offer",
+                    "price": "0",
+                    "priceCurrency": "USD"
+                },
+                "isPartOf": { "@id": IDS.webApplication },
+                "featureList": [
+                    "Drag-and-drop file upload",
+                    "Supports .dmp, .zip, .7z, .rar files",
+                    "Real WinDBG server-side analysis",
+                    "AI-powered result interpretation",
+                    "Detailed crash reports"
+                ]
+            }
+        ]
+    };
+
     return (
         <>
-            <SEO 
+            <SEO
                 title="BSOD Dump File Analyzer - Upload & Analyze Crash Dumps"
                 description="Upload your Windows crash dump files (.dmp) for instant AI-powered analysis. Support for minidumps, kernel dumps, and complete memory dumps. Get detailed crash analysis in seconds."
                 keywords="upload dump file, analyze BSOD, crash dump analyzer, minidump upload, kernel dump analysis, Windows debugging tool"
                 canonicalUrl="https://bsod.windowsforum.com/analyzer"
             />
+            <StructuredData data={analyzerStructuredData} />
             <main>
                 <section className="analyzer-hero">
                 <div className="container">

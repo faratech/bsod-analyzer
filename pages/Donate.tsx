@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import PayPalDonateButton from '../components/PayPalDonateButton';
 import PageLayout from '../components/PageLayout';
+import StructuredData from '../components/StructuredData';
+import { SITE_URL, IDS } from '../constants/structuredData';
 import { useAnalytics } from '../hooks/useAnalytics';
 
 const Donate: React.FC = () => {
@@ -20,7 +22,24 @@ const Donate: React.FC = () => {
             window.history.replaceState({}, '', '/donate');
         }
     }, [location]);
+    const donateStructuredData = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebPage",
+                "@id": `${SITE_URL}/donate#webpage`,
+                "url": `${SITE_URL}/donate`,
+                "name": "Support BSOD AI Analyzer - Donate",
+                "isPartOf": { "@id": IDS.website },
+                "description": "Support the development of BSOD AI Analyzer. Your donations help keep this free tool available for everyone.",
+                "inLanguage": "en-US"
+            }
+        ]
+    };
+
     return (
+        <>
+        <StructuredData data={donateStructuredData} />
         <PageLayout
             title="Support BSOD AI Analyzer"
             description="Support the development of BSOD AI Analyzer. Your donations help keep this free tool available for everyone. Multiple payment options available including PayPal and cryptocurrency."
@@ -198,6 +217,7 @@ const Donate: React.FC = () => {
                     </section>
                 </div>
         </PageLayout>
+        </>
     );
 };
 

@@ -3,7 +3,7 @@
   <!-- Homepage -->
   <url>
     <loc>https://bsod.windowsforum.com/</loc>
-    <lastmod>2024-01-15</lastmod>
+    <lastmod>2026-03-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
@@ -11,7 +11,7 @@
   <!-- Analyzer Tool -->
   <url>
     <loc>https://bsod.windowsforum.com/analyzer</loc>
-    <lastmod>2024-01-15</lastmod>
+    <lastmod>2026-03-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
@@ -19,7 +19,7 @@
   <!-- About Page -->
   <url>
     <loc>https://bsod.windowsforum.com/about</loc>
-    <lastmod>2024-01-15</lastmod>
+    <lastmod>2026-03-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -27,7 +27,7 @@
   <!-- Documentation -->
   <url>
     <loc>https://bsod.windowsforum.com/documentation</loc>
-    <lastmod>2024-01-15</lastmod>
+    <lastmod>2026-03-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
@@ -35,7 +35,7 @@
   <!-- Donate Page -->
   <url>
     <loc>https://bsod.windowsforum.com/donate</loc>
-    <lastmod>2024-01-15</lastmod>
+    <lastmod>2026-03-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
