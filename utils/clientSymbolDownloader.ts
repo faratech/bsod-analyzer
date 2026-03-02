@@ -74,40 +74,42 @@ export class ClientSymbolDownloader {
         // Find a source that has this module
         for (const source of SYMBOL_SOURCES) {
             if (source.modules.some(m => m.toLowerCase() === normalizedName)) {
-                try {
+                {
                     console.log(`[SymbolDownloader] Downloading ${moduleName} from ${source.name}`);
-                    
+
                     const url = `${source.baseUrl}${normalizedName}.${source.type}`;
-                    
+
                     // Add timeout and error handling
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-                    
-                    const response = await fetch(url, {
-                        signal: controller.signal,
-                        mode: 'cors',
-                        credentials: 'omit'
-                    });
-                    
-                    clearTimeout(timeoutId);
-                    
-                    if (!response.ok) {
-                        console.warn(`[SymbolDownloader] Failed to download ${moduleName} from ${source.name}: ${response.status}`);
-                        continue;
-                    }
-                    
-                    const data = await this.parseSymbolData(response, source.type);
-                    if (data && data.size > 0) {
-                        this.downloadedSymbols.set(normalizedName, data);
-                        console.log(`[SymbolDownloader] Downloaded ${data.size} symbols for ${moduleName}`);
-                        return;
-                    }
-                } catch (error) {
-                    clearTimeout(timeoutId);
-                    if (error.name === 'AbortError') {
-                        console.warn(`[SymbolDownloader] Timeout downloading ${moduleName} from ${source.name}`);
-                    } else {
-                        console.error(`[SymbolDownloader] Error downloading ${moduleName} from ${source.name}:`, error);
+
+                    try {
+                        const response = await fetch(url, {
+                            signal: controller.signal,
+                            mode: 'cors',
+                            credentials: 'omit'
+                        });
+
+                        clearTimeout(timeoutId);
+
+                        if (!response.ok) {
+                            console.warn(`[SymbolDownloader] Failed to download ${moduleName} from ${source.name}: ${response.status}`);
+                            continue;
+                        }
+
+                        const data = await this.parseSymbolData(response, source.type);
+                        if (data && data.size > 0) {
+                            this.downloadedSymbols.set(normalizedName, data);
+                            console.log(`[SymbolDownloader] Downloaded ${data.size} symbols for ${moduleName}`);
+                            return;
+                        }
+                    } catch (error) {
+                        clearTimeout(timeoutId);
+                        if (error instanceof Error && error.name === 'AbortError') {
+                            console.warn(`[SymbolDownloader] Timeout downloading ${moduleName} from ${source.name}`);
+                        } else {
+                            console.error(`[SymbolDownloader] Error downloading ${moduleName} from ${source.name}:`, error);
+                        }
                     }
                 }
             }

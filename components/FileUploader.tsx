@@ -12,7 +12,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
   const [isDragging, setIsDragging] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isVerified, setIsVerified] = useState(false);
-  const [verificationError, setVerificationError] = useState(false);
+  const [, setVerificationError] = useState(false);
   
   // Use the provided site key
   const TURNSTILE_SITE_KEY = '0x4AAAAAAABiq2_hH-dGCkQi';

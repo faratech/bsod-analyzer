@@ -312,9 +312,9 @@ export function findMatchingPattern(bugCheckName: string, extractedStrings: stri
 
 // Get enhanced recommendations based on patterns
 export function getEnhancedRecommendations(
-    bugCheckName: string, 
+    bugCheckName: string,
     culpritDriver: string,
-    extractedStrings: string
+    _extractedStrings: string
 ): string[] {
     const recommendations: string[] = [];
     const pattern = KNOWN_PATTERNS[bugCheckName];
@@ -361,7 +361,7 @@ export function getEnhancedRecommendations(
 // Analyze crash context
 export function analyzeCrashContext(
     bugCheckCode: number,
-    parameters: bigint[],
+    _parameters: bigint[],
     extractedStrings: string
 ): {
     severity: 'low' | 'medium' | 'high' | 'critical';

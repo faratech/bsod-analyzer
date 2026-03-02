@@ -35,10 +35,6 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     root.classList.remove('light', 'dark');
     root.classList.add(theme);
 
-    // Only save to localStorage if it's not the system default
-    const systemPrefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const systemPrefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-
     // Only save if different from system preference or manually set
     const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
     if (hasUserPreference) {

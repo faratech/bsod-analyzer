@@ -6,7 +6,7 @@ import StructuredData from '../components/StructuredData';
 import HeroSection from '../components/HeroSection';
 import FeaturesSection from '../components/FeaturesSection';
 import ComparisonSection from '../components/ComparisonSection';
-import { InFeedAd, HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
+import { HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
 import { SITE_URL, IMAGES, IDS, ORGANIZATION_ENTITY, PROVIDER_ENTITY } from '../constants/structuredData';
 

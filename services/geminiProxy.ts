@@ -534,7 +534,16 @@ function extractCrashTime(buffer: ArrayBuffer): string | null {
                 const date = new Date(Number(timestampMs));
                 
                 if (date.getFullYear() >= 2020 && date.getFullYear() <= 2030) {
-                    return date.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+                    return new Intl.DateTimeFormat(undefined, {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        timeZone: 'UTC',
+                        timeZoneName: 'short',
+                    }).format(date);
                 }
             }
         } catch {

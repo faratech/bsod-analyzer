@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, writeFile } from 'fs/promises';
 import { config } from './config.js';
 
 export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, '.', '');
+    loadEnv(mode, '.', '');
     const buildTimestamp = Math.floor(Date.now() / 1000); // Unix timestamp
     const now = new Date();
     const buildVersion = `v${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}-${String(now.getUTCHours()).padStart(2, '0')}${String(now.getUTCMinutes()).padStart(2, '0')}`;
@@ -107,7 +107,7 @@ export default defineConfig(({ mode }) => {
                   console.log(`✓ Copied ${file} to dist/`);
                 }
               } catch (err) {
-                console.warn(`⚠ Failed to copy ${file}:`, err.message);
+                console.warn(`⚠ Failed to copy ${file}:`, err instanceof Error ? err.message : err);
               }
             }
           }

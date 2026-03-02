@@ -19,6 +19,6 @@ export const config = {
     // API Settings
     api: {
         maxFileSize: 100 * 1024 * 1024, // 100MB
-        minidumpThreshold: FILE_SIZE_THRESHOLDS.MINIDUMP_MAX_SIZE
+        minidumpThreshold: FILE_SIZE_THRESHOLDS.MINIDUMP
     }
 };
