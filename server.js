@@ -382,7 +382,7 @@ app.use(express.static(path.join(__dirname, 'dist'), {
 
     // Cache strategy
     if (ext === '.html') {
-      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
     } else if (ext === '.json') {
       res.setHeader('Cache-Control', 'public, max-age=86400');
       if (filePath.includes('/symbols/')) {
@@ -2244,6 +2244,7 @@ app.use((req, res) => {
   // Serve static AMP files directly
   if (pathname.startsWith('/amp/')) {
     const ampFile = path.join(__dirname, pathname);
+    res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
     return res.sendFile(ampFile, (err) => {
       if (err) {
         res.status(404).send('AMP page not found');
@@ -2252,6 +2253,8 @@ app.use((req, res) => {
   }
 
   // Serve React app for all other routes (non-asset routes only)
+  // CDN caches 24h (purged on deploy), browser caches 5 min
+  res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
