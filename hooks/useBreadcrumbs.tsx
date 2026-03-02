@@ -37,6 +37,7 @@ export const useBreadcrumbs = () => {
         return {
             "@context": "https://schema.org",
             "@type": "BreadcrumbList",
+            "@id": `https://bsod.windowsforum.com${location.pathname}#breadcrumb`,
             "itemListElement": breadcrumbs
         };
     };

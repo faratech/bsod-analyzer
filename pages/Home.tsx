@@ -8,81 +8,71 @@ import FeaturesSection from '../components/FeaturesSection';
 import ComparisonSection from '../components/ComparisonSection';
 import { InFeedAd, HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
+import { SITE_URL, IMAGES, IDS, ORGANIZATION_ENTITY, PROVIDER_ENTITY } from '../constants/structuredData';
 
 const Home: React.FC = () => {
-    // SoftwareApplication Structured Data
-    const softwareData = {
+    const homeStructuredData = {
         "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "BSOD AI Analyzer",
-        "applicationCategory": "UtilitiesApplication",
-        "operatingSystem": "Web Browser",
-        "url": "https://bsod.windowsforum.com",
-        "description": "Free AI-powered Windows crash analyzer supporting all error screens - blue (BSOD), black (Windows 11 Build 22000.346+), green (Insider), and system freezes. Professional crash dump analysis with instant solutions.",
-        "screenshot": "https://bsod.windowsforum.com/screenshot.png",
-        "datePublished": "2024-01-01",
-        "dateModified": "2025-08-18",
-        "author": {
-            "@type": "Organization",
-            "name": "WindowsForum",
-            "url": "https://windowsforum.com"
-        },
-        "provider": {
-            "@type": "Organization",
-            "name": "Fara Technologies LLC"
-        },
-        "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-        },
-        "aggregateRating": {
-            "@type": "AggregateRating",
-            "ratingValue": "4.8",
-            "ratingCount": "1250",
-            "bestRating": "5",
-            "worstRating": "1"
-        },
-        "featureList": [
-            "Instant BSOD analysis",
-            "AI-powered diagnostics",
-            "Support for all dump file types",
-            "Detailed error explanations",
-            "Step-by-step solutions",
-            "Advanced debugging tools"
-        ],
-        "softwareRequirements": "Modern web browser with JavaScript enabled",
-        "softwareVersion": "2.0"
-    };
-
-    // Organization Structured Data
-    const orgData = {
-        "@context": "https://schema.org",
-        "@type": "Organization",
-        "name": "WindowsForum",
-        "url": "https://windowsforum.com",
-        "logo": "https://windowsforum.com/logo.png",
-        "description": "Leading Windows support community providing expert help and tools",
-        "foundingDate": "2009",
-        "sameAs": [
-            "https://twitter.com/windowsforum",
-            "https://github.com/faratech"
-        ],
-        "contactPoint": {
-            "@type": "ContactPoint",
-            "contactType": "Technical Support",
-            "email": "admin@windowsforum.com",
-            "url": "https://windowsforum.com/misc/contact"
-        }
+        "@graph": [
+            {
+                "@type": "WebPage",
+                "@id": `${SITE_URL}/#webpage`,
+                "url": `${SITE_URL}/`,
+                "name": "BSOD AI Analyzer - Instant Windows Crash Dump Analysis",
+                "isPartOf": { "@id": IDS.website },
+                "about": { "@id": IDS.webApplication },
+                "description": "Free AI-powered Windows crash analyzer supporting all error screens.",
+                "inLanguage": "en-US"
+            },
+            {
+                "@type": "SoftwareApplication",
+                "@id": IDS.webApplication,
+                "name": "BSOD AI Analyzer",
+                "applicationCategory": "UtilitiesApplication",
+                "operatingSystem": "Web Browser",
+                "url": SITE_URL,
+                "description": "Free AI-powered Windows crash analyzer supporting all error screens - blue (BSOD), black (Windows 11 Build 22000.346+), green (Insider), and system freezes. Professional crash dump analysis with instant solutions.",
+                "screenshot": IMAGES.ogImage,
+                "image": IMAGES.ogImage,
+                "datePublished": "2024-01-01",
+                "dateModified": "2026-03-02",
+                "author": { "@id": IDS.organization },
+                "provider": { "@id": IDS.provider },
+                "offers": {
+                    "@type": "Offer",
+                    "price": "0",
+                    "priceCurrency": "USD",
+                    "availability": "https://schema.org/InStock"
+                },
+                "aggregateRating": {
+                    "@type": "AggregateRating",
+                    "ratingValue": "4.8",
+                    "ratingCount": "1250",
+                    "bestRating": "5",
+                    "worstRating": "1"
+                },
+                "featureList": [
+                    "Instant BSOD analysis",
+                    "AI-powered diagnostics",
+                    "Support for all dump file types",
+                    "Detailed error explanations",
+                    "Step-by-step solutions",
+                    "Advanced debugging tools"
+                ],
+                "softwareRequirements": "Modern web browser with JavaScript enabled",
+                "softwareVersion": "2.0"
+            },
+            ORGANIZATION_ENTITY,
+            PROVIDER_ENTITY
+        ]
     };
 
     return (
         <>
-            <SEO 
+            <SEO
                 canonicalUrl="https://bsod.windowsforum.com/"
             />
-            <StructuredData data={softwareData} />
-            <StructuredData data={orgData} />
+            <StructuredData data={homeStructuredData} />
             
             <HeroSection
                 title="Decode Your Windows Crash Screen"
