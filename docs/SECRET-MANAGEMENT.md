@@ -25,6 +25,18 @@ All sensitive configuration values are stored in Google Secret Manager and injec
 - **Usage**: Used with xxhash to create secure session identifiers
 - **Value**: Auto-generated 32-byte random hex string
 
+### 4. Cloudflare Purge Token (`cloudflare-purge-token`)
+- **Purpose**: Purge Cloudflare cache for `bsod.windowsforum.com` after deployment
+- **Usage**: Used by Cloud Build (`cloudbuild.yaml` step 4) and `deploy-with-secret.sh` to clear all cached assets under the hostname when new code deploys
+- **How to obtain**: Create an API token at https://dash.cloudflare.com/profile/api-tokens with "Zone - Cache Purge - Purge" permission
+- **Note**: Accessed by the Cloud Build service account via `secretEnv`, not by the app at runtime
+
+### 5. Cloudflare Zone ID (`cloudflare-zone-id`)
+- **Purpose**: Identifies the Cloudflare zone for cache purging
+- **Usage**: Used alongside the purge token to target the correct zone
+- **How to obtain**: Found on the zone overview page at https://dash.cloudflare.com
+- **Note**: Accessed by the Cloud Build service account via `secretEnv`, not by the app at runtime
+
 ## Setup Instructions
 
 ### Quick Setup (All Secrets)
@@ -38,7 +50,9 @@ This script will:
 1. Prompt for your Gemini API key
 2. Set up the Turnstile secret key
 3. Generate a random session secret
-4. Grant Cloud Run access to all secrets
+4. Prompt for Upstash Redis credentials
+5. Prompt for Cloudflare purge token and zone ID
+6. Grant Cloud Run and Cloud Build access to all secrets
 
 ### Individual Secret Setup
 
@@ -72,6 +86,10 @@ The `deploy-with-secret.sh` script automatically configures Cloud Run to use the
   TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,\
   SESSION_SECRET=session-secret:latest
 ```
+
+### Cloud Build Cache Purge
+
+After deployment, Cloud Build automatically purges the Cloudflare cache for `bsod.windowsforum.com`. The `cloudflare-purge-token` and `cloudflare-zone-id` secrets are injected via `secretEnv` in `cloudbuild.yaml`. These require IAM access for the Cloud Build service account (`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`), which is configured by `setup-all-secrets.sh`.
 
 ## Local Development
 

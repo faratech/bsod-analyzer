@@ -106,6 +106,30 @@ else
 fi
 echo ""
 
+# 6. Cloudflare Purge Token
+echo "6️⃣ Cloudflare Purge Token"
+echo -n "Enter your Cloudflare Purge Token (or press Enter to skip): "
+read -r -s CF_PURGE_TOKEN
+echo ""
+if [ ! -z "$CF_PURGE_TOKEN" ]; then
+    setup_secret "cloudflare-purge-token" "$CF_PURGE_TOKEN" "Cloudflare Purge Token"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
+# 7. Cloudflare Zone ID
+echo "7️⃣ Cloudflare Zone ID"
+echo -n "Enter your Cloudflare Zone ID (or press Enter to skip): "
+read -r CF_ZONE_ID
+echo ""
+if [ ! -z "$CF_ZONE_ID" ]; then
+    setup_secret "cloudflare-zone-id" "$CF_ZONE_ID" "Cloudflare Zone ID"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
 # Grant Cloud Run service account access to all secrets
 echo "🔓 Granting Cloud Run access to all secrets..."
 SERVICE_ACCOUNT=$(gcloud iam service-accounts list \
@@ -121,7 +145,7 @@ fi
 echo "Using service account: ${SERVICE_ACCOUNT}"
 
 # Grant access to each secret
-for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "upstash-redis-url" "upstash-redis-token"; do
+for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "upstash-redis-url" "upstash-redis-token" "cloudflare-purge-token" "cloudflare-zone-id"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${SERVICE_ACCOUNT}" \
@@ -130,6 +154,25 @@ for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "upstash-
         echo "  ✅ Access granted for ${SECRET}"
     fi
 done
+
+# Grant Cloud Build service account access to Cloudflare secrets
+# (needed for cloudbuild.yaml secretEnv in the cache purge step)
+echo "🔓 Granting Cloud Build access to Cloudflare secrets..."
+PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)" 2>/dev/null || echo "")
+if [ -n "$PROJECT_NUMBER" ]; then
+    CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+    for SECRET in "cloudflare-purge-token" "cloudflare-zone-id"; do
+        if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
+            gcloud secrets add-iam-policy-binding ${SECRET} \
+                --member="serviceAccount:${CLOUDBUILD_SA}" \
+                --role="roles/secretmanager.secretAccessor" \
+                --project=${PROJECT_ID} >/dev/null 2>&1
+            echo "  ✅ Access granted for ${SECRET} to Cloud Build"
+        fi
+    done
+else
+    echo "  ⚠️  Could not determine project number, skipping Cloud Build SA grants"
+fi
 
 echo ""
 echo "✅ All secrets configured successfully!"
