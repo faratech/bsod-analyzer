@@ -28,14 +28,6 @@ export const ADSENSE_CONFIG = {
     
     // Mobile ads
     mobileSticky: '6778196821', // WindowsForum Responsive (works for sticky too)
-    
-    // AMP ads
-    ampDisplay: '6778196821', // WindowsForum Responsive
-    ampSticky: '6778196821', // WindowsForum Responsive
-    ampSquare: '5987799550', // Square Responsive for AMP
-    ampHorizontal: '2048554545', // Horizontal Responsive for AMP
-    ampVertical: '8366550888', // Vertical Responsive for AMP
-    ampMultiplex: '1275879997', // Vertical Multiplex for AMP
   }
 };
 

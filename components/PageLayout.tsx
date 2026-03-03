@@ -11,21 +11,21 @@ interface PageLayoutProps {
     className?: string;
 }
 
-const PageLayout: React.FC<PageLayoutProps> = ({ 
-    title, 
-    subtitle, 
-    description, 
-    keywords, 
+const PageLayout: React.FC<PageLayoutProps> = ({
+    title,
+    subtitle,
+    description,
+    keywords,
     canonicalPath,
     children,
     className = ''
 }) => {
     const pageTitle = `${title} - BSOD AI Analyzer`;
     const canonicalUrl = canonicalPath ? `https://bsod.windowsforum.com${canonicalPath}` : undefined;
-    
+
     return (
         <>
-            <SEO 
+            <SEO
                 title={pageTitle}
                 description={description}
                 keywords={keywords}

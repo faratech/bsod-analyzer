@@ -2208,10 +2208,8 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
   }
 });
 
-// Handle ?amp=1 parameter for testing AMP pages
-// Use a function instead of '*' to avoid path-to-regexp issues
+// Catch-all: serve React app for client-side routing
 app.use((req, res) => {
-  const { amp } = req.query;
   const pathname = req.path;
 
   // CRITICAL: Don't handle asset files with the catch-all route
@@ -2220,36 +2218,6 @@ app.use((req, res) => {
       pathname.match(/\.(js|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico|json|xml|txt|webmanifest)$/)) {
     // Return 404 for asset files that weren't found by static middleware
     return res.status(404).send('File not found');
-  }
-
-  // If ?amp=1 is present, redirect to AMP version
-  if (amp === '1') {
-    let ampPath;
-    if (pathname === '/') {
-      ampPath = '/amp/index.html';
-    } else if (pathname === '/about') {
-      ampPath = '/amp/about.html';
-    } else if (pathname === '/documentation') {
-      ampPath = '/amp/documentation.html';
-    } else if (pathname === '/donate') {
-      ampPath = '/amp/donate.html';
-    } else {
-      // Default to home AMP page for unknown routes
-      ampPath = '/amp/index.html';
-    }
-
-    return res.redirect(302, ampPath);
-  }
-
-  // Serve static AMP files directly
-  if (pathname.startsWith('/amp/')) {
-    const ampFile = path.join(__dirname, pathname);
-    res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
-    return res.sendFile(ampFile, (err) => {
-      if (err) {
-        res.status(404).send('AMP page not found');
-      }
-    });
   }
 
   // Serve React app for all other routes (non-asset routes only)

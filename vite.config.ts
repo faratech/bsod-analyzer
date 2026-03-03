@@ -1,6 +1,5 @@
 import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
-import { copyFile, mkdir, readFile, writeFile } from 'fs/promises';
 import { config } from './config.js';
 
 export default defineConfig(({ mode }) => {
@@ -80,38 +79,6 @@ export default defineConfig(({ mode }) => {
             return cacheBustAssets(html);
           }
         },
-        {
-          name: 'copy-amp-files',
-          writeBundle: async () => {
-            // Ensure amp directory exists in dist
-            await mkdir('dist/amp', { recursive: true });
-            
-            // Copy AMP files to dist directory
-            const ampFiles = [
-              'amp/index.html',
-              'amp/about.html', 
-              'amp/documentation.html',
-              'amp/donate.html',
-              'amp/sitemap.xml'
-            ];
-            
-            for (const file of ampFiles) {
-              try {
-                if (file.endsWith('.html')) {
-                  const content = cacheBustAssets(await readFile(file, 'utf-8'));
-                  await writeFile(`dist/${file}`, content, 'utf-8');
-                  console.log(`✓ Copied and cache-busted ${file} to dist/`);
-                } else {
-                  // Just copy non-HTML files
-                  await copyFile(file, `dist/${file}`);
-                  console.log(`✓ Copied ${file} to dist/`);
-                }
-              } catch (err) {
-                console.warn(`⚠ Failed to copy ${file}:`, err instanceof Error ? err.message : err);
-              }
-            }
-          }
-        }
       ]
     };
 });
