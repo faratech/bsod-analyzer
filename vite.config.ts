@@ -75,8 +75,47 @@ export default defineConfig(({ mode }) => {
                 "window.__GA_ID__ = 'G-0HVHB49RDP';",
                 `window.__GA_ID__ = '${config.analytics.gaId}';`
               );
-            
+
             return cacheBustAssets(html);
+          }
+        },
+        {
+          name: 'generate-service-worker',
+          generateBundle() {
+            this.emitFile({
+              type: 'asset',
+              fileName: 'sw.js',
+              source: [
+                `const BUILD_VERSION = '${buildTimestamp}';`,
+                `const CACHE_NAME = 'bsod-v' + BUILD_VERSION;`,
+                ``,
+                `self.addEventListener('install', () => self.skipWaiting());`,
+                ``,
+                `self.addEventListener('activate', (event) => {`,
+                `  event.waitUntil(`,
+                `    caches.keys()`,
+                `      .then((names) => Promise.all(`,
+                `        names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))`,
+                `      ))`,
+                `      .then(() => self.clients.claim())`,
+                `  );`,
+                `});`,
+                ``,
+                `self.addEventListener('fetch', (event) => {`,
+                `  if (event.request.mode === 'navigate') {`,
+                `    event.respondWith(`,
+                `      fetch(event.request)`,
+                `        .then((res) => {`,
+                `          const clone = res.clone();`,
+                `          caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));`,
+                `          return res;`,
+                `        })`,
+                `        .catch(() => caches.match(event.request))`,
+                `    );`,
+                `  }`,
+                `});`,
+              ].join('\n')
+            });
           }
         },
       ]

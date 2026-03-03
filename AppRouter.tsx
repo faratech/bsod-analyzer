@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-route
 import Navigation from './components/Navigation';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
+import ChunkErrorBoundary from './components/ChunkErrorBoundary';
 import StructuredData from './components/StructuredData';
 import { useBreadcrumbs } from './hooks/useBreadcrumbs';
 import { useAnalytics } from './hooks/useAnalytics';
@@ -33,16 +34,18 @@ const AppContent: React.FC = () => {
         <div className="app">
             {breadcrumbData && <StructuredData data={breadcrumbData} />}
             <Navigation />
-            <Suspense fallback={<Loader />}>
-                <Routes>
-                    <Route path="/" element={<Home />} />
-                    <Route path="/analyzer" element={<Analyzer />} />
-                    <Route path="/about" element={<About />} />
-                    <Route path="/documentation" element={<Documentation />} />
-                    <Route path="/donate" element={<Donate />} />
-                    <Route path="*" element={<NotFound />} />
-                </Routes>
-            </Suspense>
+            <ChunkErrorBoundary>
+                <Suspense fallback={<Loader />}>
+                    <Routes>
+                        <Route path="/" element={<Home />} />
+                        <Route path="/analyzer" element={<Analyzer />} />
+                        <Route path="/about" element={<About />} />
+                        <Route path="/documentation" element={<Documentation />} />
+                        <Route path="/donate" element={<Donate />} />
+                        <Route path="*" element={<NotFound />} />
+                    </Routes>
+                </Suspense>
+            </ChunkErrorBoundary>
             <Footer />
         </div>
     );

@@ -381,8 +381,10 @@ app.use(express.static(path.join(__dirname, 'dist'), {
     }
 
     // Cache strategy
-    if (ext === '.html') {
-      res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
+    if (filePath.endsWith('sw.js')) {
+      res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=0');
+    } else if (ext === '.html') {
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
     } else if (ext === '.json') {
       res.setHeader('Cache-Control', 'public, max-age=86400');
       if (filePath.includes('/symbols/')) {
@@ -2221,8 +2223,8 @@ app.use((req, res) => {
   }
 
   // Serve React app for all other routes (non-asset routes only)
-  // CDN caches 24h (purged on deploy), browser caches 5 min
-  res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=300');
+  // CDN caches 24h (purged on deploy), browser always revalidates
+  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 

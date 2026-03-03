@@ -52,7 +52,9 @@ steps:
         if [ "$$HTTP_CODE" = "200" ]; then
           echo "✅ Cloudflare cache purged successfully"
         else
-          echo "⚠️  Cache purge returned HTTP $$HTTP_CODE (non-fatal)"
+          echo "❌ Cloudflare cache purge failed with HTTP $$HTTP_CODE"
+          echo "Stale HTML in CDN will cause blank pages for users."
+          exit 1
         fi
     secretEnv: ['CLOUDFLARE_PURGE_TOKEN', 'CLOUDFLARE_ZONE_ID']
 
