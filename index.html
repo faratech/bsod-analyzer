@@ -22,7 +22,7 @@
     <link rel="preconnect" href="https://pagead2.googlesyndication.com">
     <link rel="preconnect" href="https://www.googletagmanager.com">
     <link rel="preconnect" href="https://fundingchoicesmessages.google.com">
-    <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
+    <link rel="preconnect" href="https://challenges.cloudflare.com">
     
     
     <!-- Inline Critical CSS for above-the-fold content -->
@@ -289,9 +289,11 @@
     
     <!-- No external fonts - using system fonts for zero layout shift -->
     
-    <!-- Main CSS - loaded synchronously for initial render -->
-    <link rel="stylesheet" href="/styles.css">
-    <link rel="stylesheet" href="/styles/adsense-fix.css">
+    <!-- Main CSS - loaded async since critical CSS is inlined above -->
+    <link rel="stylesheet" href="/styles.css" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="/styles.css"></noscript>
+    <link rel="stylesheet" href="/styles/adsense-fix.css" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="/styles/adsense-fix.css"></noscript>
     
 </head>
 <body>
