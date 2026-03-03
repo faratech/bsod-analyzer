@@ -44,13 +44,6 @@ const Home: React.FC = () => {
                     "priceCurrency": "USD",
                     "availability": "https://schema.org/InStock"
                 },
-                "aggregateRating": {
-                    "@type": "AggregateRating",
-                    "ratingValue": "4.8",
-                    "ratingCount": "1250",
-                    "bestRating": "5",
-                    "worstRating": "1"
-                },
                 "featureList": [
                     "Instant BSOD analysis",
                     "AI-powered diagnostics",
@@ -73,7 +66,8 @@ const Home: React.FC = () => {
                 canonicalUrl="https://bsod.windowsforum.com/"
             />
             <StructuredData data={homeStructuredData} />
-            
+
+            <main>
             <HeroSection
                 title="Decode Your Windows Crash Screen"
                 subtitle="Professional AI-powered analysis for all Windows crashes - whether you see a blue screen, black screen (Windows 11 Build 22000.346+), green screen (Insider builds), or system freeze. Get instant insights into what caused your crash and how to fix it."
@@ -233,6 +227,7 @@ const Home: React.FC = () => {
                     />
                 </div>
             </section>
+            </main>
         </>
     );
 };

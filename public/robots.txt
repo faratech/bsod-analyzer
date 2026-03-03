@@ -7,9 +7,6 @@ Allow: /about
 Allow: /documentation
 Allow: /donate
 
-# AMP pages
-Allow: /amp/
-
 # Block direct access to public directory
 Disallow: /public/
 Disallow: /public/*

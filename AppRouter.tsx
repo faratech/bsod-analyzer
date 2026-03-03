@@ -14,6 +14,7 @@ const Analyzer = React.lazy(() => import('./pages/Analyzer'));
 const About = React.lazy(() => import('./pages/About'));
 const Documentation = React.lazy(() => import('./pages/Documentation'));
 const Donate = React.lazy(() => import('./pages/Donate'));
+const NotFound = React.lazy(() => import('./pages/NotFound'));
 
 const AppContent: React.FC = () => {
     const breadcrumbData = useBreadcrumbs();
@@ -39,6 +40,7 @@ const AppContent: React.FC = () => {
                     <Route path="/about" element={<About />} />
                     <Route path="/documentation" element={<Documentation />} />
                     <Route path="/donate" element={<Donate />} />
+                    <Route path="*" element={<NotFound />} />
                 </Routes>
             </Suspense>
             <Footer />
