@@ -1,14 +1,14 @@
-# Gemini 3 Pro Enhanced Features
+# Gemini 3.1 Flash Lite Enhanced Features
 
 ## Overview
 
-This document describes the enhanced features implemented for the BSOD Analyzer using Gemini 3 Pro, including Google Search grounding and optimized parameters.
+This document describes the enhanced features implemented for the BSOD Analyzer using Gemini 3.1 Flash Lite, including Google Search grounding and optimized parameters.
 
 ## Features
 
-### 1. Gemini 3 Pro Model
+### 1. Gemini 3.1 Flash Lite Model
 
-The BSOD analyzer now uses Gemini 3 Pro, which includes:
+The BSOD analyzer now uses Gemini 3.1 Flash Lite, which includes:
 
 **Current Configuration:**
 ```javascript
@@ -25,7 +25,7 @@ config: {
 - Enhanced ability to trace through stack traces and identify culprits
 
 **Note on Thinking Mode:**
-According to Google's documentation, Gemini 3 Pro comes with thinking capabilities enabled by default. The `thinkingConfig` parameter with `thinkingBudget` appears to be available in some contexts but may not be fully supported through all API endpoints yet.
+According to Google's documentation, Gemini 3.1 Flash Lite comes with thinking capabilities enabled by default. The `thinkingConfig` parameter with `thinkingBudget` appears to be available in some contexts but may not be fully supported through all API endpoints yet.
 
 ### 2. Google Search Grounding
 
@@ -45,7 +45,7 @@ tools: [{
 **Important Notes:**
 - Grounding with Google Search cannot be used with JSON response format
 - It's available for advanced debugging commands that return plain text
-- Costs $35 per 1,000 grounded queries
+- Costs $14 per 1,000 grounded queries (5,000 free/month)
 
 ### 3. Enhanced Configuration
 
@@ -71,10 +71,10 @@ The client includes:
 
 ## Cost Implications
 
-With Gemini 3 Pro:
-- Input: $2.00 per 1M tokens (≤200K context)
-- Output: $12.00 per 1M tokens (≤200K context)
-- Grounding: $35 per 1,000 queries (only for advanced tools)
+With Gemini 3.1 Flash Lite (1M token context window):
+- Input: $0.25 per 1M tokens (text/image/video), $0.50 per 1M tokens (audio)
+- Output: $1.50 per 1M tokens
+- Grounding: $14 per 1,000 queries (5,000 free/month)
 
 ## Future Enhancements
 
