@@ -50,6 +50,6 @@
     "tailwindcss": "^4.2.1",
     "terser": "^5.46.0",
     "typescript": "latest",
-    "vite": "^7.3.1"
+    "vite": "^8.0.0"
   }
 }
