@@ -218,6 +218,28 @@
       display: flex;
       flex-direction: column;
     }
+
+    .footer-content {
+      padding: 3rem 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      flex: 1;
+    }
+
+    @media (min-width: 768px) {
+      .footer-content {
+        grid-template-columns: 2fr 1fr 1fr 1fr;
+      }
+    }
+
+    .footer-bottom {
+      padding: 2rem 0 1rem;
+      border-top: 1px solid var(--border-primary);
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 0.875rem;
+    }
     
     /* Loading state */
     #root {
