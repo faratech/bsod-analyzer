@@ -759,10 +759,8 @@ p {
   background-color: var(--bg-secondary);
   border-top: 1px solid var(--border-primary);
   margin-top: 6rem;
-  min-height: 350px; /* Prevent CLS by reserving space */
   display: flex;
   flex-direction: column;
-  contain: layout style paint; /* Isolate layout calculations */
 }
 
 .footer-content {
@@ -771,7 +769,6 @@ p {
   grid-template-columns: 1fr;
   gap: 2rem;
   flex: 1;
-  min-height: 250px;
 }
 
 @media (min-width: 768px) {
@@ -781,7 +778,6 @@ p {
 }
 
 .footer-section {
-  min-height: 120px; /* Prevent layout shifts within sections */
 }
 
 .footer-section h4,
@@ -849,7 +845,6 @@ p {
   text-align: center;
   color: var(--text-tertiary);
   font-size: 0.875rem;
-  min-height: 60px; /* Prevent CLS */
 }
 
 /* Loading animations */
