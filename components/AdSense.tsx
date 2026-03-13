@@ -40,7 +40,7 @@ const Ad: React.FC<AdProps> = ({
     <div className={`ad-container ${className}`}>
       <ins
         className="adsbygoogle"
-        style={{ display: 'block', ...style }}
+        style={{ display: 'block', minHeight: 'inherit', ...style }}
         data-ad-client={ADSENSE_CONFIG.client}
         data-ad-slot={adSlot}
         data-ad-format={format}

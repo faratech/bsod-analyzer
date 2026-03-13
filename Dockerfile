@@ -38,18 +38,11 @@ RUN npm install --omit=dev && \
 # Copy built assets from builder stage
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 
-# Copy server file and other necessary files
+# Copy only server-side files needed at runtime
 COPY --chown=nodejs:nodejs server.js ./
 COPY --chown=nodejs:nodejs serverConfig.js ./
 COPY --chown=nodejs:nodejs model.cfg ./
 COPY --chown=nodejs:nodejs services ./services
-COPY --chown=nodejs:nodejs components ./components
-COPY --chown=nodejs:nodejs pages ./pages
-COPY --chown=nodejs:nodejs public ./public
-COPY --chown=nodejs:nodejs *.tsx ./
-COPY --chown=nodejs:nodejs *.ts ./
-COPY --chown=nodejs:nodejs *.css ./
-COPY --chown=nodejs:nodejs index.html ./
 
 # Switch to non-root user
 USER nodejs
