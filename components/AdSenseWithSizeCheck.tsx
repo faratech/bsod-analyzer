@@ -64,18 +64,16 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
   }, [hasWidth, adPushed]);
   
   return (
-    <div ref={containerRef} className={`ad-container ${className}`}>
-      {hasWidth ? (
+    <div ref={containerRef} className={`ad-container ${className}`} style={{ minHeight: '90px', ...style }}>
+      {hasWidth && (
         <ins
           className="adsbygoogle"
-          style={{ display: 'block', minHeight: '90px', ...style }}
+          style={{ display: 'block', minHeight: '90px' }}
           data-ad-client={ADSENSE_CONFIG.client}
           data-ad-slot={getAdSlot('headerDisplay')}
           data-ad-format="auto"
           data-full-width-responsive="true"
         />
-      ) : (
-        <div style={{ minHeight: '90px', display: 'none' }} />
       )}
     </div>
   );

@@ -2205,11 +2205,15 @@ app.use((req, res) => {
   // CDN caches 24h (purged on deploy), browser always revalidates
   res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  // Link header enables Cloudflare Early Hints (103) for critical assets
+  if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
   res.send(cachedIndexHtml);
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
 let cachedIndexHtml;
+// Precomputed Link header for Early Hints / Cloudflare preloading
+let earlyHintsLinkHeader = '';
 
 async function startServer() {
   // Initialize xxhash before accepting requests
@@ -2221,6 +2225,22 @@ async function startServer() {
   if (fs.existsSync(indexPath)) {
     cachedIndexHtml = fs.readFileSync(indexPath, 'utf-8');
     console.log(`Cached index.html in memory (${Buffer.byteLength(cachedIndexHtml)} bytes)`);
+
+    // Build Link header from built assets for Early Hints (Cloudflare)
+    const distAssets = path.join(__dirname, 'dist', 'assets');
+    if (fs.existsSync(distAssets)) {
+      const files = fs.readdirSync(distAssets);
+      const links = [];
+      // Preload the main JS entry and CSS — these are render-critical
+      const mainJs = files.find(f => f.match(/^index-.*\.js$/));
+      const mainCss = files.find(f => f.match(/^index-.*\.css$/));
+      if (mainCss) links.push(`</assets/${mainCss}>; rel=preload; as=style`);
+      if (mainJs) links.push(`</assets/${mainJs}>; rel=modulepreload`);
+      if (links.length) {
+        earlyHintsLinkHeader = links.join(', ');
+        console.log(`Early Hints Link header: ${earlyHintsLinkHeader}`);
+      }
+    }
   } else {
     console.warn('dist/index.html not found - run npm run build first');
     cachedIndexHtml = '<html><body>Build not found. Run npm run build.</body></html>';

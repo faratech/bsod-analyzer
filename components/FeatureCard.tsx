@@ -8,17 +8,15 @@ interface FeatureCardProps {
     className?: string;
 }
 
-const FeatureCard: React.FC<FeatureCardProps> = ({ 
-    icon, 
-    title, 
-    description, 
-    delay = 0,
+const FeatureCard: React.FC<FeatureCardProps> = ({
+    icon,
+    title,
+    description,
     className = ''
 }) => {
     return (
-        <div 
-            className={`feature-card fade-in ${className}`} 
-            style={{ animationDelay: `${delay}ms` }}
+        <div
+            className={`feature-card ${className}`}
         >
             <div className="feature-icon">
                 {icon}
