@@ -27,7 +27,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "latest",
-    "express-rate-limit": "^8.3.1",
+    "express-rate-limit": "^8.3.2",
     "form-data": "^4.0.5",
     "jszip": "latest",
     "multer": "^2.1.1",
