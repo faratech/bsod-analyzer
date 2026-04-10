@@ -25,14 +25,14 @@
     "concurrently": "latest",
     "cookie-parser": "latest",
     "cors": "^2.8.6",
-    "dotenv": "^17.4.0",
+    "dotenv": "^17.4.1",
     "express": "latest",
     "express-rate-limit": "^8.3.2",
     "form-data": "^4.0.5",
     "jszip": "latest",
     "multer": "^2.1.1",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "react-markdown": "latest",
     "react-router-dom": "^7.14.0",
     "remark-gfm": "latest",
@@ -41,15 +41,15 @@
   "devDependencies": {
     "@fullhuman/postcss-purgecss": "^8.0.0",
     "@tailwindcss/postcss": "^4.2.2",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "latest",
     "autoprefixer": "^10.4.27",
-    "postcss": "^8.5.8",
+    "postcss": "^8.5.9",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.2.2",
     "terser": "^5.46.1",
     "typescript": "^6.0.2",
-    "vite": "^8.0.3"
+    "vite": "^8.0.8"
   }
 }
