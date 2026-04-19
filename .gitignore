@@ -37,6 +37,8 @@ services/geminiService.ts.backup
 # Hidden files/folders (dotfiles)
 .*
 !.gitignore
+!.github/
+!.github/**
 
 # Claude AI settings (local preferences)
 .claude/

@@ -242,7 +242,7 @@ gcloud builds triggers create github \
 |-------|-----------|
 | Frontend | React 19, TypeScript, Vite |
 | Backend | Express.js (ES modules), Node.js 22+ |
-| AI | Google Gemini with Search Grounding via `@google/generative-ai` SDK |
+| AI | Google Gemini with Search Grounding via `@google/genai` SDK |
 | Cache | Upstash Redis (`@upstash/redis`) |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
 | File Processing | FileReader API, JSZip, Multer |

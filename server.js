@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import cors from 'cors';
@@ -33,6 +33,27 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// ---------------------------------------------------------------------------
+// Structured logging
+// Cloud Run auto-parses any JSON line on stdout into Cloud Logging's jsonPayload
+// and reads `severity` as the log level. Querying `jsonPayload.event="..."`
+// then lets us chart metrics (cache hit rate, token spend, WinDBG failures)
+// directly from the log stream — no separate metrics pipeline needed.
+// ---------------------------------------------------------------------------
+function emitJsonLog(severity, event, fields) {
+  try {
+    process.stdout.write(JSON.stringify({ severity, event, ...fields }) + '\n');
+  } catch {
+    // Fallback if a field contains a cycle or BigInt.
+    process.stdout.write(JSON.stringify({ severity, event, message: 'log serialization failed' }) + '\n');
+  }
+}
+const log = {
+  info:  (event, fields = {}) => emitJsonLog('INFO',    event, fields),
+  warn:  (event, fields = {}) => emitJsonLog('WARNING', event, fields),
+  error: (event, fields = {}) => emitJsonLog('ERROR',   event, fields),
+};
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -116,15 +137,54 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000); // Clean every 10 minutes
 
-// Read model name from config file
-let DEFAULT_MODEL_NAME = 'gemini-3.1-flash-lite-preview';
-try {
-  const modelConfig = fs.readFileSync(path.join(__dirname, 'model.cfg'), 'utf8').trim();
-  if (modelConfig) {
-    DEFAULT_MODEL_NAME = modelConfig;
+// Gemini model selection.
+// - getPrimaryModel() re-reads model.cfg per call with a 30s cache so the model can
+//   be swapped without a redeploy (edit model.cfg in the running container / overlay).
+// - FALLBACK_MODEL is the latest STABLE flash-lite (GA). The primary model is typically
+//   a preview (today: gemini-3.1-flash-lite-preview), which has no SLA and can 404 or
+//   be throttled without notice — generateWithFallback() catches that and retries.
+const FALLBACK_MODEL = 'gemini-2.5-flash-lite';
+const MODEL_CFG_PATH = path.join(__dirname, 'model.cfg');
+const MODEL_CFG_TTL_MS = 30_000;
+let _modelCfgCache = { value: 'gemini-3.1-flash-lite-preview', readAt: 0 };
+
+function getPrimaryModel() {
+  const now = Date.now();
+  if (now - _modelCfgCache.readAt < MODEL_CFG_TTL_MS) return _modelCfgCache.value;
+  try {
+    const modelConfig = fs.readFileSync(MODEL_CFG_PATH, 'utf8').trim();
+    if (modelConfig) _modelCfgCache = { value: modelConfig, readAt: now };
+    else _modelCfgCache.readAt = now;
+  } catch {
+    _modelCfgCache.readAt = now; // keep last-good value; don't spam fs errors
   }
-} catch (error) {
-  console.log('model.cfg not found or error reading, using default model:', DEFAULT_MODEL_NAME);
+  return _modelCfgCache.value;
+}
+
+// Prime once at startup so the existing startup log is meaningful.
+const DEFAULT_MODEL_NAME = getPrimaryModel();
+log.info('gemini.startup', { primary: DEFAULT_MODEL_NAME, fallback: FALLBACK_MODEL });
+
+// Recognise the error shapes Gemini returns when a model is missing / preview-pulled.
+function isModelUnavailableError(err) {
+  const msg = (err?.message || '') + ' ' + (err?.status || '');
+  return /\bNOT_FOUND\b|\b404\b|is not found for API version|UNIMPLEMENTED/i.test(msg);
+}
+
+// Wrap any ai.models.generateContent(request) call so that if the configured primary
+// model is unavailable, we transparently retry against the stable fallback.
+async function generateWithFallback(request) {
+  try {
+    return await genAI.models.generateContent(request);
+  } catch (err) {
+    if (!isModelUnavailableError(err) || request.model === FALLBACK_MODEL) throw err;
+    log.warn('gemini.model.fallback', {
+      primary: request.model,
+      fallback: FALLBACK_MODEL,
+      reason: err.message?.slice(0, 200)
+    });
+    return await genAI.models.generateContent({ ...request, model: FALLBACK_MODEL });
+  }
 }
 
 // Load SRI mapping if available
@@ -389,7 +449,7 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 // Initialize Gemini AI with server-side API key
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
@@ -895,11 +955,11 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
 
     // Check request limit
     if (sessionTracking.count >= REQUEST_LIMIT_PER_SESSION) {
-      console.warn('[Security] Per-session rate limit exceeded:', {
+      log.warn('session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
         ip: getClientIp(req),
         requestCount: sessionTracking.count,
-        resetTime: new Date(sessionTracking.resetTime).toISOString()
+        resetTime: sessionTracking.resetTime
       });
       return res.status(429).json({
         error: `Rate limit exceeded. Maximum ${REQUEST_LIMIT_PER_SESSION} analysis requests per hour.`,
@@ -914,7 +974,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
 
     // Check token limit
     if (sessionTracking.totalTokens + estimatedInputTokens > TOKEN_LIMIT_PER_SESSION) {
-      console.warn('[Security] Per-session token limit exceeded:', {
+      log.warn('session.token_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
         ip: getClientIp(req),
         totalTokens: sessionTracking.totalTokens,
@@ -930,11 +990,11 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     // SECURITY: Validate that prompt is BSOD-related (prevent API abuse)
     const validation = validateBSODPrompt(contents);
     if (!validation.valid) {
-      console.warn('[Security] Non-BSOD prompt blocked:', {
+      log.warn('prompt.blocked', {
         sessionId: sessionId?.substring(0, 10) + '...',
         ip: getClientIp(req),
         reason: validation.reason,
-        promptPreview: JSON.stringify(contents).substring(0, 150) + '...'
+        promptPreview: JSON.stringify(contents).substring(0, 150)
       });
       return res.status(400).json({
         error: 'Invalid request. This endpoint only analyzes Windows crash dumps and BSOD errors.',
@@ -946,108 +1006,58 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     const cacheKey = fileHash || hashContent(requestText);
     const cachedResponse = await getCachedAIReport(cacheKey);
     if (cachedResponse) {
-      console.log('[Gemini API] Cache HIT for:', fileHash ? `fileHash ${fileHash}` : 'prompt hash');
+      log.info('gemini.cache.hit', { keyed: fileHash ? 'fileHash' : 'prompt', fileHash });
       return res.json({
         ...cachedResponse,
         cached: true
       });
     }
+    log.info('gemini.cache.miss', { keyed: fileHash ? 'fileHash' : 'prompt', fileHash });
 
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
+    
+    // Always use the model from config file (re-read with 30s TTL so model.cfg can be
+    // swapped at runtime) — ignore any client-provided model for security.
+    const modelName = getPrimaryModel();
 
-    // Debug logging
-    console.log('[Gemini API] Cache MISS, calling Gemini. Contents type:', typeof contents);
-    if (typeof contents === 'object') {
-      console.log('[Gemini API] Contents structure:', JSON.stringify(contents).substring(0, 200) + '...');
-    }
-    
-    // Always use the model from config file - ignore any client-provided model
-    const modelName = DEFAULT_MODEL_NAME;
-    
-    // Extract configuration - frontend sends 'config', SDK expects 'generationConfig'
+    // Allowlist client-supplied config fields (camelCase for @google/genai). Anything
+    // else — including any 'model' override or stale snake_case keys from pre-migration
+    // clients — is silently dropped.
     const frontendConfig = config || generationConfig || {};
-    
-    // Build proper generationConfig for the SDK
-    const sdkGenerationConfig = {};
-    
-    // Handle response_mime_type (correct field name for the SDK)
-    if (frontendConfig.responseMimeType) {
-      sdkGenerationConfig.response_mime_type = frontendConfig.responseMimeType;
-    }
-    
-    // Handle response_schema (correct field name for the SDK)
-    if (frontendConfig.responseSchema) {
-      sdkGenerationConfig.response_schema = frontendConfig.responseSchema;
-    }
-    
-    // Handle temperature if provided
-    if (frontendConfig.temperature !== undefined) {
-      sdkGenerationConfig.temperature = frontendConfig.temperature;
-    }
-    
-    // Handle maxOutputTokens if provided (use snake_case for SDK consistency)
-    if (frontendConfig.maxOutputTokens !== undefined) {
-      sdkGenerationConfig.max_output_tokens = frontendConfig.maxOutputTokens;
-    }
-    
-    // Handle topK if provided (use snake_case for SDK consistency)
-    if (frontendConfig.topK !== undefined) {
-      sdkGenerationConfig.top_k = frontendConfig.topK;
+    const ALLOWED_CONFIG_KEYS = ['temperature', 'maxOutputTokens', 'topK', 'topP', 'responseMimeType', 'responseSchema', 'stopSequences', 'candidateCount'];
+    const sdkConfig = {};
+    for (const key of ALLOWED_CONFIG_KEYS) {
+      if (frontendConfig[key] !== undefined) sdkConfig[key] = frontendConfig[key];
     }
 
-    // Handle topP if provided (use snake_case for SDK consistency)
-    if (frontendConfig.topP !== undefined) {
-      sdkGenerationConfig.top_p = frontendConfig.topP;
-    }
-    
-    // Copy any other config properties that might be supported
-    // SECURITY: Explicitly exclude 'model' to prevent client from overriding server model selection
-    const excludedKeys = ['responseMimeType', 'responseSchema', 'temperature', 'maxOutputTokens', 'topK', 'topP', 'model'];
-    Object.keys(frontendConfig).forEach(key => {
-      if (!excludedKeys.includes(key)) {
-        sdkGenerationConfig[key] = frontendConfig[key];
+    // Translate legacy Google Search tool name (googleSearchRetrieval) to the new
+    // googleSearch tool shape. Accept either from clients for backward compatibility.
+    const rawTools = req.body.tools || frontendConfig.tools || [];
+    const clientTools = rawTools.map(tool => {
+      if (tool.googleSearchRetrieval || tool.google_search_retrieval || tool.googleSearch) {
+        return { googleSearch: tool.googleSearch || tool.googleSearchRetrieval || tool.google_search_retrieval || {} };
       }
+      return tool;
     });
-    
-    // Configure model with tools for grounding
-    const modelConfig = {
-      model: modelName,
-      generationConfig: sdkGenerationConfig,
-      safetySettings,
-      // SECURITY: Add system instruction to enforce BSOD-only analysis (defense-in-depth)
-      systemInstruction: {
-        role: "system",
-        parts: [{
-          text: 'You analyze Windows crash dumps (BSOD / kernel) only: bug-check codes, drivers, modules, stacks, kernel debugging. For any other request, respond exactly: "Error: This service only analyzes Windows crash dumps".'
-        }]
-      }
-    };
-    
-    // Add grounding tools configuration
-    const tools = req.body.tools || [];
-    if (tools.length > 0) {
-      // Ensure tools are properly formatted for the API
-      modelConfig.tools = tools.map(tool => {
-        // Handle Google Search grounding tool
-        if (tool.googleSearch || tool.google_search_retrieval) {
-          return {
-            googleSearchRetrieval: tool.googleSearch || tool.google_search_retrieval || {}
-          };
-        }
-        return tool;
-      });
-    }
-    
-    const geminiModel = genAI.getGenerativeModel(modelConfig);
+    if (clientTools.length > 0) sdkConfig.tools = clientTools;
 
-    const result = await geminiModel.generateContent(contents);
-    const response = await result.response;
+    if (safetySettings) sdkConfig.safetySettings = safetySettings;
+
+    // SECURITY: enforce BSOD-only analysis (defense-in-depth).
+    sdkConfig.systemInstruction = 'You analyze Windows crash dumps (BSOD / kernel) only: bug-check codes, drivers, modules, stacks, kernel debugging. For any other request, respond exactly: "Error: This service only analyzes Windows crash dumps".';
+
+    const response = await generateWithFallback({
+      model: modelName,
+      contents,
+      config: sdkConfig
+    });
 
     // Track real input + output tokens using Gemini's usageMetadata when available;
-    // fall back to char/4 only when the API didn't report counts.
-    const responseText = response.text();
+    // fall back to char/4 only when the API didn't report counts. The new SDK exposes
+    // response.text as a getter (not a method).
+    const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
     sessionTracking.totalTokens += actualInputTokens + outputTokens;
@@ -1055,11 +1065,13 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
 
-    console.log('[Gemini API] Request completed:', {
+    log.info('gemini.request', {
       sessionId: sessionId?.substring(0, 10) + '...',
+      model: response.modelVersion || modelName,
       inputTokens: actualInputTokens,
       inputEstimate: estimatedInputTokens,
       outputTokens,
+      cachedContentTokens: response.usageMetadata?.cachedContentTokenCount || 0,
       finishReason,
       sessionTotal: sessionTracking.totalTokens,
       requestsRemaining: REQUEST_LIMIT_PER_SESSION - sessionTracking.count
@@ -1077,7 +1089,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
 
     res.json(responseData);
   } catch (error) {
-    console.error('Gemini API error:', error);
+    log.error('gemini.error', { message: error.message, stack: error.stack?.split('\n').slice(0, 3).join(' | ') });
     res.status(500).json({ error: error.message || 'Failed to generate content' });
   }
 });
@@ -1370,7 +1382,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
 
     res.json(result);
   } catch (error) {
-    console.error('[WinDBG] Upload error:', error);
+    log.error('windbg.upload.fail', { message: error.message });
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to upload to WinDBG server'
@@ -1471,7 +1483,7 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
       analysisText
     });
   } catch (error) {
-    console.error('[WinDBG] Download error:', error);
+    log.error('windbg.download.fail', { message: error.message });
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to download WinDBG analysis'
@@ -1739,25 +1751,17 @@ Respond with valid JSON matching this schema:
 }`;
 
   try {
-    const modelConfig = {
-      model: DEFAULT_MODEL_NAME,
-      generationConfig: {
-        response_mime_type: 'application/json',
+    const response = await generateWithFallback({
+      model: getPrimaryModel(),
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
         temperature: 0.5,
-        max_output_tokens: 4096
-      },
-      systemInstruction: {
-        role: "system",
-        parts: [{
-          text: "You are a Windows crash dump analyzer. Provide structured JSON responses only."
-        }]
+        maxOutputTokens: 4096,
+        systemInstruction: 'You are a Windows crash dump analyzer. Provide structured JSON responses only.'
       }
-    };
-
-    const geminiModel = genAI.getGenerativeModel(modelConfig);
-    const result = await geminiModel.generateContent(prompt);
-    const response = await result.response;
-    const responseText = response.text();
+    });
+    const responseText = response.text ?? '';
 
     let report;
     try {
@@ -2089,7 +2093,7 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
     // Check cache for previous WinDBG analysis of this exact file
     const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
     if (cachedAnalysis) {
-      console.log('[API/Analyze] Cache HIT - using cached WinDBG analysis');
+      log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
 
       // Generate AI report from cached WinDBG output
       const report = await generateAIReportFromWinDBG(
@@ -2101,7 +2105,7 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
       );
 
       const processingTime = (Date.now() - startTime) / 1000;
-      console.log(`[API/Analyze] Completed from cache in ${processingTime}s`);
+      log.info('analyze.complete', { processingTime, analysisMethod: 'windbg', cached: true, dumpType, fileSize });
 
       return res.json({
         success: true,
@@ -2203,7 +2207,12 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
     }
 
     const processingTime = (Date.now() - startTime) / 1000;
-    console.log(`[API/Analyze] Analysis completed in ${processingTime}s`);
+    log.info('analyze.complete', {
+      processingTime,
+      analysisMethod: result.analysisMethod,
+      dumpType,
+      fileSize
+    });
 
     // Return structured response
     res.json({
@@ -2222,7 +2231,11 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
 
   } catch (error) {
     const processingTime = (Date.now() - startTime) / 1000;
-    console.error('[API/Analyze] Error:', error);
+    log.error('analyze.fail', {
+      message: error.message,
+      processingTime,
+      timedOut: /timed out/i.test(error.message || '')
+    });
 
     res.status(500).json({
       success: false,
