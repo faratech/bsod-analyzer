@@ -750,6 +750,34 @@ if (typeof window !== 'undefined') {
     });
 }
 
+// Extract the signal-bearing slice of a WinDBG analysis — see server.js counterpart.
+function extractCrashSignal(raw: string, maxBytes = 16384): string {
+    if (!raw || typeof raw !== 'string') return raw;
+
+    const startMarker = raw.indexOf('Bugcheck Analysis');
+    const headerStart = startMarker > -1 ? raw.lastIndexOf('\n***', startMarker) : -1;
+    const quitIdx = raw.lastIndexOf('\nquit:');
+
+    let slice: string;
+    if (headerStart > -1 && quitIdx > headerStart) slice = raw.slice(headerStart, quitIdx);
+    else if (headerStart > -1) slice = raw.slice(headerStart);
+    else slice = raw.slice(0, maxBytes);
+
+    slice = slice
+        .split('\n')
+        .filter(line => !/^NatVis script (loaded|unloaded)/.test(line))
+        .filter(line => !/^\s*Deferred\s+/.test(line))
+        .filter(line => !/^\*{10,}\s*(Preparing|Waiting|Path validation|Symbol Loading Error Summary)/.test(line))
+        .join('\n');
+
+    if (slice.length > maxBytes) {
+        const head = Math.floor(maxBytes * 0.75);
+        const tail = maxBytes - head - 40;
+        slice = `${slice.slice(0, head)}\n\n[... ${slice.length - head - tail} bytes elided ...]\n\n${slice.slice(-tail)}`;
+    }
+    return slice;
+}
+
 /**
  * Generate an AI report from WinDBG server analysis output.
  * This function takes the raw WinDBG analysis text and asks the AI to
@@ -774,8 +802,12 @@ async function generateReportFromWinDBG(
         processName: parsedFields.systemInfo?.processName || 'missing'
     });
 
-    // Pass full WinDBG output without truncation
-    const truncatedAnalysis = windbgAnalysis;
+    // Extract the signal-bearing slice. Raw WinDBG outputs are ~600KB but ~96% is init
+    // banners, per-module symbol-load status, and NatVis teardown. The bugcheck header,
+    // BUGCHECK_CODE/P1-P4, STACK_TEXT, FAILURE_BUCKET_ID, MODULE_NAME all sit between
+    // the "Bugcheck Analysis" banner and the terminating `quit:`.
+    const analysisForPrompt = extractCrashSignal(windbgAnalysis);
+    console.log(`[Analyzer] WinDBG signal extracted: ${windbgAnalysis.length} → ${analysisForPrompt.length} chars`);
 
     const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
 
@@ -786,7 +818,7 @@ async function generateReportFromWinDBG(
 
 **ACTUAL WinDBG Analysis Output:**
 \`\`\`
-${truncatedAnalysis}
+${analysisForPrompt}
 \`\`\`
 
 ## ANALYSIS REQUIREMENTS
@@ -1484,8 +1516,8 @@ export const analyzeDumpFiles = async (
             const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
             
             // Reduced token target - with accurate kernel dump parsing, we need less data
-            const TARGET_TOKENS = 50000;
-            const MAX_TOKENS = 100000;
+            const TARGET_TOKENS = 25000;
+            const MAX_TOKENS = 50000;
             
             // Build prompt sections with token tracking
             let currentTokens = 0;

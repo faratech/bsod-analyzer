@@ -1,5 +1,5 @@
 declare const __BUILD_VERSION__: string;
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
 import FilePreview from '../components/FilePreview';
@@ -23,9 +23,10 @@ const Analyzer: React.FC = () => {
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
     const { processFiles, addFilesToState, error: fileError } = useFileProcessor();
     const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile, updateAdvancedAnalysis } = useAnalysis();
-    
+
     const error = fileError || analysisError;
     const [, setSessionReady] = useState(false);
+    const progressIntervals = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
     // Initialize session on component mount
     useEffect(() => {
@@ -38,9 +39,12 @@ const Analyzer: React.FC = () => {
             }
         });
 
-        // Cleanup on unmount
+        // Cleanup on unmount — stop session refresh and any in-flight progress intervals.
+        const intervals = progressIntervals.current;
         return () => {
             stopSessionRefresh();
+            intervals.forEach(clearInterval);
+            intervals.clear();
         };
     }, []);
 
@@ -52,8 +56,12 @@ const Analyzer: React.FC = () => {
         });
         setFileProgress(prev => ({ ...prev, ...progressInit }));
         
-        // Simulate processing progress
+        // Simulate processing progress — track each interval so we can cancel it on
+        // file removal or component unmount.
         acceptedFiles.forEach((file) => {
+            const existing = progressIntervals.current.get(file.name);
+            if (existing) clearInterval(existing);
+
             const interval = setInterval(() => {
                 setFileProgress(prev => {
                     const newProgress = { ...prev };
@@ -61,10 +69,12 @@ const Analyzer: React.FC = () => {
                         newProgress[file.name] = Math.min(newProgress[file.name] + 10, 100);
                     } else {
                         clearInterval(interval);
+                        progressIntervals.current.delete(file.name);
                     }
                     return newProgress;
                 });
             }, 200);
+            progressIntervals.current.set(file.name, interval);
         });
         
         const newDumpFiles = await processFiles(acceptedFiles, trackFileUpload);
@@ -72,17 +82,23 @@ const Analyzer: React.FC = () => {
     }, [processFiles, addFilesToState, trackFileUpload]);
     
     const handleRemoveFile = useCallback((fileId: string) => {
-        setDumpFiles(prevFiles => prevFiles.filter(file => file.id !== fileId));
-        // Remove from progress tracking
-        const fileName = dumpFiles.find(f => f.id === fileId)?.file.name;
-        if (fileName) {
-            setFileProgress(prev => {
-                const newProgress = { ...prev };
-                delete newProgress[fileName];
-                return newProgress;
-            });
-        }
-    }, [dumpFiles]);
+        setDumpFiles(prevFiles => {
+            const fileName = prevFiles.find(f => f.id === fileId)?.file.name;
+            if (fileName) {
+                const interval = progressIntervals.current.get(fileName);
+                if (interval) {
+                    clearInterval(interval);
+                    progressIntervals.current.delete(fileName);
+                }
+                setFileProgress(prev => {
+                    const next = { ...prev };
+                    delete next[fileName];
+                    return next;
+                });
+            }
+            return prevFiles.filter(file => file.id !== fileId);
+        });
+    }, []);
 
     const handleAnalyze = async () => {
         // Show under development notification
