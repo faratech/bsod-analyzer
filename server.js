@@ -75,7 +75,9 @@ const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
 const REQUEST_LIMIT_PER_SESSION = 50; // Max 50 requests per hour per session
-const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session (increased for full WinDBG output)
+// totalTokens now accumulates input + output (prior code added only output). Per-request input
+// dropped ~5x with the prompt/size-cap changes, so 50 × typical ~6K = ~300K, well under this cap.
+const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session
 
 // ============================================================
 // External API Key Authentication
@@ -589,9 +591,12 @@ const requireSession = (req, res, next) => {
     return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
   }
   
-  // Refresh session timestamp
+  // Refresh session timestamp — guard against the rare race where the cleanup interval
+  // evicted the session between validateSession() and this lookup.
   const sessionData = validSessions.get(sessionId);
-  sessionData.timestamp = Date.now();
+  if (sessionData) {
+    sessionData.timestamp = Date.now();
+  }
 
   next();
 };
@@ -1015,23 +1020,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
       systemInstruction: {
         role: "system",
         parts: [{
-          text: `You are a Windows crash dump analyzer and kernel debugger assistant. You MUST ONLY analyze crash dumps and BSOD errors.
-
-STRICT OPERATIONAL RULES:
-- ONLY respond to Windows crash dump analysis requests
-- ONLY discuss: bug check codes, drivers, memory dumps, stack traces, Windows kernel debugging
-- REJECT any requests for: stories, poems, code generation, translations, general questions, homework help
-- If the request is not about Windows crash analysis, respond: "Error: This service only analyzes Windows crash dumps"
-
-Your expertise is limited to:
-✓ Bug check codes and parameters
-✓ Driver and module analysis
-✓ Memory dump interpretation
-✓ Stack trace analysis
-✓ Windows kernel debugging
-✓ System crash diagnostics
-
-You do NOT provide assistance with any other topics.`
+          text: 'You analyze Windows crash dumps (BSOD / kernel) only: bug-check codes, drivers, modules, stacks, kernel debugging. For any other request, respond exactly: "Error: This service only analyzes Windows crash dumps".'
         }]
       }
     };
@@ -1056,30 +1045,31 @@ You do NOT provide assistance with any other topics.`
     const result = await geminiModel.generateContent(contents);
     const response = await result.response;
 
-    // Track output tokens for cost control
-    const outputTokens = response.usageMetadata?.candidatesTokenCount || Math.ceil(response.text().length / 4);
-    sessionTracking.totalTokens += outputTokens;
+    // Track real input + output tokens using Gemini's usageMetadata when available;
+    // fall back to char/4 only when the API didn't report counts.
+    const responseText = response.text();
+    const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
+    const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
+    sessionTracking.totalTokens += actualInputTokens + outputTokens;
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
 
     console.log('[Gemini API] Request completed:', {
       sessionId: sessionId?.substring(0, 10) + '...',
-      inputTokens: estimatedInputTokens,
-      outputTokens: outputTokens,
-      finishReason: finishReason,
+      inputTokens: actualInputTokens,
+      inputEstimate: estimatedInputTokens,
+      outputTokens,
+      finishReason,
       sessionTotal: sessionTracking.totalTokens,
       requestsRemaining: REQUEST_LIMIT_PER_SESSION - sessionTracking.count
     });
 
-    // Return the text directly for compatibility
-    const text = response.text();
-
     const responseData = {
-      candidates: response.candidates || [{ content: { parts: [{ text }] } }],
+      candidates: response.candidates || [{ content: { parts: [{ text: responseText }] } }],
       usageMetadata: response.usageMetadata,
       modelVersion: response.modelVersion,
-      text // Include text for easier access
+      text: responseText
     };
 
     // Cache the response using fileHash if provided
@@ -1660,15 +1650,50 @@ function extractCulpritFromWinDBG(windbgOutput) {
  * Generate AI report from WinDBG analysis
  * Uses cache to avoid redundant Gemini API calls
  */
-async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis) {
-  // Check cache first
-  const cachedReport = await getCachedAIReport(windbgAnalysis);
+// Extract the signal-bearing slice of a WinDBG analysis. Raw outputs run 500-650KB but
+// ~96% is init banners, Path validation, per-module symbol-load diagnostics, and NatVis
+// teardown. The diagnostic content (bugcheck code/args, stack text, FAILURE_BUCKET_ID,
+// MODULE_NAME) sits between the "Bugcheck Analysis" header and the terminating `quit:`.
+function extractCrashSignal(raw, maxBytes = 16384) {
+  if (!raw || typeof raw !== 'string') return raw;
+
+  const startMarker = raw.indexOf('Bugcheck Analysis');
+  const headerStart = startMarker > -1 ? raw.lastIndexOf('\n***', startMarker) : -1;
+  const quitIdx = raw.lastIndexOf('\nquit:');
+
+  let slice;
+  if (headerStart > -1 && quitIdx > headerStart) slice = raw.slice(headerStart, quitIdx);
+  else if (headerStart > -1) slice = raw.slice(headerStart);
+  else slice = raw.slice(0, maxBytes);
+
+  slice = slice
+    .split('\n')
+    .filter(line => !/^NatVis script (loaded|unloaded)/.test(line))
+    .filter(line => !/^\s*Deferred\s+/.test(line))
+    .filter(line => !/^\*{10,}\s*(Preparing|Waiting|Path validation|Symbol Loading Error Summary)/.test(line))
+    .join('\n');
+
+  if (slice.length > maxBytes) {
+    const head = Math.floor(maxBytes * 0.75);
+    const tail = maxBytes - head - 40;
+    slice = `${slice.slice(0, head)}\n\n[... ${slice.length - head - tail} bytes elided ...]\n\n${slice.slice(-tail)}`;
+  }
+  return slice;
+}
+
+async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash) {
+  // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
+  const cacheKey = fileHash || windbgAnalysis;
+  const cachedReport = await getCachedAIReport(cacheKey);
   if (cachedReport) {
     console.log('[API/AI] Using cached AI report');
     return { ...cachedReport, cached: true };
   }
 
   console.log('[API/AI] Generating AI report from WinDBG analysis...');
+
+  const analysisForPrompt = extractCrashSignal(windbgAnalysis);
+  console.log(`[API/AI] WinDBG signal extracted: ${windbgAnalysis.length} → ${analysisForPrompt.length} chars`);
 
   const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
 
@@ -1679,7 +1704,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
 **ACTUAL WinDBG Analysis Output:**
 \`\`\`
-${windbgAnalysis}
+${analysisForPrompt}
 \`\`\`
 
 ## ANALYSIS REQUIREMENTS
@@ -1747,8 +1772,8 @@ Respond with valid JSON matching this schema:
       }
     }
 
-    // Cache the successful AI report
-    await setCachedAIReport(windbgAnalysis, report);
+    // Cache the successful AI report under the stable file hash (or analysis text as fallback)
+    await setCachedAIReport(cacheKey, report);
     return report;
   } catch (error) {
     console.error('[API/AI] AI analysis error:', error);
@@ -1963,7 +1988,16 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
-        // Path traversal protection
+
+        // Reject any symlink outright — lstat avoids the realpath TOCTOU window and
+        // guarantees we never follow a link out of the extract dir.
+        const lstat = fs.lstatSync(fullPath);
+        if (lstat.isSymbolicLink()) {
+          console.warn('[Archive] Symlink entry rejected:', fullPath);
+          continue;
+        }
+
+        // Defense in depth: still verify the resolved path stays within realExtractDir.
         const realPath = fs.realpathSync(fullPath);
         if (!realPath.startsWith(realExtractDir)) {
           console.warn('[Archive] Path traversal detected, skipping:', fullPath);
@@ -2062,7 +2096,8 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
         fileName,
         dumpType,
         fileSize,
-        cachedAnalysis.windbgOutput
+        cachedAnalysis.windbgOutput,
+        fileHash
       );
 
       const processingTime = (Date.now() - startTime) / 1000;
@@ -2108,9 +2143,11 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
     const uid = generateWinDBGUID();
     console.log(`[API/Analyze] Starting WinDBG analysis with UID: ${uid}`);
 
-    // Create timeout wrapper
+    // Create timeout wrapper — track the timer so we can cancel it on success, and
+    // swallow the losing branch's rejection to avoid an unhandledRejection.
+    let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         reject(new Error('Analysis timed out after 5 minutes'));
       }, WINDBG_TOTAL_TIMEOUT_MS);
     });
@@ -2146,7 +2183,7 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
 
       // Step 4: Generate AI report
       console.log('[API/Analyze] Step 4: Generating AI report...');
-      const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis);
+      const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash);
 
       return {
         report,
@@ -2155,8 +2192,15 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
       };
     })();
 
-    // Race between analysis and timeout
-    const result = await Promise.race([analysisPromise, timeoutPromise]);
+    // Race between analysis and timeout. Attach a noop catch to analysisPromise so that
+    // if it loses the race and settles later, Node doesn't surface an unhandledRejection.
+    analysisPromise.catch(() => {});
+    let result;
+    try {
+      result = await Promise.race([analysisPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
 
     const processingTime = (Date.now() - startTime) / 1000;
     console.log(`[API/Analyze] Analysis completed in ${processingTime}s`);
