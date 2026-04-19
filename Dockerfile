@@ -6,8 +6,10 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies (including devDependencies for build)
-RUN npm install && \
+# Install all dependencies (including devDependencies) from the lockfile.
+# npm ci is ~3x faster than npm install and errors if package.json / package-lock.json
+# disagree — so Cloud Run builds always match what was developed and tested.
+RUN npm ci && \
     npm cache clean --force
 
 # Copy source files
@@ -31,8 +33,8 @@ RUN addgroup -g 1001 -S nodejs && \
 # Copy package files
 COPY package*.json ./
 
-# Install only production dependencies
-RUN npm install --omit=dev && \
+# Install only production dependencies from the lockfile.
+RUN npm ci --omit=dev && \
     npm cache clean --force
 
 # Copy built assets from builder stage
