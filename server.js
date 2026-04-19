@@ -314,7 +314,9 @@ app.use((req, res, next) => {
 const CSP_HEADER = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com https://www.paypalobjects.com",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.googleapis.com",
+  // AdSense's adsbygoogle.js runtime injects a small container-sizing stylesheet
+  // as a data:text/css URL, so 'data:' is required here for ad slots to render.
+  "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: https: blob:",
   "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://api.claude.ai https://generativelanguage.googleapis.com https://www.paypal.com",

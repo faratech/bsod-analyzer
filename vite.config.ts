@@ -44,7 +44,10 @@ export default defineConfig(({ mode }) => {
           }
         },
         // Asset optimization
-        assetsInlineLimit: 4096, // Inline assets smaller than 4kb
+        // Inline small images/fonts up to 4KB, but never inline CSS: inlining CSS
+        // as a data:text/css URL defeats the media="print" onload defer pattern and
+        // forces 'data:' into the CSP style-src.
+        assetsInlineLimit: (filePath: string) => filePath.endsWith('.css') ? 0 : 4096,
         cssCodeSplit: true, // Split CSS into separate chunks
         rollupOptions: {
           output: {
