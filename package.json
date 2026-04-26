@@ -45,7 +45,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.27",
-    "postcss": "^8.5.9",
+    "postcss": "^8.5.11",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.2.4",
     "terser": "^5.46.2",
