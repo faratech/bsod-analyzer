@@ -19,7 +19,7 @@
     "optimize-css": "node scripts/purge-css.js --apply"
   },
   "dependencies": {
-    "@google/genai": "^1.50.1",
+    "@google/genai": "^1.51.0",
     "@upstash/redis": "^1.37.0",
     "compression": "^1.8.1",
     "concurrently": "^9.2.1",
