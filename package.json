@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.52.0",
-    "@upstash/redis": "^1.37.0",
+    "@upstash/redis": "^1.38.0",
     "compression": "^1.8.1",
     "concurrently": "^9.2.1",
     "cookie-parser": "^1.4.7",
@@ -34,7 +34,7 @@
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.14.2",
+    "react-router-dom": "^7.15.0",
     "remark-gfm": "^4.0.1",
     "xxhash-wasm": "^1.1.0"
   },
