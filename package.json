@@ -53,6 +53,7 @@
     "vite": "^8.0.10"
   },
   "overrides": {
-    "picomatch": "^4"
+    "picomatch": "^4",
+    "ip-address": "^10.2.0"
   }
 }
