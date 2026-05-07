@@ -50,7 +50,7 @@
     "tailwindcss": "^4.2.4",
     "terser": "^5.46.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10"
+    "vite": "^8.0.11"
   },
   "overrides": {
     "picomatch": "^4",
