@@ -1896,10 +1896,12 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 
     if (archiveType === 'rar') {
       // Use bsdtar for RAR files (Alpine's 7zip lacks the RAR codec)
-      // Step 1: List contents for bomb detection
+      // Step 1: List verbose contents for pre-extraction bomb detection.
+      // bsdtar's long listing exposes each entry's uncompressed size, allowing
+      // us to reject archive bombs before writing expanded data to disk.
       let listOutput;
       try {
-        listOutput = await execFileAsync('bsdtar', ['tf', archivePath], { timeout: 15000 });
+        listOutput = await execFileAsync('bsdtar', ['tvf', archivePath], { timeout: 15000 });
       } catch (err) {
         if (err.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
           throw new Error('Password-protected archives are not supported');
@@ -1908,8 +1910,25 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       }
 
       const fileList = listOutput.stdout.trim().split('\n').filter(f => f.length > 0);
+      let totalListedSize = 0;
+      for (const line of fileList) {
+        const columns = line.trim().split(/\s+/);
+        // Expected bsdtar -tvf shape: mode links owner group size date... name
+        const size = Number.parseInt(columns[4], 10);
+        if (!Number.isFinite(size) || size < 0) {
+          throw new Error('Failed to read RAR archive: unable to determine uncompressed size');
+        }
+        totalListedSize += size;
+      }
+
+      if (totalListedSize > MAX_EXTRACTED_SIZE) {
+        throw new Error(`Archive too large when extracted (${(totalListedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+      }
       if (fileList.length > MAX_FILE_COUNT) {
         throw new Error(`Archive contains too many files (${fileList.length}). Maximum is ${MAX_FILE_COUNT}.`);
+      }
+      if (buffer.length > 0 && totalListedSize / buffer.length > MAX_COMPRESSION_RATIO) {
+        throw new Error('Archive compression ratio too high — possible archive bomb');
       }
 
       // Step 2: Extract
