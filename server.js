@@ -140,13 +140,12 @@ setInterval(() => {
 // Gemini model selection.
 // - getPrimaryModel() re-reads model.cfg per call with a 30s cache so the model can
 //   be swapped without a redeploy (edit model.cfg in the running container / overlay).
-// - FALLBACK_MODEL is the latest STABLE flash-lite (GA). The primary model is typically
-//   a preview (today: gemini-3.1-flash-lite-preview), which has no SLA and can 404 or
-//   be throttled without notice — generateWithFallback() catches that and retries.
+// - FALLBACK_MODEL is a prior-generation stable flash-lite kept as a safety net in case
+//   the primary model 404s or is throttled — generateWithFallback() catches that and retries.
 const FALLBACK_MODEL = 'gemini-2.5-flash-lite';
 const MODEL_CFG_PATH = path.join(__dirname, 'model.cfg');
 const MODEL_CFG_TTL_MS = 30_000;
-let _modelCfgCache = { value: 'gemini-3.1-flash-lite-preview', readAt: 0 };
+let _modelCfgCache = { value: 'gemini-3.1-flash-lite', readAt: 0 };
 
 function getPrimaryModel() {
   const now = Date.now();
