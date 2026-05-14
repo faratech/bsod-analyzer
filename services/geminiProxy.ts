@@ -10,7 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { analyzeWithWinDBG, fetchCachedAnalysis, WinDBGAnalysisResult } from './windbgService';
+import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -52,52 +52,6 @@ const FAKE_DRIVER_PATTERN = /\b(wXr|wEB|vS)\.sys\b/gi;
 
 function isTurnstileRequiredError(error: unknown): boolean {
     return error instanceof Error && /turnstile verification required/i.test(error.message);
-}
-
-function parseAnalysisReportJson(text: string): AnalysisReportData | null {
-    try {
-        return JSON.parse(text) as AnalysisReportData;
-    } catch {
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            return null;
-        }
-        try {
-            return JSON.parse(jsonMatch[0]) as AnalysisReportData;
-        } catch {
-            return null;
-        }
-    }
-}
-
-function reportFromCachedAI(cachedReport: unknown): AnalysisReportData | null {
-    if (!cachedReport || typeof cachedReport !== 'object') {
-        return null;
-    }
-
-    const report = cachedReport as Partial<AnalysisReportData> & {
-        text?: string;
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-
-    if (typeof report.summary === 'string' && typeof report.probableCause === 'string') {
-        return report as AnalysisReportData;
-    }
-
-    const text = typeof report.text === 'string'
-        ? report.text
-        : report.candidates?.[0]?.content?.parts?.find(part => typeof part.text === 'string')?.text;
-
-    return text ? parseAnalysisReportJson(text) : null;
-}
-
-function mergeReportWithWinDBG(report: AnalysisReportData, windbgAnalysis: string): AnalysisReportData {
-    const parsedFields = parseWinDbgOutput(windbgAnalysis);
-    return {
-        ...report,
-        ...parsedFields,
-        systemInfo: { ...report.systemInfo, ...parsedFields.systemInfo }
-    };
 }
 
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
@@ -1303,53 +1257,8 @@ export const analyzeDumpFiles = async (
         const result = await (async () => {
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
-
             if (dumpFile.knownCached && dumpFile.fileHash) {
-                try {
-                    console.log(`[Analyzer] Prechecked cache hit for ${dumpFile.file.name}; fetching cached analysis without upload`);
-                    onProgress?.('downloading', 'Loading cached analysis...');
-                    const cached = await fetchCachedAnalysis(dumpFile.fileHash);
-
-                    if (cached.success) {
-                        const cachedAIReport = reportFromCachedAI(cached.aiReport);
-                        if (cachedAIReport) {
-                            console.log(`[Analyzer] Using cached AI report for ${dumpFile.file.name}`);
-                            return {
-                                id: dumpFile.id,
-                                report: cached.windbgAnalysis
-                                    ? mergeReportWithWinDBG(cachedAIReport, cached.windbgAnalysis)
-                                    : cachedAIReport,
-                                status: FileStatus.ANALYZED,
-                                cached: true,
-                                analysisMethod: cached.windbgAnalysis ? 'windbg' as const : 'local' as const
-                            };
-                        }
-
-                        if (cached.windbgAnalysis) {
-                            console.log(`[Analyzer] Using cached WinDBG analysis for ${dumpFile.file.name}`);
-                            onProgress?.('analyzing', 'AI is interpreting the cached crash analysis...');
-                            const windbgReport = await generateReportFromWinDBG(
-                                dumpFile.file.name,
-                                dumpFile.dumpType,
-                                dumpFile.file.size,
-                                cached.windbgAnalysis,
-                                cached.fileHash
-                            );
-
-                            return {
-                                id: dumpFile.id,
-                                report: windbgReport,
-                                status: FileStatus.ANALYZED,
-                                cached: true,
-                                analysisMethod: 'windbg' as const
-                            };
-                        }
-                    }
-
-                    console.warn(`[Analyzer] Prechecked cache unavailable for ${dumpFile.file.name}; falling back to analysis`, cached.error);
-                } catch (cacheError) {
-                    console.warn(`[Analyzer] Cached analysis fetch failed for ${dumpFile.file.name}; falling back to analysis`, cacheError);
-                }
+                console.log(`[Analyzer] Cache hint found for ${dumpFile.file.name}; upload will prove file ownership before any cached result is returned`);
             }
 
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
