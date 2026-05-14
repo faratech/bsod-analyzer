@@ -908,6 +908,12 @@ const requireSession = async (req, res, next) => {
         sessionId: sessionId.substring(0, 10) + '...',
         clientIp
       });
+      if (validation.reason === 'Session not found' || validation.reason === 'Session expired') {
+        return res.status(401).json({
+          error: 'Turnstile verification required',
+          code: 'TURNSTILE_REQUIRED'
+        });
+      }
       return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
     }
     if (!validation.sessionData?.turnstileVerified) {
