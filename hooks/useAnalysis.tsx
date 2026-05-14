@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { analyzeDumpFiles } from '../services/geminiProxy';
 import { useError } from './useError';
+import { initializeSession, onSessionInvalid } from '../utils/sessionManager';
 
 export type AnalysisStage = 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete';
 
@@ -16,6 +17,12 @@ export const useAnalysis = () => {
     const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
     const [progress, setProgress] = useState<AnalysisProgress | null>(null);
     const { error, setError, clearError } = useError();
+
+    useEffect(() => onSessionInvalid(() => {
+        setIsAnalyzing(false);
+        setProgress(null);
+        setError('Security check expired. Please complete Turnstile again, then retry analysis.');
+    }), [setError]);
 
     const analyzeFiles = useCallback(async (
         dumpFiles: DumpFile[],
@@ -32,6 +39,13 @@ export const useAnalysis = () => {
         
         if (filesToAnalyze.length === 0) {
             setIsAnalyzing(false);
+            return;
+        }
+
+        const sessionReady = await initializeSession(true);
+        if (!sessionReady) {
+            setIsAnalyzing(false);
+            setError('Security check expired. Please complete Turnstile again, then retry analysis.');
             return;
         }
 
@@ -138,6 +152,12 @@ export const useAnalysis = () => {
     ) => {
         const fileToRetry = dumpFiles.find(df => df.id === fileId);
         if (!fileToRetry) return;
+
+        const sessionReady = await initializeSession(true);
+        if (!sessionReady) {
+            setError('Security check expired. Please complete Turnstile again, then retry analysis.');
+            return;
+        }
 
         // Reset file status to ANALYZING
         onUpdate(prevFiles =>

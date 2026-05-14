@@ -2,6 +2,8 @@
  * Client-side service for server-side archive extraction (.7z, .rar)
  */
 
+import { handleSessionError } from '../utils/sessionManager';
+
 const SERVER_ARCHIVE_EXTENSIONS = ['.7z', '.rar'];
 
 /**
@@ -28,6 +30,9 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
   const result = await response.json();
 
   if (!response.ok || !result.success) {
+    if (response.status === 401) {
+      handleSessionError(result);
+    }
     throw new Error(result.error || 'Failed to extract archive');
   }
 
