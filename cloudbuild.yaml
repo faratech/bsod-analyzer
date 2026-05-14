@@ -21,6 +21,7 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      - '--no-default-url'
       - '--service-account'
       - 'bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com'
       - '--port'
