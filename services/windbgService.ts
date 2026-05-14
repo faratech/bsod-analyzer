@@ -313,6 +313,7 @@ export async function uploadToWinDBG(
  */
 export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
     let attempts = 0;
+    let authRefreshRetries = 0;
 
     while (attempts < MAX_POLL_ATTEMPTS) {
         attempts++;
@@ -325,19 +326,23 @@ export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
             });
 
             if (!response.ok) {
-                if (response.status === 401) {
+                if (response.status === 401 && authRefreshRetries < 1) {
                     let errorData: any = {};
                     try { errorData = await response.json(); } catch {}
                     if (handleSessionError(errorData)) {
                         console.log('[WinDBG] Session expired during poll, re-initializing...');
                         const refreshed = await initializeSession(true);
-                        if (refreshed) continue; // Retry this poll attempt
+                        if (refreshed) {
+                            authRefreshRetries++;
+                            continue; // Retry this poll attempt
+                        }
                     }
                 }
                 throw new Error(`Status check failed with HTTP ${response.status}`);
             }
 
             const result: WinDBGStatusResponse = await response.json();
+            authRefreshRetries = 0;
 
             if (!result.success) {
                 throw new Error(result.error || 'Status check failed');
@@ -460,6 +465,7 @@ export async function analyzeWithWinDBG(
         let lastStatus = 'pending';
         let statusResult: WinDBGStatusResponse | null = null;
         let attempts = 0;
+        let authRefreshRetries = 0;
 
         while (attempts < MAX_POLL_ATTEMPTS) {
             attempts++;
@@ -475,13 +481,14 @@ export async function analyzeWithWinDBG(
             console.log(`[WinDBG] Poll response status: ${response.status}`);
 
             if (!response.ok) {
-                if (response.status === 401) {
+                if (response.status === 401 && authRefreshRetries < 1) {
                     let errorData: any = {};
                     try { errorData = await response.json(); } catch {}
                     if (handleSessionError(errorData)) {
                         console.log('[WinDBG] Session expired during poll, re-initializing...');
                         const refreshed = await initializeSession(true);
                         if (refreshed) {
+                            authRefreshRetries++;
                             // Don't count this as a poll attempt, retry immediately
                             attempts--;
                             continue;
@@ -492,6 +499,7 @@ export async function analyzeWithWinDBG(
             }
 
             const result: WinDBGStatusResponse = await response.json();
+            authRefreshRetries = 0;
             console.log(`[WinDBG] Poll result:`, result.data?.status);
 
             if (!result.success) {
