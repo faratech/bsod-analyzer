@@ -858,6 +858,18 @@ function setSessionCookies(res, sessionId, sessionHash) {
   return cookieOptions;
 }
 
+function clearSessionCookies(res) {
+  const baseOptions = {
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  };
+
+  res.clearCookie('bsod_session_id', { ...baseOptions, httpOnly: true });
+  res.clearCookie('bsod_session_hash', { ...baseOptions, httpOnly: true });
+  res.clearCookie('bsod_turnstile_verified', { ...baseOptions, httpOnly: false });
+}
+
 // Validate session cookie
 async function validateSession(sessionId, sessionHash) {
   const sessionData = await loadSession(sessionId);
@@ -898,6 +910,7 @@ const requireSession = async (req, res, next) => {
         sessionHash: !!sessionHash,
         cookies: Object.keys(req.cookies || {})
       });
+      clearSessionCookies(res);
       return res.status(401).json({ error: 'Session required', code: 'NO_SESSION' });
     }
 
@@ -909,6 +922,7 @@ const requireSession = async (req, res, next) => {
         clientIp
       });
       if (validation.reason === 'Session not found' || validation.reason === 'Session expired') {
+        clearSessionCookies(res);
         return res.status(401).json({
           error: 'Turnstile verification required',
           code: 'TURNSTILE_REQUIRED'
@@ -917,6 +931,7 @@ const requireSession = async (req, res, next) => {
       return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
     }
     if (!validation.sessionData?.turnstileVerified) {
+      clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
@@ -1101,11 +1116,13 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
     const clientIp = getClientIp(req);
 
     if (!sessionId || !sessionHash) {
+      clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
     const validation = await validateSession(sessionId, sessionHash);
     if (!validation.valid || !validation.sessionData?.turnstileVerified) {
+      clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 

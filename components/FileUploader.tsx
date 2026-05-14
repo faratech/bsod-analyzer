@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile from './CloudflareTurnstile';
-import { markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
+import { hasTurnstileHint, initializeSession, markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
 
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
@@ -20,15 +20,20 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
   
   // Check if user already has a valid session cookie
   useEffect(() => {
-    const checkExistingSession = () => {
-      // Check for turnstile verification cookie
-      const cookies = document.cookie.split(';');
-      const hasVerification = cookies.some(cookie => 
-        cookie.trim().startsWith('bsod_turnstile_verified=true')
-      );
-      
-      if (hasVerification) {
-        setIsVerified(true);
+    let cancelled = false;
+
+    const checkExistingSession = async () => {
+      if (!hasTurnstileHint()) {
+        if (!cancelled) setIsVerified(false);
+        return;
+      }
+
+      const sessionValid = await initializeSession(true);
+      if (!cancelled) {
+        setIsVerified(sessionValid);
+        if (sessionValid) {
+          startSessionRefresh();
+        }
       }
     };
     
@@ -39,6 +44,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
     window.addEventListener('focus', handleFocus);
     
     return () => {
+      cancelled = true;
       window.removeEventListener('focus', handleFocus);
     };
   }, []);

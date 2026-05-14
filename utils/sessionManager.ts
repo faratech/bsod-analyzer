@@ -8,6 +8,22 @@ const REFRESH_INTERVAL_MS = 20 * 60 * 1000;
 // Minimum time between refreshes (prevent rapid refreshes)
 const MIN_REFRESH_GAP_MS = 5 * 60 * 1000;
 
+function clearTurnstileHintCookie(): void {
+  document.cookie = 'bsod_turnstile_verified=; Max-Age=0; path=/; SameSite=Lax';
+}
+
+export function hasTurnstileHint(): boolean {
+  return document.cookie
+    .split(';')
+    .some(cookie => cookie.trim().startsWith('bsod_turnstile_verified=true'));
+}
+
+export function clearSessionState(): void {
+  sessionInitialized = false;
+  lastRefreshTime = 0;
+  clearTurnstileHintCookie();
+}
+
 export async function initializeSession(force: boolean = false): Promise<boolean> {
   if (sessionInitialized && !force) {
     console.log('[Session] Already initialized, skipping');
@@ -25,6 +41,7 @@ export async function initializeSession(force: boolean = false): Promise<boolean
       const data = await response.json().catch(() => ({}));
       if (data.code === 'TURNSTILE_REQUIRED') {
         // This is expected - user needs to complete Turnstile first
+        clearSessionState();
         return false;
       }
       console.error('[Session] Init failed:', response.status, data);
@@ -50,16 +67,18 @@ export async function initializeSession(force: boolean = false): Promise<boolean
 export function handleSessionError(error: { code?: string; [key: string]: unknown }): boolean {
   if (error.code === 'NO_SESSION' || error.code === 'INVALID_SESSION') {
     // Session expired or invalid - need to re-initialize
-    sessionInitialized = false;
+    clearSessionState();
     return true;
+  }
+  if (error.code === 'TURNSTILE_REQUIRED') {
+    clearSessionState();
   }
   return false;
 }
 
 // Force reset session state (for manual recovery)
 export function resetSession(): void {
-  sessionInitialized = false;
-  lastRefreshTime = 0;
+  clearSessionState();
 }
 
 export function markSessionInitialized(): void {
@@ -89,7 +108,7 @@ async function refreshSession(): Promise<boolean> {
     }
 
     // Session invalid - mark for re-initialization
-    sessionInitialized = false;
+    clearSessionState();
     return false;
   } catch {
     // Network error - don't invalidate session, just skip refresh
