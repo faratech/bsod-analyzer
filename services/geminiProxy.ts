@@ -10,7 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
-import { analyzeWithWinDBG, WinDBGAnalysisResult, fetchCachedAnalysis, cacheAnalysis } from './windbgService';
+import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -1254,95 +1254,6 @@ export const analyzeDumpFiles = async (
         try {
             console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
 
-            // Fast path: If file is known to be cached, fetch directly without uploading
-            if (dumpFile.knownCached && dumpFile.fileHash) {
-                console.log('[Analyzer] File known to be cached, fetching directly...');
-                if (onProgress) {
-                    onProgress('downloading', 'Loading cached analysis...');
-                }
-
-                const cachedResult = await fetchCachedAnalysis(dumpFile.fileHash);
-
-                if (cachedResult.success) {
-                    // If we have a cached AI report, use it directly (skip AI call too)
-                    if (cachedResult.aiReport) {
-                        console.log('[Analyzer] Using fully cached result (WinDBG + AI)');
-                        if (onProgress) {
-                            onProgress('complete', 'Loaded from cache');
-                        }
-
-                        // Parse the cached AI report - it's stored as raw Gemini response
-                        let parsedReport: AnalysisReportData;
-                        try {
-                            const rawReport = cachedResult.aiReport as { text?: string };
-                            if (rawReport.text) {
-                                parsedReport = JSON.parse(rawReport.text);
-                            } else {
-                                // Fallback if already parsed
-                                parsedReport = cachedResult.aiReport as AnalysisReportData;
-                            }
-                        } catch (parseError) {
-                            console.error('[Analyzer] Failed to parse cached AI report:', parseError);
-                            // Fall through to WinDBG path or normal flow
-                            parsedReport = cachedResult.aiReport as AnalysisReportData;
-                        }
-
-                        // If we have the raw WinDBG analysis, parse and merge additional fields
-                        // This ensures new parsed fields are added to older cached reports
-                        if (cachedResult.windbgAnalysis && !parsedReport.rawWinDbgOutput) {
-                            console.log('[Analyzer] Enriching cached report with parsed WinDBG fields');
-                            const parsedFields = parseWinDbgOutput(cachedResult.windbgAnalysis);
-                            parsedReport = {
-                                ...parsedReport,
-                                ...parsedFields,
-                                systemInfo: { ...parsedReport.systemInfo, ...parsedFields.systemInfo }
-                            };
-                        }
-
-                        return {
-                            id: dumpFile.id,
-                            report: parsedReport,
-                            status: FileStatus.ANALYZED,
-                            cached: true,
-                            analysisMethod: 'windbg' as const
-                        };
-                    }
-
-                    // If we have cached WinDBG analysis, generate AI report from it
-                    if (cachedResult.windbgAnalysis) {
-                        console.log('[Analyzer] Using cached WinDBG analysis, generating AI report...');
-                        if (onProgress) {
-                            onProgress('analyzing', 'AI is interpreting the crash analysis...');
-                        }
-
-                        const windbgReport = await generateReportFromWinDBG(
-                            dumpFile.file.name,
-                            dumpFile.dumpType,
-                            dumpFile.file.size,
-                            cachedResult.windbgAnalysis,
-                            dumpFile.fileHash
-                        );
-
-                        // Update cache with the complete combined result
-                        if (dumpFile.fileHash) {
-                            cacheAnalysis(dumpFile.fileHash, cachedResult.windbgAnalysis, windbgReport)
-                                .catch(err => console.warn('[Analyzer] Failed to update combined cache:', err));
-                        }
-
-                        return {
-                            id: dumpFile.id,
-                            report: windbgReport,
-                            status: FileStatus.ANALYZED,
-                            cached: true,
-                            analysisMethod: 'windbg' as const
-                        };
-                    }
-                }
-
-                // Cache fetch failed, fall through to normal flow
-                console.log('[Analyzer] Cache fetch failed, falling back to normal flow...');
-            }
-
             const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
             console.log('[Analyzer] File buffer loaded, size:', fileBuffer.byteLength);
 
@@ -1374,12 +1285,6 @@ export const analyzeDumpFiles = async (
                         windbgResult.analysisText,
                         windbgResult.fileHash
                     );
-
-                    // Cache the combined result for future requests (only if fresh, not from cache)
-                    if (!windbgResult.cached && windbgResult.fileHash) {
-                        cacheAnalysis(windbgResult.fileHash, windbgResult.analysisText, windbgReport)
-                            .catch(err => console.warn('[Analyzer] Failed to cache combined analysis:', err));
-                    }
 
                     return {
                         id: dumpFile.id,

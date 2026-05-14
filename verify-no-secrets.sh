@@ -57,11 +57,13 @@ done
 # Check for .env files
 echo ""
 echo "Checking for environment files..."
-if [ -f ".env" ]; then
-    echo "  ❌ .env file exists! Remove it before going public!"
+ENV_FILES=$(find . -maxdepth 1 -type f -name ".env*" ! -name ".env.example" -print)
+if [ -n "$ENV_FILES" ]; then
+    echo "  ❌ Non-example environment file(s) exist. Remove them before publishing:"
+    echo "$ENV_FILES" | sed 's/^/     /'
     FOUND_ISSUES=$((FOUND_ISSUES + 1))
 else
-    echo "  ✅ No .env file found"
+    echo "  ✅ No non-example .env files found"
 fi
 
 # Check .gitignore

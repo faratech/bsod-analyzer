@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile from './CloudflareTurnstile';
+import { markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
 
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
@@ -131,6 +132,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
       if (result.success) {
         setIsVerified(true);
         setVerificationError(false);
+        markSessionInitialized();
+        startSessionRefresh();
 
         // Log successful verification
         console.log('Turnstile verified:', {

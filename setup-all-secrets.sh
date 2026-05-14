@@ -6,9 +6,12 @@ set -e
 
 # Configuration
 PROJECT_ID=${PROJECT_ID:-"project-bigfoot"}
+RUNTIME_SERVICE_ACCOUNT_NAME=${RUNTIME_SERVICE_ACCOUNT_NAME:-"bsod-analyzer-runtime"}
+RUNTIME_SERVICE_ACCOUNT="${RUNTIME_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 echo "🔐 Setting up all required secrets for BSOD Analyzer"
 echo "Project: ${PROJECT_ID}"
+echo "Runtime service account: ${RUNTIME_SERVICE_ACCOUNT}"
 echo ""
 
 # Function to create or update a secret
@@ -82,8 +85,42 @@ else
 fi
 echo ""
 
-# 4. Upstash Redis URL
-echo "4️⃣ Upstash Redis REST URL"
+# 4. External BSOD API Key
+echo "4️⃣ External BSOD API Key"
+if [ -z "$BSOD_API_KEY" ]; then
+    echo -n "Enter your external BSOD API Key (or press Enter to skip): "
+    read -r -s BSOD_KEY
+    echo ""
+else
+    BSOD_KEY="$BSOD_API_KEY"
+    echo "  Using provided BSOD API key from environment"
+fi
+if [ ! -z "$BSOD_KEY" ]; then
+    setup_secret "bsod-api-key" "$BSOD_KEY" "External BSOD API Key"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
+# 5. WinDBG API Key
+echo "5️⃣ WinDBG API Key"
+if [ -z "$WINDBG_API_KEY" ]; then
+    echo -n "Enter your WinDBG API Key (or press Enter to skip): "
+    read -r -s WINDBG_KEY
+    echo ""
+else
+    WINDBG_KEY="$WINDBG_API_KEY"
+    echo "  Using provided WinDBG API key from environment"
+fi
+if [ ! -z "$WINDBG_KEY" ]; then
+    setup_secret "windbg-api-key" "$WINDBG_KEY" "WinDBG API Key"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
+# 6. Upstash Redis URL
+echo "6️⃣ Upstash Redis REST URL"
 echo -n "Enter your Upstash Redis REST URL (or press Enter to skip): "
 read -r UPSTASH_URL
 echo ""
@@ -94,8 +131,8 @@ else
 fi
 echo ""
 
-# 5. Upstash Redis Token
-echo "5️⃣ Upstash Redis REST Token"
+# 7. Upstash Redis Token
+echo "7️⃣ Upstash Redis REST Token"
 echo -n "Enter your Upstash Redis REST Token (or press Enter to skip): "
 read -r -s UPSTASH_TOKEN
 echo ""
@@ -106,8 +143,8 @@ else
 fi
 echo ""
 
-# 6. Cloudflare Purge Token
-echo "6️⃣ Cloudflare Purge Token"
+# 8. Cloudflare Purge Token
+echo "8️⃣ Cloudflare Purge Token"
 echo -n "Enter your Cloudflare Purge Token (or press Enter to skip): "
 read -r -s CF_PURGE_TOKEN
 echo ""
@@ -118,8 +155,8 @@ else
 fi
 echo ""
 
-# 7. Cloudflare Zone ID
-echo "7️⃣ Cloudflare Zone ID"
+# 9. Cloudflare Zone ID
+echo "9️⃣ Cloudflare Zone ID"
 echo -n "Enter your Cloudflare Zone ID (or press Enter to skip): "
 read -r CF_ZONE_ID
 echo ""
@@ -130,25 +167,25 @@ else
 fi
 echo ""
 
-# Grant Cloud Run service account access to all secrets
-echo "🔓 Granting Cloud Run access to all secrets..."
-SERVICE_ACCOUNT=$(gcloud iam service-accounts list \
-    --filter="displayName:Compute Engine default service account" \
-    --format="value(email)" \
-    --project=${PROJECT_ID})
-
-if [ -z "$SERVICE_ACCOUNT" ]; then
-    PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)")
-    SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+# Create dedicated runtime service account
+echo "🔐 Ensuring dedicated Cloud Run runtime service account exists..."
+if ! gcloud iam service-accounts describe "${RUNTIME_SERVICE_ACCOUNT}" --project=${PROJECT_ID} >/dev/null 2>&1; then
+    gcloud iam service-accounts create "${RUNTIME_SERVICE_ACCOUNT_NAME}" \
+        --display-name="BSOD Analyzer Runtime" \
+        --project=${PROJECT_ID} >/dev/null
+    echo "  ✅ Created ${RUNTIME_SERVICE_ACCOUNT}"
+else
+    echo "  ℹ️  ${RUNTIME_SERVICE_ACCOUNT} already exists"
 fi
 
-echo "Using service account: ${SERVICE_ACCOUNT}"
+echo "🔓 Granting runtime access only to application runtime secrets..."
 
-# Grant access to each secret
-for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "upstash-redis-url" "upstash-redis-token" "cloudflare-purge-token" "cloudflare-zone-id"; do
+# Grant access to each runtime secret. Cloudflare purge secrets are intentionally
+# not granted to the runtime service account.
+for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "upstash-redis-url" "upstash-redis-token"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
-            --member="serviceAccount:${SERVICE_ACCOUNT}" \
+            --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
             --role="roles/secretmanager.secretAccessor" \
             --project=${PROJECT_ID} >/dev/null 2>&1
         echo "  ✅ Access granted for ${SECRET}"
@@ -161,6 +198,11 @@ echo "🔓 Granting Cloud Build access to Cloudflare secrets..."
 PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)" 2>/dev/null || echo "")
 if [ -n "$PROJECT_NUMBER" ]; then
     CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+    gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SERVICE_ACCOUNT}" \
+        --member="serviceAccount:${CLOUDBUILD_SA}" \
+        --role="roles/iam.serviceAccountUser" \
+        --project=${PROJECT_ID} >/dev/null 2>&1 || true
+    echo "  ✅ Cloud Build can deploy as ${RUNTIME_SERVICE_ACCOUNT}"
     for SECRET in "cloudflare-purge-token" "cloudflare-zone-id"; do
         if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
             gcloud secrets add-iam-policy-binding ${SECRET} \

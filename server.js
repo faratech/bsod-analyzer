@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GoogleGenAI } from '@google/genai';
 import compression from 'compression';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import crypto from 'crypto';
@@ -26,9 +26,7 @@ import {
   getCachedWinDBGAnalysis,
   setCachedWinDBGAnalysis,
   getCachedAnalysis,
-  setCachedAnalysis,
-  isAnalysisCached,
-  getCacheStats
+  isAnalysisCached
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -59,15 +57,150 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Trust proxy headers (required for Cloud Run)
-// Set to 2 to trust both Cloudflare and Cloud Run load balancer
-// This ensures req.ip extracts the real client IP from X-Forwarded-For
-app.set('trust proxy', 2);
+// Trust only the immediate Cloud Run proxy by default. If this service is moved
+// behind a Cloudflare-only ingress later, configure TRUST_PROXY_HOPS explicitly.
+const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 1);
 
-// Helper to get client IP - prefer Cloudflare's header for accuracy
+const MAX_RAW_FILE_SIZE = SECURITY_CONFIG.api.maxRawFileSize;
+const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
+const MAX_EXTRACTED_ARCHIVE_SIZE = SECURITY_CONFIG.api.maxExtractedArchiveSize;
+const DUMP_EXTENSIONS = ['.dmp', '.mdmp', '.hdmp', '.kdmp'];
+const ARCHIVE_EXTENSIONS = ['.zip', '.7z', '.rar'];
+const HASH_RE = /^[a-f0-9]{8,16}$/i;
+const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
+
+// Helper to get client IP. Do not trust CF-Connecting-IP unless ingress is
+// configured so direct run.app traffic cannot spoof it.
 function getClientIp(req) {
-  // Cloudflare provides the real client IP in CF-Connecting-IP header
-  // This is more reliable than parsing X-Forwarded-For
-  return req.headers['cf-connecting-ip'] || req.ip || req.connection.remoteAddress;
+  if (process.env.TRUST_CF_CONNECTING_IP === 'true' && typeof req.headers['cf-connecting-ip'] === 'string') {
+    return req.headers['cf-connecting-ip'];
+  }
+  return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+}
+
+function rateLimitKey(req) {
+  return ipKeyGenerator(getClientIp(req));
+}
+
+function jsonRateLimitHandler(req, res) {
+  res.status(429).json({
+    success: false,
+    error: 'Too many requests. Please try again later.',
+    code: 'RATE_LIMITED'
+  });
+}
+
+function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey }) {
+  return rateLimit({
+    windowMs,
+    max,
+    keyGenerator,
+    handler: jsonRateLimitHandler,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false
+  });
+}
+
+function createConcurrencyLimiter(max, code) {
+  let active = 0;
+  return (req, res, next) => {
+    if (active >= max) {
+      return res.status(429).json({
+        success: false,
+        error: 'Server is busy. Please retry shortly.',
+        code
+      });
+    }
+
+    active++;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        active = Math.max(0, active - 1);
+      }
+    };
+    res.once('finish', release);
+    res.once('close', release);
+    next();
+  };
+}
+
+function rejectLargeBody(limitBytes) {
+  return (req, res, next) => {
+    const contentLength = Number.parseInt(req.headers['content-length'] || '0', 10);
+    if (Number.isFinite(contentLength) && contentLength > limitBytes) {
+      return res.status(413).json({
+        success: false,
+        error: `Request too large. Maximum size is ${(limitBytes / 1024 / 1024).toFixed(0)}MB`,
+        code: 'REQUEST_TOO_LARGE'
+      });
+    }
+    next();
+  };
+}
+
+function safeToken(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
+}
+
+function timingSafeEqualString(a, b) {
+  const aHash = crypto.createHash('sha256').update(String(a || '')).digest();
+  const bHash = crypto.createHash('sha256').update(String(b || '')).digest();
+  return crypto.timingSafeEqual(aHash, bHash);
+}
+
+function sanitizeUploadFileName(fileName) {
+  const base = path.basename(String(fileName || 'upload.dmp'));
+  const cleaned = base.replace(/[\r\n"]/g, '_').replace(/[^\w.\-() ]+/g, '_').trim();
+  return cleaned || 'upload.dmp';
+}
+
+function getFileExtension(fileName) {
+  const ext = path.extname(String(fileName || '')).toLowerCase();
+  return ext;
+}
+
+function detectDumpMagic(buffer) {
+  const header = buffer.slice(0, 8).toString('ascii');
+  return header.startsWith('MDMP') || header.startsWith('PAGEDU64') || header.startsWith('PAGEDUMP') || header.startsWith('PAGE');
+}
+
+function validatePathEntry(entryPath, maxDepth = 4) {
+  const normalized = String(entryPath || '').replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || normalized.includes('\0')) return false;
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.some(part => part === '..' || part === '.')) return false;
+  return parts.length <= maxDepth;
+}
+
+function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } = {}) {
+  if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
+    return { valid: false, error: 'File is empty or invalid' };
+  }
+  if (fileBuffer.length > MAX_RAW_FILE_SIZE) {
+    return { valid: false, error: `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB` };
+  }
+
+  const ext = getFileExtension(fileName);
+  if (DUMP_EXTENSIONS.includes(ext)) {
+    if (!detectDumpMagic(fileBuffer)) {
+      return { valid: false, error: 'File does not appear to be a valid Windows dump' };
+    }
+    return { valid: true };
+  }
+
+  if (allowArchives && ARCHIVE_EXTENSIONS.includes(ext)) {
+    const archiveType = detectArchiveType(fileBuffer);
+    if (!archiveType) {
+      return { valid: false, error: 'Archive extension does not match archive signature' };
+    }
+    return { valid: true };
+  }
+
+  return { valid: false, error: 'Unsupported file type' };
 }
 
 // Initialize xxhash (awaited before server starts listening)
@@ -80,10 +213,8 @@ initCache();
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
   if (process.env.NODE_ENV === 'production') {
-    console.error('WARNING: SESSION_SECRET not set - using temporary secret. Sessions will be invalid on restart.');
-    // Use a temporary secret to allow the service to start
-    const TEMP_SECRET = crypto.randomBytes(32).toString('hex');
-    process.env.SESSION_SECRET = TEMP_SECRET;
+    console.error('FATAL: SESSION_SECRET must be configured in production.');
+    process.exit(1);
   }
 }
 // Use the secret (either from env or temporary)
@@ -100,6 +231,47 @@ const REQUEST_LIMIT_PER_SESSION = 50; // Max 50 requests per hour per session
 // dropped ~5x with the prompt/size-cap changes, so 50 × typical ~6K = ~300K, well under this cap.
 const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session
 
+// Track which hashes/jobs were proven by a session uploading the corresponding file.
+const sessionHashOwnership = new Map(); // sessionId -> Map(hash -> timestamp)
+const winDbgJobOwnership = new Map(); // uid -> { sessionId, fileHash, timestamp }
+const OWNERSHIP_EXPIRY = SESSION_EXPIRY;
+
+function markSessionHash(sessionId, hash) {
+  if (!sessionId || !hash || !HASH_RE.test(hash)) return;
+  let hashes = sessionHashOwnership.get(sessionId);
+  if (!hashes) {
+    hashes = new Map();
+    sessionHashOwnership.set(sessionId, hashes);
+  }
+  hashes.set(hash, Date.now());
+}
+
+function sessionOwnsHash(sessionId, hash) {
+  const hashes = sessionHashOwnership.get(sessionId);
+  if (!hashes || !hashes.has(hash)) return false;
+  if (Date.now() - hashes.get(hash) > OWNERSHIP_EXPIRY) {
+    hashes.delete(hash);
+    return false;
+  }
+  return true;
+}
+
+function markWinDbgJob(sessionId, uid, fileHash) {
+  if (!sessionId || !uid || !fileHash) return;
+  winDbgJobOwnership.set(uid, { sessionId, fileHash, timestamp: Date.now() });
+  markSessionHash(sessionId, fileHash);
+}
+
+function sessionOwnsWinDbgJob(sessionId, uid) {
+  const job = winDbgJobOwnership.get(uid);
+  if (!job || job.sessionId !== sessionId) return false;
+  if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
+    winDbgJobOwnership.delete(uid);
+    return false;
+  }
+  return true;
+}
+
 // ============================================================
 // External API Key Authentication
 // ============================================================
@@ -112,13 +284,13 @@ if (!BSOD_API_KEY) {
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB max
+    fileSize: MAX_RAW_FILE_SIZE,
     files: 1 // Single file only
   },
   fileFilter: (req, file, cb) => {
     // Accept dump files and archives
-    const allowedExtensions = ['.dmp', '.mdmp', '.hdmp', '.kdmp', '.zip', '.7z', '.rar'];
-    const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
+    const allowedExtensions = [...DUMP_EXTENSIONS, ...ARCHIVE_EXTENSIONS];
+    const ext = getFileExtension(file.originalname);
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
@@ -133,7 +305,17 @@ setInterval(() => {
   for (const [sessionId, data] of validSessions.entries()) {
     if (now - data.timestamp > SESSION_EXPIRY) {
       validSessions.delete(sessionId);
+      sessionHashOwnership.delete(sessionId);
     }
+  }
+  for (const [sessionId, hashes] of sessionHashOwnership.entries()) {
+    for (const [hash, timestamp] of hashes.entries()) {
+      if (now - timestamp > OWNERSHIP_EXPIRY) hashes.delete(hash);
+    }
+    if (hashes.size === 0) sessionHashOwnership.delete(sessionId);
+  }
+  for (const [uid, data] of winDbgJobOwnership.entries()) {
+    if (now - data.timestamp > OWNERSHIP_EXPIRY) winDbgJobOwnership.delete(uid);
   }
 }, 10 * 60 * 1000); // Clean every 10 minutes
 
@@ -207,8 +389,8 @@ const corsOptions = {
       return callback(null, true);
     }
     
-    // Allow file:// protocol origins
-    if (origin.startsWith('file://')) {
+    // Allow file:// only during local development.
+    if (process.env.NODE_ENV !== 'production' && origin.startsWith('file://')) {
       return callback(null, true);
     }
     
@@ -234,19 +416,9 @@ const corsOptions = {
     }
     
     // Default production origins
-    allowedOrigins.push(
-      'https://bsod.windowsforum.com',
-      'https://bsod-analyzer-ctlmwtcf5q-ue.a.run.app', // Cloud Run URL
-      'https://bsod-analyzer-399450330005.us-east1.run.app' // New Cloud Run URL
-    );
-    
-    // Allow any *.windowsforum.com subdomain (including www.)
-    const isWindowsForumDomain = origin && /^https:\/\/(www\.)?([a-z0-9-]+\.)?windowsforum\.com$/i.test(origin);
+    allowedOrigins.push('https://bsod.windowsforum.com');
 
-    // Allow any Cloud Run URL (*.run.app) - we control the deployment
-    const isCloudRunApp = origin && /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$/i.test(origin);
-
-    if (allowedOrigins.includes(origin) || isWindowsForumDomain || isCloudRunApp) {
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.warn(`CORS blocked origin: ${origin}`);
@@ -254,8 +426,8 @@ const corsOptions = {
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
   exposedHeaders: ['Content-Length', 'Content-Type'],
   maxAge: 86400, // Cache preflight for 24 hours
   preflightContinue: false,
@@ -273,6 +445,8 @@ app.use(cookieParser());
 const apiLimiter = rateLimit({
   windowMs: SECURITY_CONFIG.api.rateLimiting.windowMs,
   max: SECURITY_CONFIG.api.rateLimiting.maxRequests,
+  keyGenerator: rateLimitKey,
+  handler: jsonRateLimitHandler,
   message: SECURITY_CONFIG.api.rateLimiting.message,
   standardHeaders: true,
   legacyHeaders: false,
@@ -284,6 +458,26 @@ const apiLimiter = rateLimit({
     return req.path === '/health';
   }
 });
+
+const authLimiter = makeLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
+const cacheLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 120 });
+const geminiLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 40 });
+const windbgUploadLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+const windbgPollLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300 });
+const archiveLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
+const externalAnalyzeLimiter = makeLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => {
+    const apiKey = req.headers['x-api-key'];
+    return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
+  }
+});
+
+const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
+const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
+const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
+const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 
 app.use(compression({
   level: 6, // Compression level 1-9 (6 is good balance)
@@ -298,7 +492,7 @@ app.use(compression({
   }
 }));
 // Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
-const largeJsonParser = express.json({ limit: '150mb' });
+const largeJsonParser = express.json({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
 
 // Default JSON body limit for most API endpoints
 // Skip for routes that need larger payloads (they use largeJsonParser directly)
@@ -306,7 +500,7 @@ app.use((req, res, next) => {
   if (req.path === '/api/windbg/upload') {
     return next(); // Skip default parser, route will use largeJsonParser
   }
-  express.json({ limit: '10mb' })(req, res, next);
+  express.json({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` })(req, res, next);
 });
 
 // Precompute CSP header string once at startup (avoids rebuilding on every request)
@@ -479,7 +673,7 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
     };
   }
 
-  if (!token) {
+  if (!token || typeof token !== 'string' || token.length > 4096) {
     return { 
       success: false, 
       'error-codes': ['missing-input-response'],
@@ -488,8 +682,8 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
   }
 
   // Check if token was already used (prevent replay attacks)
-  if (usedTurnstileTokens.has(token) && !idempotencyKey) {
-    console.warn('Turnstile token already used:', token.substring(0, 20) + '...');
+  if (usedTurnstileTokens.has(token)) {
+    console.warn('Turnstile token replay blocked:', safeToken(token));
     return { 
       success: false, 
       'error-codes': ['timeout-or-duplicate'],
@@ -557,7 +751,7 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
 }
 
 // Generate session cookie
-function generateSessionCookie(ip) {
+function generateSessionCookie(ip, turnstileVerified = false) {
   if (!hasher) {
     console.error('XXHash not initialized when trying to generate session');
     throw new Error('XXHash not initialized');
@@ -572,7 +766,8 @@ function generateSessionCookie(ip) {
   validSessions.set(sessionId, {
     hash: sessionHash,
     timestamp,
-    ip
+    ip,
+    turnstileVerified
   });
   
   return {
@@ -619,7 +814,7 @@ function validateSession(sessionId, sessionHash, ip) {
     return { valid: false, reason: 'Invalid session hash' };
   }
   
-  return { valid: true };
+  return { valid: true, sessionData };
 }
 
 // Middleware to validate session for analyzer API
@@ -651,6 +846,9 @@ const requireSession = (req, res, next) => {
     });
     return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
   }
+  if (!validation.sessionData?.turnstileVerified) {
+    return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+  }
   
   // Refresh session timestamp — guard against the rare race where the cleanup interval
   // evicted the session between validateSession() and this lookup.
@@ -658,6 +856,10 @@ const requireSession = (req, res, next) => {
   if (sessionData) {
     sessionData.timestamp = Date.now();
   }
+
+  req.sessionId = sessionId;
+  req.sessionData = sessionData || validation.sessionData;
+  req.clientIp = clientIp;
 
   next();
 };
@@ -684,7 +886,7 @@ const requireApiKey = (req, res, next) => {
     });
   }
 
-  if (apiKey !== BSOD_API_KEY) {
+  if (typeof apiKey !== 'string' || !timingSafeEqualString(apiKey, BSOD_API_KEY)) {
     console.log('[API Auth] Invalid API key provided');
     return res.status(401).json({
       success: false,
@@ -701,16 +903,9 @@ const requireApiKey = (req, res, next) => {
 
 // Health check endpoint for Cloud Run (not rate limited)
 app.get('/health', async (req, res) => {
-  const cacheStats = await getCacheStats();
   res.status(200).json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
-    services: {
-      gemini: !!genAI,
-      turnstile: !!TURNSTILE_SECRET_KEY,
-      session: !!ACTUAL_SESSION_SECRET,
-      cache: cacheStats
-    }
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -718,13 +913,15 @@ app.get('/health', async (req, res) => {
 app.use('/api/', apiLimiter);
 
 // Endpoint to verify Turnstile and create session
-app.post('/api/auth/verify-turnstile', async (req, res) => {
+app.post('/api/auth/verify-turnstile', authLimiter, async (req, res) => {
   try {
-    const { token, action, cdata } = req.body;
+    const { token, action } = req.body;
     const clientIp = getClientIp(req);
     
-    // Generate idempotency key for this request
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = typeof req.body?.idempotencyKey === 'string' &&
+      /^[a-f0-9-]{16,64}$/i.test(req.body.idempotencyKey)
+      ? req.body.idempotencyKey
+      : null;
     
     // Verify the Turnstile token with Siteverify
     const verification = await verifyTurnstileToken(token, clientIp, idempotencyKey);
@@ -734,7 +931,7 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
       console.error('Turnstile Siteverify failed:', {
         'error-codes': verification['error-codes'],
         clientIp,
-        tokenPrefix: token ? token.substring(0, 20) + '...' : 'none'
+        tokenHash: token ? safeToken(token) : 'none'
       });
       
       // Return appropriate error based on error codes
@@ -763,11 +960,17 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
       });
     }
     
-    // Validate expected action if provided
-    if (action && verification.action !== action) {
+    // Validate expected action.
+    if (action !== TURNSTILE_ACTION || verification.action !== TURNSTILE_ACTION) {
       console.warn('Turnstile action mismatch:', {
-        expected: action,
+        expected: TURNSTILE_ACTION,
+        requested: action,
         received: verification.action
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'Security verification action mismatch',
+        code: 'TURNSTILE_ACTION_MISMATCH'
       });
     }
     
@@ -775,18 +978,30 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
     const expectedHostnames = [
       'localhost',
       'bsod.windowsforum.com',
-      process.env.ALLOWED_HOSTNAME
-    ].filter(Boolean);
+      ...(process.env.ALLOWED_TURNSTILE_HOSTNAMES || process.env.ALLOWED_HOSTNAME || '')
+        .split(',')
+        .map(host => host.trim())
+        .filter(Boolean)
+    ];
     
     if (verification.hostname && !expectedHostnames.includes(verification.hostname)) {
       console.warn('Unexpected hostname in Turnstile response:', verification.hostname);
+      return res.status(400).json({
+        success: false,
+        error: 'Security verification hostname mismatch',
+        code: 'TURNSTILE_HOSTNAME_MISMATCH'
+      });
     }
     
     // If verification successful, create session
-    const { sessionId, sessionHash } = generateSessionCookie(clientIp);
+    const { sessionId, sessionHash } = generateSessionCookie(clientIp, true);
 
     const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
-    res.cookie('bsod_turnstile_verified', 'true', { ...cookieOptions, maxAge: 2 * 60 * 60 * 1000 }); // 2 hours
+    res.cookie('bsod_turnstile_verified', 'true', {
+      ...cookieOptions,
+      httpOnly: false,
+      maxAge: 2 * 60 * 60 * 1000
+    }); // UI hint only; server authorization still requires the signed session cookies.
     
     // Return success with verification details
     res.json({ 
@@ -806,32 +1021,35 @@ app.post('/api/auth/verify-turnstile', async (req, res) => {
 
 // Signing key endpoint removed - signature validation simplified
 
-// Endpoint to get session cookie (called when user visits analyzer page)
-app.get('/api/auth/session', async (req, res) => {
+// Endpoint to refresh an existing verified session. It deliberately does not
+// mint sessions; Turnstile verification is the only session creation path.
+app.get('/api/auth/session', authLimiter, async (req, res) => {
   try {
-    // Ensure XXHash is initialized
-    if (!hasher) {
-      console.log('Waiting for XXHash to initialize...');
-      await new Promise(resolve => setTimeout(resolve, 100));
-      if (!hasher) {
-        return res.status(503).json({ error: 'Session service not ready' });
-      }
-    }
+    const sessionId = req.cookies.bsod_session_id;
+    const sessionHash = req.cookies.bsod_session_hash;
     const clientIp = getClientIp(req);
-    const { sessionId, sessionHash } = generateSessionCookie(clientIp);
 
-    console.log('Creating session:', {
-      sessionIdPrefix: sessionId.substring(0, 10) + '...',
-      clientIp,
-      cookieDomain: req.get('host')
+    if (!sessionId || !sessionHash) {
+      return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+    }
+
+    const validation = validateSession(sessionId, sessionHash, clientIp);
+    if (!validation.valid || !validation.sessionData?.turnstileVerified) {
+      return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+    }
+
+    validation.sessionData.timestamp = Date.now();
+    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
+    res.cookie('bsod_turnstile_verified', 'true', {
+      ...cookieOptions,
+      httpOnly: false,
+      maxAge: 2 * 60 * 60 * 1000
     });
-
-    setSessionCookies(res, sessionId, sessionHash);
     
     res.json({ success: true });
   } catch (error) {
-    console.error('Session generation error:', error);
-    res.status(500).json({ error: 'Failed to create session' });
+    console.error('Session refresh error:', error);
+    res.status(500).json({ error: 'Failed to refresh session' });
   }
 });
 
@@ -918,7 +1136,7 @@ function validateBSODPrompt(contents) {
 }
 
 // Proxy endpoint for Gemini API calls - now requires session
-app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
+app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, async (req, res) => {
   try {
     // Check if Gemini AI is configured
     if (!genAI) {
@@ -934,7 +1152,7 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
         error: `Request too large. Maximum size is ${SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024}MB` 
       });
     }
-    const { contents, generationConfig, safetySettings, config, fileHash } = req.body;
+    const { contents, generationConfig, config, fileHash } = req.body;
     const sessionId = req.cookies.bsod_session_id;
 
     // Security: Session validation is handled by requireSession middleware
@@ -1003,17 +1221,19 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
       });
     }
 
-    // Check cache using fileHash if provided (consistent with WinDBG cache)
-    const cacheKey = fileHash || hashContent(requestText);
+    // Check cache using fileHash only after the session has proven ownership by
+    // uploading that exact file. Otherwise fall back to the prompt hash.
+    const ownedFileHash = typeof fileHash === 'string' && HASH_RE.test(fileHash) && sessionOwnsHash(req.sessionId, fileHash);
+    const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
     const cachedResponse = await getCachedAIReport(cacheKey);
     if (cachedResponse) {
-      log.info('gemini.cache.hit', { keyed: fileHash ? 'fileHash' : 'prompt', fileHash });
+      log.info('gemini.cache.hit', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
       return res.json({
         ...cachedResponse,
         cached: true
       });
     }
-    log.info('gemini.cache.miss', { keyed: fileHash ? 'fileHash' : 'prompt', fileHash });
+    log.info('gemini.cache.miss', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
 
     // Increment request count and token usage
     sessionTracking.count++;
@@ -1032,19 +1252,21 @@ app.post('/api/gemini/generateContent', requireSession, async (req, res) => {
     for (const key of ALLOWED_CONFIG_KEYS) {
       if (frontendConfig[key] !== undefined) sdkConfig[key] = frontendConfig[key];
     }
-
-    // Translate legacy Google Search tool name (googleSearchRetrieval) to the new
-    // googleSearch tool shape. Accept either from clients for backward compatibility.
-    const rawTools = req.body.tools || frontendConfig.tools || [];
-    const clientTools = rawTools.map(tool => {
-      if (tool.googleSearchRetrieval || tool.google_search_retrieval || tool.googleSearch) {
-        return { googleSearch: tool.googleSearch || tool.googleSearchRetrieval || tool.google_search_retrieval || {} };
-      }
-      return tool;
-    });
-    if (clientTools.length > 0) sdkConfig.tools = clientTools;
-
-    if (safetySettings) sdkConfig.safetySettings = safetySettings;
+    if (typeof sdkConfig.maxOutputTokens === 'number') {
+      sdkConfig.maxOutputTokens = Math.min(Math.max(Math.floor(sdkConfig.maxOutputTokens), 256), 4096);
+    }
+    if (typeof sdkConfig.temperature === 'number') {
+      sdkConfig.temperature = Math.min(Math.max(sdkConfig.temperature, 0), 1);
+    }
+    if (typeof sdkConfig.candidateCount === 'number') {
+      sdkConfig.candidateCount = 1;
+    }
+    if (sdkConfig.responseMimeType && sdkConfig.responseMimeType !== 'application/json') {
+      delete sdkConfig.responseMimeType;
+    }
+    if (sdkConfig.responseSchema && JSON.stringify(sdkConfig.responseSchema).length > 32768) {
+      delete sdkConfig.responseSchema;
+    }
 
     // SECURITY: enforce BSOD-only analysis (defense-in-depth).
     sdkConfig.systemInstruction = 'You analyze Windows crash dumps (BSOD / kernel) only: bug-check codes, drivers, modules, stacks, kernel debugging. For any other request, respond exactly: "Error: This service only analyzes Windows crash dumps".';
@@ -1108,14 +1330,21 @@ if (!WINDBG_API_KEY) {
 
 // Get cached analysis by file hash (skip upload for known-cached files)
 // Returns combined WinDBG analysis and AI report from single cache key
-app.get('/api/cache/get', requireSession, async (req, res) => {
+app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
   try {
     const { hash } = req.query;
 
-    if (!hash || typeof hash !== 'string' || !/^[a-f0-9]{8,16}$/i.test(hash)) {
+    if (!hash || typeof hash !== 'string' || !HASH_RE.test(hash)) {
       return res.status(400).json({
         success: false,
         error: 'Invalid or missing hash parameter'
+      });
+    }
+    if (!sessionOwnsHash(req.sessionId, hash)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Cache entry is not available for this session',
+        code: 'CACHE_FORBIDDEN'
       });
     }
 
@@ -1148,51 +1377,18 @@ app.get('/api/cache/get', requireSession, async (req, res) => {
   }
 });
 
-// Store combined analysis (WinDBG + AI report) in cache
-app.post('/api/cache/set', express.json({ limit: '5mb' }), requireSession, async (req, res) => {
-  try {
-    const { fileHash, windbgOutput, aiReport } = req.body;
-
-    if (!fileHash || typeof fileHash !== 'string' || !/^[a-f0-9]{8,16}$/i.test(fileHash)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid or missing fileHash'
-      });
-    }
-
-    if (!windbgOutput && !aiReport) {
-      return res.status(400).json({
-        success: false,
-        error: 'Must provide at least windbgOutput or aiReport'
-      });
-    }
-
-    const success = await setCachedAnalysis(fileHash, {
-      windbgOutput: windbgOutput || null,
-      aiReport: aiReport || null
-    });
-
-    if (success) {
-      console.log(`[Cache] SET combined analysis for hash ${fileHash.substring(0, 12)}...`);
-      return res.json({ success: true });
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to cache analysis'
-    });
-  } catch (error) {
-    console.error('[Cache] Error setting cache:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to cache analysis'
-    });
-  }
+// Client-side cache writes are disabled to prevent cache poisoning. Cache writes
+// happen server-side after validated WinDBG/Gemini work.
+app.post('/api/cache/set', cacheLimiter, requireSession, async (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: 'Client cache writes are disabled',
+    code: 'CACHE_WRITE_DISABLED'
+  });
 });
 
 // Check cache for file hashes (pre-upload detection)
-// No session required - read-only lookup by hash, doesn't expose sensitive data
-app.post('/api/cache/check', express.json(), async (req, res) => {
+app.post('/api/cache/check', cacheLimiter, requireSession, async (req, res) => {
   try {
     const { hashes } = req.body;
 
@@ -1209,7 +1405,7 @@ app.post('/api/cache/check', express.json(), async (req, res) => {
 
     // Check each hash against the combined cache (with legacy fallback)
     const checkPromises = hashesToCheck
-      .filter(hash => typeof hash === 'string' && /^[a-f0-9]{8,16}$/i.test(hash))
+      .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
         results[hash] = await isAnalysisCached(hash);
       });
@@ -1237,6 +1433,7 @@ app.post('/api/cache/check', express.json(), async (req, res) => {
 function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
   const boundary = '----WinDBGBoundary' + Date.now();
   const CRLF = '\r\n';
+  const safeFileName = sanitizeUploadFileName(fileName);
 
   let body = '';
   body += `--${boundary}${CRLF}`;
@@ -1246,7 +1443,7 @@ function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
   body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
   body += `${uid}${CRLF}`;
 
-  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${safeFileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
   const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
 
   const fullBody = Buffer.concat([
@@ -1261,7 +1458,7 @@ function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
 
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
-app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res) => {
+app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, largeJsonParser, requireSession, async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
@@ -1270,7 +1467,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
       });
     }
 
-    const { uid, fileData, fileName } = req.body;
+    let { uid, fileData, fileName } = req.body;
 
     if (!uid || !fileData || !fileName) {
       return res.status(400).json({
@@ -1278,9 +1475,34 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
         error: 'Missing required fields: uid, fileData, fileName'
       });
     }
+    if (typeof uid !== 'string' || !HASH_RE.test(uid) || typeof fileData !== 'string' || typeof fileName !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid upload fields'
+      });
+    }
+    fileName = sanitizeUploadFileName(fileName);
 
     // Convert base64 file data to buffer
     const fileBuffer = Buffer.from(fileData, 'base64');
+    const validation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: false });
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: validation.error
+      });
+    }
+
+    const serverHash = hashContent(fileBuffer);
+    if (uid !== serverHash) {
+      log.warn('windbg.uid_mismatch', {
+        supplied: uid.substring(0, 12),
+        computed: serverHash.substring(0, 12),
+        sessionId: req.sessionId?.substring(0, 10) + '...'
+      });
+    }
+    uid = serverHash;
+    markSessionHash(req.sessionId, uid);
 
     // UID is now the file hash (computed client-side), use it directly for caching
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
@@ -1293,7 +1515,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
         success: true,
         cached: true,
         cachedAnalysis: cachedAnalysis.windbgOutput,
-        data: { queue_position: 0 }
+        data: { uid, queue_position: 0 }
       });
     }
 
@@ -1320,6 +1542,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
     // Check if analysis is complete and cache it if so
     if (response.status === 409) {
       console.log('[WinDBG] UID already exists, checking if analysis is complete...');
+      markWinDbgJob(req.sessionId, uid, uid);
 
       try {
         // Check status on WinDBG server
@@ -1380,6 +1603,9 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
       throw new Error(`Failed to parse WinDBG response: ${responseText}`);
     }
     console.log('[WinDBG] Upload response:', result.success ? 'success' : 'failed');
+    if (result.success) {
+      markWinDbgJob(req.sessionId, uid, uid);
+    }
 
     res.json(result);
   } catch (error) {
@@ -1392,7 +1618,7 @@ app.post('/api/windbg/upload', largeJsonParser, requireSession, async (req, res)
 });
 
 // Poll WinDBG status
-app.get('/api/windbg/status', requireSession, async (req, res) => {
+app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
@@ -1403,10 +1629,17 @@ app.get('/api/windbg/status', requireSession, async (req, res) => {
 
     const { uid } = req.query;
 
-    if (!uid) {
+    if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required parameter: uid'
+        error: 'Invalid or missing parameter: uid'
+      });
+    }
+    if (!sessionOwnsWinDbgJob(req.sessionId, uid)) {
+      return res.status(403).json({
+        success: false,
+        error: 'WinDBG job is not available for this session',
+        code: 'WINDBG_FORBIDDEN'
       });
     }
 
@@ -1444,7 +1677,7 @@ app.get('/api/windbg/status', requireSession, async (req, res) => {
 });
 
 // Download WinDBG analysis result
-app.get('/api/windbg/download', requireSession, async (req, res) => {
+app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
@@ -1455,10 +1688,17 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
 
     const { uid } = req.query;
 
-    if (!uid) {
+    if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required parameter: uid'
+        error: 'Invalid or missing parameter: uid'
+      });
+    }
+    if (!sessionOwnsWinDbgJob(req.sessionId, uid)) {
+      return res.status(403).json({
+        success: false,
+        error: 'WinDBG job is not available for this session',
+        code: 'WINDBG_FORBIDDEN'
       });
     }
 
@@ -1495,7 +1735,7 @@ app.get('/api/windbg/download', requireSession, async (req, res) => {
 // ============================================================
 // Archive Extraction Endpoint (7z/RAR)
 // ============================================================
-app.post('/api/extract-archive', requireSession, upload.single('file'), async (req, res) => {
+app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), archiveConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -1505,7 +1745,14 @@ app.post('/api/extract-archive', requireSession, upload.single('file'), async (r
     }
 
     const buffer = req.file.buffer;
-    const fileName = req.file.originalname || 'archive';
+    const fileName = sanitizeUploadFileName(req.file.originalname || 'archive');
+    const validation = validateUploadedBuffer(buffer, fileName, { allowArchives: true });
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: validation.error
+      });
+    }
     const archiveType = detectArchiveType(buffer);
 
     if (!archiveType || archiveType === 'zip') {
@@ -1518,6 +1765,13 @@ app.post('/api/extract-archive', requireSession, upload.single('file'), async (r
     console.log(`[Archive] Extracting ${archiveType} archive: ${fileName} (${buffer.length} bytes)`);
 
     const extractedDumps = await extractDumpsFromArchive(buffer, fileName, archiveType);
+    const totalExtractedSize = extractedDumps.reduce((sum, dump) => sum + dump.buffer.length, 0);
+    if (totalExtractedSize > MAX_EXTRACTED_ARCHIVE_SIZE) {
+      return res.status(400).json({
+        success: false,
+        error: `Extracted files are too large (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_ARCHIVE_SIZE / 1024 / 1024).toFixed(0)}MB.`
+      });
+    }
 
     if (extractedDumps.length === 0) {
       return res.status(400).json({
@@ -1567,7 +1821,7 @@ const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout
  */
 function generateWinDBGUID() {
   const timestamp = Date.now();
-  const random = Math.random().toString(36).substring(2, 8);
+  const random = crypto.randomBytes(6).toString('hex');
   return `API-${timestamp}-${random}`;
 }
 
@@ -1822,23 +2076,47 @@ function detectDumpType(fileBuffer) {
 }
 
 // Extract dump files from ZIP archive
-const DUMP_EXTENSIONS = ['.dmp', '.mdmp', '.hdmp', '.kdmp'];
-
 async function extractDumpsFromZip(zipBuffer, originalName) {
   const results = [];
 
   try {
     const zip = await JSZip.loadAsync(zipBuffer);
+    let fileCount = 0;
+    let totalExtractedSize = 0;
 
     for (const [path, file] of Object.entries(zip.files)) {
       if (file.dir) continue;
+      fileCount++;
+      if (fileCount > 20) {
+        throw new Error('ZIP contains too many files. Maximum is 20.');
+      }
+      if (!validatePathEntry(path)) {
+        throw new Error('ZIP contains an unsafe path');
+      }
 
       const lowerPath = path.toLowerCase();
       const isDump = DUMP_EXTENSIONS.some(ext => lowerPath.endsWith(ext));
 
       if (isDump) {
+        const listedSize = file._data?.uncompressedSize;
+        if (Number.isFinite(listedSize)) {
+          totalExtractedSize += listedSize;
+          if (totalExtractedSize > MAX_EXTRACTED_ARCHIVE_SIZE) {
+            throw new Error(`ZIP extraction size exceeds ${(MAX_EXTRACTED_ARCHIVE_SIZE / 1024 / 1024).toFixed(0)}MB.`);
+          }
+        }
         const content = await file.async('nodebuffer');
-        const fileName = path.split('/').pop();
+        if (!Number.isFinite(listedSize)) {
+          totalExtractedSize += content.length;
+        }
+        if (totalExtractedSize > MAX_EXTRACTED_ARCHIVE_SIZE) {
+          throw new Error(`ZIP extraction size exceeds ${(MAX_EXTRACTED_ARCHIVE_SIZE / 1024 / 1024).toFixed(0)}MB.`);
+        }
+        const fileName = sanitizeUploadFileName(path.split('/').pop());
+        const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
+        if (!validation.valid) {
+          throw new Error(`Invalid dump inside ZIP: ${validation.error}`);
+        }
         results.push({
           fileName,
           buffer: content,
@@ -1856,6 +2134,8 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
 
 const ARCHIVE_SIGNATURES = [
   { type: 'zip', bytes: [0x50, 0x4B, 0x03, 0x04] },
+  { type: 'zip', bytes: [0x50, 0x4B, 0x05, 0x06] },
+  { type: 'zip', bytes: [0x50, 0x4B, 0x07, 0x08] },
   { type: '7z',  bytes: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] },
   { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01] }, // RAR v5
   { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00] }, // RAR v4
@@ -1889,7 +2169,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
     fs.mkdirSync(extractDir);
 
     // Archive bomb checks
-    const MAX_EXTRACTED_SIZE = 200 * 1024 * 1024; // 200MB
+    const MAX_EXTRACTED_SIZE = MAX_EXTRACTED_ARCHIVE_SIZE;
     const MAX_FILE_COUNT = 20;
     const MAX_COMPRESSION_RATIO = 100;
 
@@ -1908,9 +2188,25 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
         throw new Error(`Failed to read RAR archive: ${err.stderr || err.message}`);
       }
 
+      let pathOutput;
+      try {
+        pathOutput = await execFileAsync('bsdtar', ['tf', archivePath], { timeout: 15000 });
+      } catch (err) {
+        throw new Error(`Failed to read RAR archive paths: ${err.stderr || err.message}`);
+      }
+      const listedPaths = pathOutput.stdout.trim().split('\n').filter(Boolean);
+      for (const entryPath of listedPaths) {
+        if (!validatePathEntry(entryPath)) {
+          throw new Error('Archive contains an unsafe path');
+        }
+      }
+
       const fileList = listOutput.stdout.trim().split('\n').filter(f => f.length > 0);
       let totalListedSize = 0;
       for (const line of fileList) {
+        if (/^\s*l/.test(line)) {
+          throw new Error('Archive contains symbolic links, which are not supported');
+        }
         const columns = line.trim().split(/\s+/);
         // Expected bsdtar -tvf shape: mode links owner group size date... name
         const size = Number.parseInt(columns[4], 10);
@@ -1921,7 +2217,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       }
 
       if (totalListedSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalListedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+        throw new Error(`Archive too large when extracted (${(totalListedSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
       }
       if (fileList.length > MAX_FILE_COUNT) {
         throw new Error(`Archive contains too many files (${fileList.length}). Maximum is ${MAX_FILE_COUNT}.`);
@@ -1956,7 +2252,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       checkSize(extractDir);
 
       if (totalSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+        throw new Error(`Archive too large when extracted (${(totalSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
       }
       if (buffer.length > 0 && totalSize / buffer.length > MAX_COMPRESSION_RATIO) {
         throw new Error('Archive compression ratio too high — possible archive bomb');
@@ -1975,8 +2271,17 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       }
 
       const sizeMatches = listOutput.stdout.matchAll(/^Size = (\d+)$/gm);
+      const pathMatches = listOutput.stdout.matchAll(/^Path = (.+)$/gm);
       let totalExtractedSize = 0;
       let fileCount = 0;
+
+      for (const match of pathMatches) {
+        const entryPath = match[1];
+        if (entryPath === archivePath || entryPath === path.basename(archivePath)) continue;
+        if (!validatePathEntry(entryPath)) {
+          throw new Error('Archive contains an unsafe path');
+        }
+      }
 
       for (const match of sizeMatches) {
         totalExtractedSize += parseInt(match[1], 10);
@@ -1984,7 +2289,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
       }
 
       if (totalExtractedSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`);
+        throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
       }
       if (fileCount > MAX_FILE_COUNT) {
         throw new Error(`Archive contains too many files (${fileCount}). Maximum is ${MAX_FILE_COUNT}.`);
@@ -2023,16 +2328,23 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 
         // Defense in depth: still verify the resolved path stays within realExtractDir.
         const realPath = fs.realpathSync(fullPath);
-        if (!realPath.startsWith(realExtractDir)) {
+        if (realPath !== realExtractDir && !realPath.startsWith(realExtractDir + path.sep)) {
           console.warn('[Archive] Path traversal detected, skipping:', fullPath);
           continue;
         }
         if (entry.isDirectory()) {
           findDmpFiles(fullPath);
         } else if (DUMP_EXTENSIONS.some(ext => entry.name.toLowerCase().endsWith(ext))) {
+          const content = fs.readFileSync(fullPath);
+          const fileName = sanitizeUploadFileName(entry.name);
+          const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
+          if (!validation.valid) {
+            console.warn('[Archive] Invalid dump skipped:', validation.error);
+            continue;
+          }
           results.push({
-            fileName: entry.name,
-            buffer: fs.readFileSync(fullPath),
+            fileName,
+            buffer: content,
             originalArchive: originalName
           });
         }
@@ -2052,7 +2364,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 }
 
 // Main external API endpoint
-app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) => {
+app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -2066,9 +2378,18 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
     }
 
     let fileBuffer = req.file.buffer;
-    let fileName = req.file.originalname || 'upload.dmp';
+    let fileName = sanitizeUploadFileName(req.file.originalname || 'upload.dmp');
     const originalFileSize = fileBuffer.length;
     let originalZip = null;
+
+    const initialValidation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: true });
+    if (!initialValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: initialValidation.error,
+        code: 'INVALID_FILE'
+      });
+    }
 
     console.log(`[API/Analyze] Received file: ${fileName} (${originalFileSize} bytes)`);
 
@@ -2096,8 +2417,17 @@ app.post('/api/analyze', requireApiKey, upload.single('file'), async (req, res) 
       const firstDump = extractedDumps[0];
       console.log(`[API/Analyze] Found ${extractedDumps.length} dump(s), analyzing: ${firstDump.fileName}`);
       originalZip = fileName;
-      fileName = firstDump.fileName;
+      fileName = sanitizeUploadFileName(firstDump.fileName);
       fileBuffer = firstDump.buffer;
+    }
+
+    const dumpValidation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: false });
+    if (!dumpValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: dumpValidation.error,
+        code: 'INVALID_DUMP'
+      });
     }
 
     const fileSize = fileBuffer.length;

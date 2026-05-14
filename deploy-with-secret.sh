@@ -8,6 +8,7 @@ set -e
 PROJECT_ID=${PROJECT_ID:-"project-bigfoot"}
 REGION=${REGION:-"us-east1"}
 SERVICE_NAME=${SERVICE_NAME:-"bsod-analyzer"}
+RUNTIME_SERVICE_ACCOUNT=${RUNTIME_SERVICE_ACCOUNT:-"bsod-analyzer-runtime@${PROJECT_ID}.iam.gserviceaccount.com"}
 
 echo "🚀 Deploying BSOD Analyzer to Google Cloud Run"
 echo "Project: ${PROJECT_ID}"
@@ -21,13 +22,15 @@ gcloud run deploy ${SERVICE_NAME} \
   --platform managed \
   --region ${REGION} \
   --allow-unauthenticated \
+  --service-account ${RUNTIME_SERVICE_ACCOUNT} \
   --port 8080 \
+  --concurrency 2 \
   --max-instances 10 \
   --min-instances 0 \
-  --memory 512Mi \
+  --memory 1Gi \
   --cpu 1 \
   --set-env-vars NODE_ENV=production \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
+  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
   --project ${PROJECT_ID}
 
 # Get the service URL
