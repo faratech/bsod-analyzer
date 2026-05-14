@@ -199,11 +199,21 @@ export async function fetchCachedAnalysis(hash: string): Promise<CachedAnalysisR
         console.log(`[WinDBG] Fetching cached analysis for hash: ${hash}`);
 
         const response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
-            credentials: 'include'
+            credentials: 'include',
+            cache: 'no-store'
         });
 
         if (!response.ok) {
-            throw new Error(`Cache fetch failed: ${response.status}`);
+            let errorData: { error?: string; code?: string; [key: string]: unknown } = {};
+            try {
+                errorData = await response.json();
+            } catch {
+                // Non-JSON response; keep the HTTP status in the thrown error.
+            }
+            if (response.status === 401) {
+                handleSessionError(errorData);
+            }
+            throw new Error(errorData.error || `Cache fetch failed: ${response.status}`);
         }
 
         const data = await response.json();

@@ -1495,11 +1495,18 @@ app.post('/api/cache/check', cacheLimiter, requireSession, async (req, res) => {
     const hashesToCheck = hashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the combined cache (with legacy fallback)
+    // Check each hash against the combined cache (with legacy fallback).
+    // A cache hit means this Turnstile-verified session presented the exact
+    // client-side content hash, so allow it to fetch that cached result without
+    // re-uploading the dump just to establish ownership.
     const checkPromises = hashesToCheck
       .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
-        results[hash] = await isAnalysisCached(hash);
+        const cached = await isAnalysisCached(hash);
+        results[hash] = cached;
+        if (cached) {
+          await markSessionHash(req.sessionId, hash);
+        }
       });
 
     await Promise.all(checkPromises);
@@ -2733,8 +2740,8 @@ async function startServer() {
       // Preload the main JS entry and CSS — these are render-critical
       const mainJs = files.find(f => f.match(/^index-.*\.js$/));
       const mainCss = files.find(f => f.match(/^index-.*\.css$/));
-      if (mainCss) links.push(`</assets/${mainCss}>; rel=preload; as=style`);
-      if (mainJs) links.push(`</assets/${mainJs}>; rel=modulepreload`);
+      if (mainCss) links.push(`</assets/${mainCss}>; rel=preload; as=style; crossorigin`);
+      if (mainJs) links.push(`</assets/${mainJs}>; rel=modulepreload; crossorigin`);
       if (links.length) {
         earlyHintsLinkHeader = links.join(', ');
         console.log(`Early Hints Link header: ${earlyHintsLinkHeader}`);

@@ -58,19 +58,15 @@ export const useAnalysis = () => {
             )
         );
 
-        // Cached files still upload once so the server can prove hash ownership
-        // before returning cached analysis.
-        const allCached = false;
+        const allCached = filesToAnalyze.every(df => df.knownCached && df.fileHash);
 
-        // Initialize progress tracking (skip for fully cached analyses)
+        // Initialize progress tracking
         const startTime = Date.now();
-        if (!allCached) {
-            setProgress({
-                stage: 'uploading',
-                message: 'Preparing analysis...',
-                startTime
-            });
-        }
+        setProgress({
+            stage: allCached ? 'downloading' : 'uploading',
+            message: allCached ? 'Loading cached analysis...' : 'Preparing analysis...',
+            startTime
+        });
 
         try {
             // Track analysis start for each file
@@ -80,8 +76,7 @@ export const useAnalysis = () => {
                 });
             }
 
-            // Progress callback for WinDBG stages (skip for fully cached analyses)
-            const onProgress = allCached ? undefined : (stage: AnalysisStage, message: string) => {
+            const onProgress = (stage: AnalysisStage, message: string) => {
                 setProgress(prev => ({
                     stage,
                     message,
@@ -172,9 +167,10 @@ export const useAnalysis = () => {
         clearError();
 
         const startTime = Date.now();
+        const cachedRetry = !!(fileToRetry.knownCached && fileToRetry.fileHash);
         setProgress({
-            stage: 'uploading',
-            message: 'Preparing analysis...',
+            stage: cachedRetry ? 'downloading' : 'uploading',
+            message: cachedRetry ? 'Loading cached analysis...' : 'Preparing analysis...',
             startTime
         });
 
@@ -192,7 +188,7 @@ export const useAnalysis = () => {
                 }));
             };
 
-            const onUploadProgress = (percent: number) => {
+            const onUploadProgress = cachedRetry ? undefined : (percent: number) => {
                 setProgress(prev => prev ? { ...prev, percentage: percent } : null);
             };
 
