@@ -16,6 +16,7 @@ import { promisify } from 'util';
 import os from 'os';
 import multer from 'multer';
 import JSZip from 'jszip';
+import net from 'net';
 
 const execFileAsync = promisify(execFile);
 import {
@@ -59,11 +60,13 @@ const log = {
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Trust proxy headers (required for Cloud Run)
-// Trust only the immediate Cloud Run proxy by default. If this service is moved
-// behind a Cloudflare-only ingress later, configure TRUST_PROXY_HOPS explicitly.
-const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
-app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 1);
+// Trust proxy headers (required for Cloud Run). With Cloudflare in front of
+// Cloud Run, the X-Forwarded-For chain is [user-ip, cloudflare-edge-ip] as the
+// platform appends its view of the connecting peer. TRUST_PROXY_HOPS defaults
+// to 2 to walk past both hops; CF-Connecting-IP (set by Cloudflare) is treated
+// as authoritative in getClientIp regardless.
+const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '2', 10);
+app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2);
 
 const MAX_RAW_FILE_SIZE = SECURITY_CONFIG.api.maxRawFileSize;
 const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
@@ -73,13 +76,93 @@ const ARCHIVE_EXTENSIONS = ['.zip', '.7z', '.rar'];
 const HASH_RE = /^[a-f0-9]{8,16}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 
-// Helper to get client IP. Do not trust CF-Connecting-IP unless ingress is
-// configured so direct run.app traffic cannot spoof it.
-function getClientIp(req) {
-  if (process.env.TRUST_CF_CONNECTING_IP === 'true' && typeof req.headers['cf-connecting-ip'] === 'string') {
-    return req.headers['cf-connecting-ip'];
+// Cloudflare-published IP ranges (https://www.cloudflare.com/ips/).
+// Refresh manually when Cloudflare announces changes; the lists are stable
+// for months at a time.
+const CLOUDFLARE_IPV4_RANGES = [
+  '173.245.48.0/20',
+  '103.21.244.0/22',
+  '103.22.200.0/22',
+  '103.31.4.0/22',
+  '141.101.64.0/18',
+  '108.162.192.0/18',
+  '190.93.240.0/20',
+  '188.114.96.0/20',
+  '197.234.240.0/22',
+  '198.41.128.0/17',
+  '162.158.0.0/15',
+  '104.16.0.0/13',
+  '104.24.0.0/14',
+  '172.64.0.0/13',
+  '131.0.72.0/22',
+];
+const CLOUDFLARE_IPV6_RANGES = [
+  '2400:cb00::/32',
+  '2606:4700::/32',
+  '2803:f800::/32',
+  '2405:b500::/32',
+  '2405:8100::/32',
+  '2a06:98c0::/29',
+  '2c0f:f248::/32',
+];
+
+const cloudflareBlockList = new net.BlockList();
+for (const range of CLOUDFLARE_IPV4_RANGES) {
+  const [addr, prefix] = range.split('/');
+  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv4');
+}
+for (const range of CLOUDFLARE_IPV6_RANGES) {
+  const [addr, prefix] = range.split('/');
+  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv6');
+}
+
+// Returns the IP that Cloud Run saw connecting to the service. Cloud Run
+// appends its view of the peer IP to X-Forwarded-For, so the rightmost entry
+// is the immediate upstream — which is a Cloudflare edge IP in production.
+function getImmediatePeerIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length > 0) {
+    const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1];
   }
+  return req.socket?.remoteAddress || null;
+}
+
+function isFromCloudflare(req) {
+  const ip = getImmediatePeerIp(req);
+  if (!ip) return false;
+  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  if (net.isIPv4(normalized)) return cloudflareBlockList.check(normalized, 'ipv4');
+  if (net.isIPv6(normalized)) return cloudflareBlockList.check(normalized, 'ipv6');
+  return false;
+}
+
+// CF-Connecting-IP is set by Cloudflare and contains the original client IP.
+// With Cloudflare-only ingress enforced below, this header is authoritative in
+// production. In dev (or with the gate disabled), fall back to req.ip.
+function getClientIp(req) {
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (typeof cfIp === 'string' && cfIp.length > 0) return cfIp;
   return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+}
+
+// Reject any request whose immediate peer is not a Cloudflare edge IP.
+// Combined with --no-default-url on the Cloud Run service, this closes both
+// the default *.run.app URL and any direct-Cloud-Run path. /health is exempt
+// so Cloud Run's own probes (which arrive without X-Forwarded-For) still pass.
+const CLOUDFLARE_ONLY_INGRESS =
+  (process.env.CLOUDFLARE_ONLY_INGRESS ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
+if (CLOUDFLARE_ONLY_INGRESS) {
+  app.use((req, res, next) => {
+    if (req.path === '/health') return next();
+    if (isFromCloudflare(req)) return next();
+    log.warn('non_cloudflare_request_rejected', {
+      path: req.path,
+      peer: getImmediatePeerIp(req),
+      xff: req.headers['x-forwarded-for'] || null,
+    });
+    return res.status(403).send('Forbidden');
+  });
 }
 
 function rateLimitKey(req) {
