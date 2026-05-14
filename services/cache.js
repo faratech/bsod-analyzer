@@ -27,6 +27,7 @@ const CACHE_PREFIX = {
   AI_REPORT: 'ai-report', // Legacy - kept for backwards compatibility
   WINDBG: 'windbg',       // Legacy - kept for backwards compatibility
   FILE_HASH: 'file',
+  RUNTIME: 'runtime',
 };
 
 // Initialize Redis client (lazy initialization)
@@ -66,6 +67,51 @@ export function initCache() {
  */
 export function isCacheEnabled() {
   return cacheEnabled && redis !== null;
+}
+
+function getRuntimeKey(key) {
+  return `${CACHE_PREFIX.RUNTIME}:${key}`;
+}
+
+/**
+ * Store short-lived runtime state that must survive Cloud Run instance routing
+ * changes, such as verified sessions and per-session upload ownership.
+ */
+export async function setRuntimeValue(key, value, ttlSeconds) {
+  if (!isCacheEnabled()) return false;
+
+  try {
+    await redis.set(getRuntimeKey(key), JSON.stringify(value), { ex: ttlSeconds });
+    return true;
+  } catch (error) {
+    console.error('[Cache] Error setting runtime value:', error.message);
+    return false;
+  }
+}
+
+export async function getRuntimeValue(key) {
+  if (!isCacheEnabled()) return null;
+
+  try {
+    const value = await redis.get(getRuntimeKey(key));
+    if (!value) return null;
+    return typeof value === 'string' ? JSON.parse(value) : value;
+  } catch (error) {
+    console.error('[Cache] Error getting runtime value:', error.message);
+    return null;
+  }
+}
+
+export async function deleteRuntimeValue(key) {
+  if (!isCacheEnabled()) return false;
+
+  try {
+    await redis.del(getRuntimeKey(key));
+    return true;
+  } catch (error) {
+    console.error('[Cache] Error deleting runtime value:', error.message);
+    return false;
+  }
 }
 
 /**
