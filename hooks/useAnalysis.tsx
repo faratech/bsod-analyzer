@@ -44,8 +44,9 @@ export const useAnalysis = () => {
             )
         );
 
-        // Check if all files are known to be cached - skip progress animation if so
-        const allCached = filesToAnalyze.every(f => f.knownCached);
+        // Cached files still upload once so the server can prove hash ownership
+        // before returning cached analysis.
+        const allCached = false;
 
         // Initialize progress tracking (skip for fully cached analyses)
         const startTime = Date.now();

@@ -34,8 +34,6 @@ const Analyzer: React.FC = () => {
             setSessionReady(success);
             if (success) {
                 startSessionRefresh();
-            } else {
-                console.error('Failed to initialize session for analyzer');
             }
         });
 

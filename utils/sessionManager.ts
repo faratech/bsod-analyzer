@@ -23,11 +23,11 @@ export async function initializeSession(force: boolean = false): Promise<boolean
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      console.error('[Session] Init failed:', response.status, data);
       if (data.code === 'TURNSTILE_REQUIRED') {
         // This is expected - user needs to complete Turnstile first
         return false;
       }
+      console.error('[Session] Init failed:', response.status, data);
       throw new Error('Failed to initialize session');
     }
 
@@ -60,6 +60,11 @@ export function handleSessionError(error: { code?: string; [key: string]: unknow
 export function resetSession(): void {
   sessionInitialized = false;
   lastRefreshTime = 0;
+}
+
+export function markSessionInitialized(): void {
+  sessionInitialized = true;
+  lastRefreshTime = Date.now();
 }
 
 // Silently refresh session to keep it alive
