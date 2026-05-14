@@ -750,8 +750,10 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
   }
 }
 
-// Generate session cookie
-function generateSessionCookie(ip, turnstileVerified = false) {
+// Generate session cookie. Keep xxhash signing, but do not bind the session to
+// the observed request IP: Cloudflare may send successive browser requests
+// through different edge IPs, which would invalidate legitimate long polls.
+function generateSessionCookie(turnstileVerified = false) {
   if (!hasher) {
     console.error('XXHash not initialized when trying to generate session');
     throw new Error('XXHash not initialized');
@@ -759,14 +761,13 @@ function generateSessionCookie(ip, turnstileVerified = false) {
   
   const sessionId = crypto.randomBytes(32).toString('hex');
   const timestamp = Date.now();
-  const dataToHash = `${sessionId}:${timestamp}:${ip}:${ACTUAL_SESSION_SECRET}`;
+  const dataToHash = `${sessionId}:${timestamp}:${ACTUAL_SESSION_SECRET}`;
   const sessionHash = hasher.h64ToString(dataToHash);
   
   // Store session
   validSessions.set(sessionId, {
     hash: sessionHash,
     timestamp,
-    ip,
     turnstileVerified
   });
   
@@ -791,7 +792,7 @@ function setSessionCookies(res, sessionId, sessionHash) {
 }
 
 // Validate session cookie
-function validateSession(sessionId, sessionHash, ip) {
+function validateSession(sessionId, sessionHash) {
   const sessionData = validSessions.get(sessionId);
   
   if (!sessionData) {
@@ -802,11 +803,6 @@ function validateSession(sessionId, sessionHash, ip) {
   if (Date.now() - sessionData.timestamp > SESSION_EXPIRY) {
     validSessions.delete(sessionId);
     return { valid: false, reason: 'Session expired' };
-  }
-  
-  // Verify IP matches
-  if (sessionData.ip !== ip) {
-    return { valid: false, reason: 'IP mismatch' };
   }
   
   // Verify hash
@@ -837,7 +833,7 @@ const requireSession = (req, res, next) => {
     return res.status(401).json({ error: 'Session required', code: 'NO_SESSION' });
   }
   
-  const validation = validateSession(sessionId, sessionHash, clientIp);
+  const validation = validateSession(sessionId, sessionHash);
   if (!validation.valid) {
     console.log('Session validation failed:', {
       reason: validation.reason,
@@ -994,7 +990,7 @@ app.post('/api/auth/verify-turnstile', authLimiter, async (req, res) => {
     }
     
     // If verification successful, create session
-    const { sessionId, sessionHash } = generateSessionCookie(clientIp, true);
+    const { sessionId, sessionHash } = generateSessionCookie(true);
 
     const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
     res.cookie('bsod_turnstile_verified', 'true', {
@@ -1033,7 +1029,7 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
-    const validation = validateSession(sessionId, sessionHash, clientIp);
+    const validation = validateSession(sessionId, sessionHash);
     if (!validation.valid || !validation.sessionData?.turnstileVerified) {
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
