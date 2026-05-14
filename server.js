@@ -26,7 +26,10 @@ import {
   getCachedWinDBGAnalysis,
   setCachedWinDBGAnalysis,
   getCachedAnalysis,
-  isAnalysisCached
+  isAnalysisCached,
+  getRuntimeValue,
+  setRuntimeValue,
+  deleteRuntimeValue
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -220,9 +223,11 @@ if (!SESSION_SECRET) {
 // Use the secret (either from env or temporary)
 const ACTUAL_SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
-// Store valid sessions
-const validSessions = new Map(); // sessionId -> { hash, timestamp, ip }
+// Store valid sessions. Redis is the source of truth across Cloud Run
+// instances; these maps are just per-instance hot caches.
+const validSessions = new Map(); // sessionId -> { hash, timestamp, turnstileVerified }
 const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
+const SESSION_EXPIRY_SECONDS = Math.ceil(SESSION_EXPIRY / 1000);
 
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
@@ -235,38 +240,100 @@ const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session
 const sessionHashOwnership = new Map(); // sessionId -> Map(hash -> timestamp)
 const winDbgJobOwnership = new Map(); // uid -> { sessionId, fileHash, timestamp }
 const OWNERSHIP_EXPIRY = SESSION_EXPIRY;
+const OWNERSHIP_EXPIRY_SECONDS = Math.ceil(OWNERSHIP_EXPIRY / 1000);
 
-function markSessionHash(sessionId, hash) {
+function runtimeSessionKey(sessionId) {
+  return `session:${sessionId}`;
+}
+
+function runtimeSessionHashKey(sessionId, hash) {
+  return `session-hash:${sessionId}:${hash}`;
+}
+
+function runtimeWinDbgJobKey(uid) {
+  return `windbg-job:${uid}`;
+}
+
+async function storeSession(sessionId, sessionData) {
+  validSessions.set(sessionId, sessionData);
+  await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
+}
+
+async function loadSession(sessionId) {
+  let sessionData = validSessions.get(sessionId);
+  if (sessionData) return sessionData;
+
+  sessionData = await getRuntimeValue(runtimeSessionKey(sessionId));
+  if (sessionData) {
+    validSessions.set(sessionId, sessionData);
+  }
+  return sessionData;
+}
+
+async function deleteSession(sessionId) {
+  validSessions.delete(sessionId);
+  sessionHashOwnership.delete(sessionId);
+  await deleteRuntimeValue(runtimeSessionKey(sessionId));
+}
+
+async function markSessionHash(sessionId, hash) {
   if (!sessionId || !hash || !HASH_RE.test(hash)) return;
   let hashes = sessionHashOwnership.get(sessionId);
   if (!hashes) {
     hashes = new Map();
     sessionHashOwnership.set(sessionId, hashes);
   }
-  hashes.set(hash, Date.now());
+  const timestamp = Date.now();
+  hashes.set(hash, timestamp);
+  await setRuntimeValue(runtimeSessionHashKey(sessionId, hash), { timestamp }, OWNERSHIP_EXPIRY_SECONDS);
 }
 
-function sessionOwnsHash(sessionId, hash) {
+async function sessionOwnsHash(sessionId, hash) {
   const hashes = sessionHashOwnership.get(sessionId);
-  if (!hashes || !hashes.has(hash)) return false;
-  if (Date.now() - hashes.get(hash) > OWNERSHIP_EXPIRY) {
-    hashes.delete(hash);
+  if (hashes?.has(hash)) {
+    if (Date.now() - hashes.get(hash) > OWNERSHIP_EXPIRY) {
+      hashes.delete(hash);
+      await deleteRuntimeValue(runtimeSessionHashKey(sessionId, hash));
+      return false;
+    }
+    return true;
+  }
+
+  const stored = await getRuntimeValue(runtimeSessionHashKey(sessionId, hash));
+  if (!stored?.timestamp || Date.now() - stored.timestamp > OWNERSHIP_EXPIRY) {
+    await deleteRuntimeValue(runtimeSessionHashKey(sessionId, hash));
     return false;
   }
+
+  let sessionHashes = sessionHashOwnership.get(sessionId);
+  if (!sessionHashes) {
+    sessionHashes = new Map();
+    sessionHashOwnership.set(sessionId, sessionHashes);
+  }
+  sessionHashes.set(hash, stored.timestamp);
   return true;
 }
 
-function markWinDbgJob(sessionId, uid, fileHash) {
+async function markWinDbgJob(sessionId, uid, fileHash) {
   if (!sessionId || !uid || !fileHash) return;
-  winDbgJobOwnership.set(uid, { sessionId, fileHash, timestamp: Date.now() });
-  markSessionHash(sessionId, fileHash);
+  const ownership = { sessionId, fileHash, timestamp: Date.now() };
+  winDbgJobOwnership.set(uid, ownership);
+  await Promise.all([
+    setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS),
+    markSessionHash(sessionId, fileHash)
+  ]);
 }
 
-function sessionOwnsWinDbgJob(sessionId, uid) {
-  const job = winDbgJobOwnership.get(uid);
+async function sessionOwnsWinDbgJob(sessionId, uid) {
+  let job = winDbgJobOwnership.get(uid);
+  if (!job) {
+    job = await getRuntimeValue(runtimeWinDbgJobKey(uid));
+    if (job) winDbgJobOwnership.set(uid, job);
+  }
   if (!job || job.sessionId !== sessionId) return false;
   if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
     winDbgJobOwnership.delete(uid);
+    await deleteRuntimeValue(runtimeWinDbgJobKey(uid));
     return false;
   }
   return true;
@@ -763,17 +830,17 @@ function generateSessionCookie(turnstileVerified = false) {
   const timestamp = Date.now();
   const dataToHash = `${sessionId}:${timestamp}:${ACTUAL_SESSION_SECRET}`;
   const sessionHash = hasher.h64ToString(dataToHash);
-  
-  // Store session
-  validSessions.set(sessionId, {
+  const sessionData = {
     hash: sessionHash,
     timestamp,
     turnstileVerified
-  });
+  };
+  validSessions.set(sessionId, sessionData);
   
   return {
     sessionId,
-    sessionHash
+    sessionHash,
+    sessionData
   };
 }
 
@@ -792,8 +859,8 @@ function setSessionCookies(res, sessionId, sessionHash) {
 }
 
 // Validate session cookie
-function validateSession(sessionId, sessionHash) {
-  const sessionData = validSessions.get(sessionId);
+async function validateSession(sessionId, sessionHash) {
+  const sessionData = await loadSession(sessionId);
   
   if (!sessionData) {
     return { valid: false, reason: 'Session not found' };
@@ -801,7 +868,7 @@ function validateSession(sessionId, sessionHash) {
   
   // Check expiry
   if (Date.now() - sessionData.timestamp > SESSION_EXPIRY) {
-    validSessions.delete(sessionId);
+    await deleteSession(sessionId);
     return { valid: false, reason: 'Session expired' };
   }
   
@@ -814,50 +881,51 @@ function validateSession(sessionId, sessionHash) {
 }
 
 // Middleware to validate session for analyzer API
-const requireSession = (req, res, next) => {
+const requireSession = async (req, res, next) => {
   const sessionId = req.cookies.bsod_session_id;
   const sessionHash = req.cookies.bsod_session_hash;
   const clientIp = getClientIp(req);
-  
-  // In development mode, skip validation
-  if (process.env.NODE_ENV === 'development') {
-    return next();
-  }
-  
-  if (!sessionId || !sessionHash) {
-    console.log('Session validation failed - missing cookies:', { 
-      sessionId: !!sessionId, 
-      sessionHash: !!sessionHash,
-      cookies: Object.keys(req.cookies || {})
-    });
-    return res.status(401).json({ error: 'Session required', code: 'NO_SESSION' });
-  }
-  
-  const validation = validateSession(sessionId, sessionHash);
-  if (!validation.valid) {
-    console.log('Session validation failed:', {
-      reason: validation.reason,
-      sessionId: sessionId.substring(0, 10) + '...',
-      clientIp
-    });
-    return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
-  }
-  if (!validation.sessionData?.turnstileVerified) {
-    return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
-  }
-  
-  // Refresh session timestamp — guard against the rare race where the cleanup interval
-  // evicted the session between validateSession() and this lookup.
-  const sessionData = validSessions.get(sessionId);
-  if (sessionData) {
+
+  try {
+    // In development mode, skip validation
+    if (process.env.NODE_ENV === 'development') {
+      return next();
+    }
+
+    if (!sessionId || !sessionHash) {
+      console.log('Session validation failed - missing cookies:', {
+        sessionId: !!sessionId,
+        sessionHash: !!sessionHash,
+        cookies: Object.keys(req.cookies || {})
+      });
+      return res.status(401).json({ error: 'Session required', code: 'NO_SESSION' });
+    }
+
+    const validation = await validateSession(sessionId, sessionHash);
+    if (!validation.valid) {
+      console.log('Session validation failed:', {
+        reason: validation.reason,
+        sessionId: sessionId.substring(0, 10) + '...',
+        clientIp
+      });
+      return res.status(401).json({ error: validation.reason, code: 'INVALID_SESSION' });
+    }
+    if (!validation.sessionData?.turnstileVerified) {
+      return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+    }
+
+    const sessionData = validation.sessionData;
     sessionData.timestamp = Date.now();
+    await storeSession(sessionId, sessionData);
+
+    req.sessionId = sessionId;
+    req.sessionData = sessionData;
+    req.clientIp = clientIp;
+
+    next();
+  } catch (error) {
+    next(error);
   }
-
-  req.sessionId = sessionId;
-  req.sessionData = sessionData || validation.sessionData;
-  req.clientIp = clientIp;
-
-  next();
 };
 
 // Middleware to validate API key for external service access
@@ -990,7 +1058,8 @@ app.post('/api/auth/verify-turnstile', authLimiter, async (req, res) => {
     }
     
     // If verification successful, create session
-    const { sessionId, sessionHash } = generateSessionCookie(true);
+    const { sessionId, sessionHash, sessionData } = generateSessionCookie(true);
+    await storeSession(sessionId, sessionData);
 
     const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
     res.cookie('bsod_turnstile_verified', 'true', {
@@ -1029,12 +1098,13 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
-    const validation = validateSession(sessionId, sessionHash);
+    const validation = await validateSession(sessionId, sessionHash);
     if (!validation.valid || !validation.sessionData?.turnstileVerified) {
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
     validation.sessionData.timestamp = Date.now();
+    await storeSession(sessionId, validation.sessionData);
     const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
     res.cookie('bsod_turnstile_verified', 'true', {
       ...cookieOptions,
@@ -1219,7 +1289,10 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     // Check cache using fileHash only after the session has proven ownership by
     // uploading that exact file. Otherwise fall back to the prompt hash.
-    const ownedFileHash = typeof fileHash === 'string' && HASH_RE.test(fileHash) && sessionOwnsHash(req.sessionId, fileHash);
+    let ownedFileHash = false;
+    if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
+      ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
+    }
     const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
     const cachedResponse = await getCachedAIReport(cacheKey);
     if (cachedResponse) {
@@ -1336,7 +1409,7 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
         error: 'Invalid or missing hash parameter'
       });
     }
-    if (!sessionOwnsHash(req.sessionId, hash)) {
+    if (!(await sessionOwnsHash(req.sessionId, hash))) {
       return res.status(403).json({
         success: false,
         error: 'Cache entry is not available for this session',
@@ -1498,7 +1571,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       });
     }
     uid = serverHash;
-    markSessionHash(req.sessionId, uid);
+    await markSessionHash(req.sessionId, uid);
 
     // UID is now the file hash (computed client-side), use it directly for caching
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
@@ -1538,7 +1611,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     // Check if analysis is complete and cache it if so
     if (response.status === 409) {
       console.log('[WinDBG] UID already exists, checking if analysis is complete...');
-      markWinDbgJob(req.sessionId, uid, uid);
+      await markWinDbgJob(req.sessionId, uid, uid);
 
       try {
         // Check status on WinDBG server
@@ -1600,7 +1673,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     }
     console.log('[WinDBG] Upload response:', result.success ? 'success' : 'failed');
     if (result.success) {
-      markWinDbgJob(req.sessionId, uid, uid);
+      await markWinDbgJob(req.sessionId, uid, uid);
     }
 
     res.json(result);
@@ -1631,7 +1704,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
         error: 'Invalid or missing parameter: uid'
       });
     }
-    if (!sessionOwnsWinDbgJob(req.sessionId, uid)) {
+    if (!(await sessionOwnsWinDbgJob(req.sessionId, uid))) {
       return res.status(403).json({
         success: false,
         error: 'WinDBG job is not available for this session',
@@ -1690,7 +1763,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
         error: 'Invalid or missing parameter: uid'
       });
     }
-    if (!sessionOwnsWinDbgJob(req.sessionId, uid)) {
+    if (!(await sessionOwnsWinDbgJob(req.sessionId, uid))) {
       return res.status(403).json({
         success: false,
         error: 'WinDBG job is not available for this session',
