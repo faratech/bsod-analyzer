@@ -81,8 +81,12 @@ npm run optimize-css     # Apply CSS purging
 | `TURNSTILE_SECRET_KEY` | Cloudflare verification | Production |
 | `SESSION_SECRET` | Session security | Production |
 | `WINDBG_API_KEY` | WinDBG server API access | No (falls back to local parsing) |
+| `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
+| `TRUST_PROXY_HOPS` | Express `trust proxy` hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 
-For local development, set in `.env.local` or export directly.
+For local development, set in `.env.local` or export directly. To run with
+`NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` — otherwise
+every request will 403 because the immediate peer isn't a Cloudflare edge IP.
 
 ## Deployment
 
