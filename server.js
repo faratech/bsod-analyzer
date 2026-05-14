@@ -561,14 +561,9 @@ app.use(compression({
 // Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
 const largeJsonParser = express.json({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
 
-// Default JSON body limit for most API endpoints
-// Skip for routes that need larger payloads (they use largeJsonParser directly)
-app.use((req, res, next) => {
-  if (req.path === '/api/windbg/upload') {
-    return next(); // Skip default parser, route will use largeJsonParser
-  }
-  express.json({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` })(req, res, next);
-});
+// Default JSON parser applied per-route, after rate limit and requireSession,
+// so unauthenticated requests are rejected before allocating a parse buffer.
+const defaultJsonParser = express.json({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
 // Precompute CSP header string once at startup (avoids rebuilding on every request)
 const CSP_HEADER = [
@@ -596,6 +591,7 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   res.setHeader('Content-Security-Policy', CSP_HEADER);
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   next();
@@ -998,7 +994,7 @@ app.get('/health', async (req, res) => {
 app.use('/api/', apiLimiter);
 
 // Endpoint to verify Turnstile and create session
-app.post('/api/auth/verify-turnstile', authLimiter, async (req, res) => {
+app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (req, res) => {
   try {
     const { token, action } = req.body;
     const clientIp = getClientIp(req);
@@ -1225,7 +1221,7 @@ function validateBSODPrompt(contents) {
 }
 
 // Proxy endpoint for Gemini API calls - now requires session
-app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, async (req, res) => {
+app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
   try {
     // Check if Gemini AI is configured
     if (!genAI) {
@@ -1471,7 +1467,7 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
 
 // Client-side cache writes are disabled to prevent cache poisoning. Cache writes
 // happen server-side after validated WinDBG/Gemini work.
-app.post('/api/cache/set', cacheLimiter, requireSession, async (req, res) => {
+app.post('/api/cache/set', cacheLimiter, requireSession, defaultJsonParser, async (req, res) => {
   return res.status(410).json({
     success: false,
     error: 'Client cache writes are disabled',
@@ -1480,7 +1476,7 @@ app.post('/api/cache/set', cacheLimiter, requireSession, async (req, res) => {
 });
 
 // Check cache for file hashes (pre-upload detection)
-app.post('/api/cache/check', cacheLimiter, requireSession, async (req, res) => {
+app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, async (req, res) => {
   try {
     const { hashes } = req.body;
 
@@ -1557,7 +1553,7 @@ function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
 
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
-app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, largeJsonParser, requireSession, async (req, res) => {
+app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, largeJsonParser, async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({

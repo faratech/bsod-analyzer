@@ -22,6 +22,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --platform managed \
   --region ${REGION} \
   --allow-unauthenticated \
+  --no-default-url \
   --service-account ${RUNTIME_SERVICE_ACCOUNT} \
   --port 8080 \
   --concurrency 2 \
