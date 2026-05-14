@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile from './CloudflareTurnstile';
-import { hasTurnstileHint, initializeSession, markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
+import { hasTurnstileHint, initializeSession, markSessionInitialized, onSessionInvalid, startSessionRefresh } from '../utils/sessionManager';
 
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
@@ -42,12 +42,35 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
     // Re-check on focus in case cookie was set in another tab
     const handleFocus = () => checkExistingSession();
     window.addEventListener('focus', handleFocus);
+    const unsubscribeSessionInvalid = onSessionInvalid(() => {
+      setIsVerified(false);
+      setValidationErrors(['Please complete the security check again']);
+    });
     
     return () => {
       cancelled = true;
       window.removeEventListener('focus', handleFocus);
+      unsubscribeSessionInvalid();
     };
   }, []);
+
+  const ensureVerifiedSession = useCallback(async () => {
+    if (!isVerified) {
+      setValidationErrors(['Please complete the security check first']);
+      setTimeout(() => setValidationErrors([]), 3000);
+      return false;
+    }
+
+    const sessionValid = await initializeSession(true);
+    if (!sessionValid) {
+      setIsVerified(false);
+      setValidationErrors(['Please complete the security check again']);
+      return false;
+    }
+
+    startSessionRefresh();
+    return true;
+  }, [isVerified]);
 
   const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -88,9 +111,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
     setIsDragging(false);
     
     // Require verification before processing files
-    if (!isVerified) {
-      setValidationErrors(['Please complete the security check first']);
-      setTimeout(() => setValidationErrors([]), 3000);
+    if (!await ensureVerifiedSession()) {
       return;
     }
     
@@ -98,15 +119,13 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
       await processFiles(Array.from(e.dataTransfer.files));
       e.dataTransfer.clearData();
     }
-  }, [processFiles, isVerified]);
+  }, [processFiles, ensureVerifiedSession]);
   
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     // Require verification before processing files
-    if (!isVerified) {
+    if (!await ensureVerifiedSession()) {
       e.preventDefault();
       e.target.value = '';
-      setValidationErrors(['Please complete the security check first']);
-      setTimeout(() => setValidationErrors([]), 3000);
       return;
     }
     

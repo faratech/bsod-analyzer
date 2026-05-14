@@ -50,6 +50,10 @@ const FAKE_DRIVERS = ['wXr', 'wEB', 'vS'] as const;
 const FAKE_DRIVER_SYS = FAKE_DRIVERS.map(d => `${d}.sys`);
 const FAKE_DRIVER_PATTERN = /\b(wXr|wEB|vS)\.sys\b/gi;
 
+function isTurnstileRequiredError(error: unknown): boolean {
+    return error instanceof Error && /turnstile verification required/i.test(error.message);
+}
+
 // Create proxy object that mimics GoogleGenAI to avoid minification issues
 const createGeminiProxy = () => {
     const generateContent = async (params: GenerateContentParams): Promise<GenerateContentResponse> => {
@@ -1295,11 +1299,17 @@ export const analyzeDumpFiles = async (
                     };
                 } else {
                     console.log('[Analyzer] WinDBG analysis failed:', windbgResult.error);
+                    if (/turnstile verification required/i.test(windbgResult.error || '')) {
+                        throw new Error(windbgResult.error);
+                    }
                     console.log('[Analyzer] Falling back to local analysis...');
                     onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
                 }
             } catch (windbgError) {
                 console.error('[Analyzer] WinDBG server error:', windbgError);
+                if (isTurnstileRequiredError(windbgError)) {
+                    throw windbgError;
+                }
                 console.log('[Analyzer] Falling back to local analysis...');
                 onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
             }

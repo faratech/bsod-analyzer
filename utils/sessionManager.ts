@@ -2,6 +2,7 @@
 let sessionInitialized = false;
 let lastRefreshTime = 0;
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
+const SESSION_INVALID_EVENT = 'bsod-session-invalid';
 
 // Refresh session every 20 minutes (session expires in 1 hour)
 const REFRESH_INTERVAL_MS = 20 * 60 * 1000;
@@ -18,10 +19,19 @@ export function hasTurnstileHint(): boolean {
     .some(cookie => cookie.trim().startsWith('bsod_turnstile_verified=true'));
 }
 
-export function clearSessionState(): void {
+export function clearSessionState(notify: boolean = true): void {
   sessionInitialized = false;
   lastRefreshTime = 0;
   clearTurnstileHintCookie();
+  if (notify) {
+    window.dispatchEvent(new CustomEvent(SESSION_INVALID_EVENT));
+  }
+}
+
+export function onSessionInvalid(listener: () => void): () => void {
+  const handler = () => listener();
+  window.addEventListener(SESSION_INVALID_EVENT, handler);
+  return () => window.removeEventListener(SESSION_INVALID_EVENT, handler);
 }
 
 export async function initializeSession(force: boolean = false): Promise<boolean> {
@@ -41,7 +51,7 @@ export async function initializeSession(force: boolean = false): Promise<boolean
       const data = await response.json().catch(() => ({}));
       if (data.code === 'TURNSTILE_REQUIRED') {
         // This is expected - user needs to complete Turnstile first
-        clearSessionState();
+        clearSessionState(sessionInitialized || hasTurnstileHint());
         return false;
       }
       console.error('[Session] Init failed:', response.status, data);

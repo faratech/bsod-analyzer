@@ -132,6 +132,10 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
         });
 
         if (!response.ok) {
+            if (response.status === 401) {
+                const errorData = await response.json().catch(() => ({}));
+                handleSessionError(errorData);
+            }
             console.warn('[WinDBG] Cache check failed:', response.status);
             // Return all as not cached on error
             for (const { name, hash } of fileHashes) {
@@ -282,6 +286,9 @@ export async function uploadToWinDBG(
         xhr.onload = () => {
             try {
                 const data: WinDBGUploadResponse = JSON.parse(xhr.responseText);
+                if (xhr.status === 401) {
+                    handleSessionError(data as unknown as { code?: string; [key: string]: unknown });
+                }
                 resolve(data);
             } catch {
                 reject(new Error('Invalid response from upload endpoint'));
