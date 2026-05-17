@@ -9,12 +9,14 @@
 
 import xxhash from 'xxhash-wasm';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
+import { hashBytes } from '../shared/hash.js';
 
 // Initialize xxhash
 let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
-xxhash().then(h => {
+const hasherReady = xxhash().then(h => {
     hasher = h;
     console.log('[WinDBG] XXHash initialized');
+    return h;
 });
 
 // Polling configuration - increased intervals to reduce server load
@@ -79,21 +81,8 @@ export interface WinDBGAnalysisResult {
 export async function generateFileHash(file: File): Promise<string> {
     const buffer = await file.arrayBuffer();
     const data = new Uint8Array(buffer);
-
-    if (hasher) {
-        // Convert to string for xxhash
-        const binaryString = Array.from(data).map(b => String.fromCharCode(b)).join('');
-        return hasher.h64ToString(binaryString);
-    }
-
-    // Fallback if xxhash not initialized (shouldn't happen)
-    console.warn('[WinDBG] XXHash not ready, using fallback');
-    let hash = 0;
-    for (let i = 0; i < data.length; i++) {
-        hash = ((hash << 5) - hash) + data[i];
-        hash |= 0;
-    }
-    return Math.abs(hash).toString(16);
+    const activeHasher = hasher ?? await hasherReady;
+    return hashBytes(activeHasher, data);
 }
 
 /**
@@ -165,79 +154,6 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
         console.error('[WinDBG] Error checking cache status:', error);
         // Return empty map on error - will just proceed without cache info
         return results;
-    }
-}
-
-/**
- * Result from fetching cached analysis (includes both WinDBG and AI report)
- */
-export interface CachedAnalysisResult {
-    success: boolean;
-    windbgAnalysis?: string;
-    aiReport?: unknown; // The full AI report object
-    fileHash: string;
-    error?: string;
-}
-
-/**
- * Cache combined analysis (WinDBG + AI report) after successful flow
- */
-export async function cacheAnalysis(fileHash: string, windbgOutput: string, aiReport: unknown): Promise<boolean> {
-    void fileHash;
-    void windbgOutput;
-    void aiReport;
-    console.log('[WinDBG] Client-side cache writes are disabled; server caches validated analysis results.');
-    return false;
-}
-
-/**
- * Fetch cached analysis directly by hash (skip upload entirely)
- * Returns both WinDBG analysis and AI report if available
- */
-export async function fetchCachedAnalysis(hash: string): Promise<CachedAnalysisResult> {
-    try {
-        console.log(`[WinDBG] Fetching cached analysis for hash: ${hash}`);
-
-        const response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
-            credentials: 'include',
-            cache: 'no-store'
-        });
-
-        if (!response.ok) {
-            let errorData: { error?: string; code?: string; [key: string]: unknown } = {};
-            try {
-                errorData = await response.json();
-            } catch {
-                // Non-JSON response; keep the HTTP status in the thrown error.
-            }
-            if (response.status === 401) {
-                handleSessionError(errorData);
-            }
-            throw new Error(errorData.error || `Cache fetch failed: ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        if (data.success && data.cached) {
-            const hasWinDBG = !!data.windbgAnalysis;
-            const hasAI = !!data.aiReport;
-            console.log(`[WinDBG] Cached analysis fetched (windbg: ${hasWinDBG}, ai: ${hasAI})`);
-            return {
-                success: true,
-                windbgAnalysis: data.windbgAnalysis || undefined,
-                aiReport: data.aiReport || undefined,
-                fileHash: hash
-            };
-        }
-
-        throw new Error(data.error || 'Cache miss');
-    } catch (error) {
-        console.error('[WinDBG] Failed to fetch cached analysis:', error);
-        return {
-            success: false,
-            fileHash: hash,
-            error: (error as Error).message
-        };
     }
 }
 
@@ -593,29 +509,5 @@ export async function analyzeWithWinDBG(
             analysisText: '',
             error: (error as Error).message
         };
-    }
-}
-
-/**
- * Check if the WinDBG server is available via our backend
- */
-export async function isWinDBGAvailable(): Promise<boolean> {
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-        // Try to check status with a dummy UID - if the service is configured, it will respond
-        const response = await fetch('/api/windbg/status?uid=health-check', {
-            credentials: 'include',
-            signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        // Even a 400 (missing UID) means the service is available
-        // Only 503 (not configured) means it's unavailable
-        return response.status !== 503;
-    } catch {
-        return false;
     }
 }

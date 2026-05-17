@@ -17,10 +17,21 @@ import os from 'os';
 import multer from 'multer';
 import JSZip from 'jszip';
 import net from 'net';
+import {
+  ALLOWED_EXTENSIONS,
+  DUMP_EXTENSIONS,
+  FILE_LIMITS,
+  detectArchiveType,
+  getFileExtension,
+  sanitizeUploadFileName,
+  validatePathEntry,
+  validateUploadedBuffer
+} from './shared/ingestPolicy.js';
 
 const execFileAsync = promisify(execFile);
 import {
   initCache,
+  initHashing,
   hashContent,
   getCachedAIReport,
   setCachedAIReport,
@@ -70,8 +81,8 @@ app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2)
 const MAX_RAW_FILE_SIZE = SECURITY_CONFIG.api.maxRawFileSize;
 const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
 const MAX_EXTRACTED_ARCHIVE_SIZE = SECURITY_CONFIG.api.maxExtractedArchiveSize;
-const DUMP_EXTENSIONS = ['.dmp', '.mdmp', '.hdmp', '.kdmp'];
-const ARCHIVE_EXTENSIONS = ['.zip', '.7z', '.rar'];
+const MAX_ARCHIVE_FILE_COUNT = FILE_LIMITS.maxArchiveFileCount;
+const MAX_ARCHIVE_COMPRESSION_RATIO = FILE_LIMITS.maxCompressionRatio;
 const HASH_RE = /^[a-f0-9]{8,16}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
@@ -277,57 +288,6 @@ function timingSafeEqualString(a, b) {
   return crypto.timingSafeEqual(aHash, bHash);
 }
 
-function sanitizeUploadFileName(fileName) {
-  const base = path.basename(String(fileName || 'upload.dmp'));
-  const cleaned = base.replace(/[\r\n"]/g, '_').replace(/[^\w.\-() ]+/g, '_').trim();
-  return cleaned || 'upload.dmp';
-}
-
-function getFileExtension(fileName) {
-  const ext = path.extname(String(fileName || '')).toLowerCase();
-  return ext;
-}
-
-function detectDumpMagic(buffer) {
-  const header = buffer.slice(0, 8).toString('ascii');
-  return header.startsWith('MDMP') || header.startsWith('PAGEDU64') || header.startsWith('PAGEDUMP') || header.startsWith('PAGE');
-}
-
-function validatePathEntry(entryPath, maxDepth = 4) {
-  const normalized = String(entryPath || '').replace(/\\/g, '/');
-  if (!normalized || normalized.startsWith('/') || normalized.includes('\0')) return false;
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.some(part => part === '..' || part === '.')) return false;
-  return parts.length <= maxDepth;
-}
-
-function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } = {}) {
-  if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
-    return { valid: false, error: 'File is empty or invalid' };
-  }
-  if (fileBuffer.length > MAX_RAW_FILE_SIZE) {
-    return { valid: false, error: `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB` };
-  }
-
-  const ext = getFileExtension(fileName);
-  if (DUMP_EXTENSIONS.includes(ext)) {
-    if (!detectDumpMagic(fileBuffer)) {
-      return { valid: false, error: 'File does not appear to be a valid Windows dump' };
-    }
-    return { valid: true };
-  }
-
-  if (allowArchives && ARCHIVE_EXTENSIONS.includes(ext)) {
-    const archiveType = detectArchiveType(fileBuffer);
-    if (!archiveType) {
-      return { valid: false, error: 'Archive extension does not match archive signature' };
-    }
-    return { valid: true };
-  }
-
-  return { valid: false, error: 'Unsupported file type' };
-}
-
 // Initialize xxhash (awaited before server starts listening)
 let hasher;
 
@@ -478,12 +438,11 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     // Accept dump files and archives
-    const allowedExtensions = [...DUMP_EXTENSIONS, ...ARCHIVE_EXTENSIONS];
     const ext = getFileExtension(file.originalname);
-    if (allowedExtensions.includes(ext)) {
+    if (ALLOWED_EXTENSIONS.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Invalid file type. Allowed: ${allowedExtensions.join(', ')}`));
+      cb(new Error(`Invalid file type. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`));
     }
   }
 });
@@ -1805,7 +1764,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
 
     // Check cache for existing WinDBG analysis
-    const cachedAnalysis = await getCachedWinDBGAnalysis(uid);
+    const cachedAnalysis = await getCachedWinDBGAnalysis(fileBuffer);
     if (cachedAnalysis) {
       console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
       return res.json({
@@ -2401,8 +2360,8 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
     for (const [path, file] of Object.entries(zip.files)) {
       if (file.dir) continue;
       fileCount++;
-      if (fileCount > 20) {
-        throw new Error('ZIP contains too many files. Maximum is 20.');
+      if (fileCount > MAX_ARCHIVE_FILE_COUNT) {
+        throw new Error(`ZIP contains too many files. Maximum is ${MAX_ARCHIVE_FILE_COUNT}.`);
       }
       if (!validatePathEntry(path)) {
         throw new Error('ZIP contains an unsafe path');
@@ -2438,34 +2397,15 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
         });
       }
     }
+    if (zipBuffer.length > 0 && totalExtractedSize / zipBuffer.length > MAX_ARCHIVE_COMPRESSION_RATIO) {
+      throw new Error('ZIP compression ratio too high — possible archive bomb');
+    }
   } catch (error) {
     console.error(`[ZIP] Failed to extract from ${originalName}:`, error.message);
     throw new Error(`Failed to extract ZIP: ${error.message}`);
   }
 
   return results;
-}
-
-const ARCHIVE_SIGNATURES = [
-  { type: 'zip', bytes: [0x50, 0x4B, 0x03, 0x04] },
-  { type: 'zip', bytes: [0x50, 0x4B, 0x05, 0x06] },
-  { type: 'zip', bytes: [0x50, 0x4B, 0x07, 0x08] },
-  { type: '7z',  bytes: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] },
-  { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01] }, // RAR v5
-  { type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00] }, // RAR v4
-];
-
-/**
- * Detect archive type from buffer magic bytes
- * @returns 'zip' | '7z' | 'rar' | null
- */
-function detectArchiveType(buffer) {
-  for (const { type, bytes } of ARCHIVE_SIGNATURES) {
-    if (buffer.length >= bytes.length && bytes.every((b, i) => buffer[i] === b)) {
-      return type;
-    }
-  }
-  return null;
 }
 
 /**
@@ -2484,8 +2424,8 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 
     // Archive bomb checks
     const MAX_EXTRACTED_SIZE = MAX_EXTRACTED_ARCHIVE_SIZE;
-    const MAX_FILE_COUNT = 20;
-    const MAX_COMPRESSION_RATIO = 100;
+    const MAX_FILE_COUNT = MAX_ARCHIVE_FILE_COUNT;
+    const MAX_COMPRESSION_RATIO = MAX_ARCHIVE_COMPRESSION_RATIO;
 
     if (archiveType === 'rar') {
       // Use bsdtar for RAR files (Alpine's 7zip lacks the RAR codec)
@@ -2768,7 +2708,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
     console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
 
     // Check cache for previous WinDBG analysis of this exact file
-    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
+    const cachedAnalysis = await getCachedWinDBGAnalysis(fileBuffer);
     if (cachedAnalysis) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
 
@@ -2951,7 +2891,10 @@ let earlyHintsLinkHeader = '';
 
 async function startServer() {
   // Initialize xxhash before accepting requests
-  hasher = await xxhash();
+  [hasher] = await Promise.all([
+    xxhash(),
+    initHashing()
+  ]);
   console.log('XXHash initialized for session management');
 
   // Cache index.html in memory (~9KB, avoids disk read on every request)

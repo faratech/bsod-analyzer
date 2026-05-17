@@ -15,6 +15,7 @@
     "build:no-sri": "vite build",
     "preview": "vite preview",
     "start": "NODE_ENV=production node server.js",
+    "test": "node --test tests/*.test.mjs",
     "analyze-css": "node scripts/purge-css.js",
     "optimize-css": "node scripts/purge-css.js --apply"
   },
@@ -28,7 +29,6 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
-    "form-data": "^4.0.5",
     "jszip": "^3.10.1",
     "multer": "^2.1.1",
     "react": "^19.2.6",
@@ -39,7 +39,6 @@
     "xxhash-wasm": "^1.1.0"
   },
   "devDependencies": {
-    "@fullhuman/postcss-purgecss": "^8.0.0",
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^25.8.0",
     "@types/react": "^19.2.14",

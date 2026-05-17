@@ -7,6 +7,7 @@ import { useError } from './useError';
 import { FILE_SIZE_THRESHOLDS } from '../constants';
 import { checkCacheStatus } from '../services/windbgService';
 import { isServerSideArchive, extractArchiveServerSide } from '../services/archiveService';
+import { isDumpFileName } from '../shared/ingestPolicy.js';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP;
 
@@ -93,10 +94,7 @@ export const useFileProcessor = () => {
                     console.error("Error processing archive:", e);
                     setError(e instanceof Error ? e.message : `Error processing archive: ${file.name}`);
                 }
-            } else if (file.name.toLowerCase().endsWith('.dmp') ||
-                       file.name.toLowerCase().endsWith('.mdmp') ||
-                       file.name.toLowerCase().endsWith('.hdmp') ||
-                       file.name.toLowerCase().endsWith('.kdmp')) {
+            } else if (isDumpFileName(file.name)) {
                 await processFile(file);
             } else {
                 setError(`Invalid file type: ${file.name}. Please upload .dmp, .mdmp, .hdmp, .kdmp files or .zip, .7z, .rar archives containing them.`);

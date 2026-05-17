@@ -10,6 +10,7 @@ import { PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
+import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
 // Define types to match original imports
 enum Type {
@@ -1397,7 +1398,6 @@ export const analyzeDumpFiles = async (
             try {
                 // Get more stack data if available (for MDMP minidumps only)
                 if (structuredInfo.dumpHeader?.signature === 'MDMP') {
-                    const MinidumpParser = (await import('../utils/minidumpStreams.js')).MinidumpParser;
                     const parser = new MinidumpParser(fileBuffer);
                     const threads = parser.getThreads();
                     
