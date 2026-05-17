@@ -45,6 +45,7 @@ COPY --chown=nodejs:nodejs server.js ./
 COPY --chown=nodejs:nodejs serverConfig.js ./
 COPY --chown=nodejs:nodejs model.cfg ./
 COPY --chown=nodejs:nodejs services ./services
+COPY --chown=nodejs:nodejs shared ./shared
 
 # Switch to non-root user
 USER nodejs
