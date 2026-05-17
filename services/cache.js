@@ -10,16 +10,21 @@
 
 import { Redis } from '@upstash/redis';
 import xxhash from 'xxhash-wasm';
+import { HASH_HEX_RE, hashBytes, hashString, legacyHashBytes } from '../shared/hash.js';
 
 // Cache TTL: 7 days maximum
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 604800 seconds
 
 // Initialize xxhash
 let hasher = null;
-xxhash().then(xxhashModule => {
+const hasherReady = xxhash().then(xxhashModule => {
   hasher = xxhashModule;
   console.log('[Cache] XXHash initialized for cache key generation');
 });
+
+export async function initHashing() {
+  await hasherReady;
+}
 
 // Cache key prefixes
 const CACHE_PREFIX = {
@@ -115,31 +120,45 @@ export async function deleteRuntimeValue(key) {
 }
 
 /**
- * Generate an xxhash64 hash of content for cache keys
- * Falls back to simple string hash if xxhash not yet initialized
+ * Generate an xxhash64 hash of content for cache keys.
  */
 export function hashContent(content) {
-  let data;
+  if (!hasher) {
+    throw new Error('XXHash not initialized');
+  }
+
   if (typeof content === 'string') {
-    data = content;
-  } else if (Buffer.isBuffer(content)) {
-    data = content.toString('binary');
-  } else {
-    data = JSON.stringify(content);
+    return hashString(hasher, content);
+  }
+  if (Buffer.isBuffer(content)) {
+    return hashBytes(hasher, content);
+  }
+  return hashString(hasher, JSON.stringify(content));
+}
+
+function legacyHashContent(content) {
+  if (!hasher) {
+    throw new Error('XXHash not initialized');
   }
 
-  if (hasher) {
-    return hasher.h64ToString(data);
+  if (Buffer.isBuffer(content)) {
+    return legacyHashBytes(hasher, content);
+  }
+  return hashContent(content);
+}
+
+function cacheHashCandidates(cacheKey) {
+  if (typeof cacheKey === 'string' && HASH_HEX_RE.test(cacheKey)) {
+    return [cacheKey];
   }
 
-  // Fallback if xxhash not initialized yet (shouldn't happen in practice)
-  console.warn('[Cache] XXHash not ready, using fallback hash');
-  let hash = 0;
-  for (let i = 0; i < data.length; i++) {
-    hash = ((hash << 5) - hash) + data.charCodeAt(i);
-    hash |= 0;
+  const primary = hashContent(cacheKey);
+  if (!Buffer.isBuffer(cacheKey)) {
+    return [primary];
   }
-  return Math.abs(hash).toString(16);
+
+  const legacy = legacyHashContent(cacheKey);
+  return legacy !== primary ? [primary, legacy] : [primary];
 }
 
 /**
@@ -167,19 +186,20 @@ export async function getCachedAIReport(cacheKey) {
   if (!isCacheEnabled()) return null;
 
   try {
-    // If cacheKey looks like a hash (16 hex chars), use it directly
-    const isHash = /^[a-f0-9]{16}$/i.test(cacheKey);
-    const hash = isHash ? cacheKey : hashContent(cacheKey);
-    const key = getAIReportKey(hash);
-    const cached = await redis.get(key);
+    const hashes = cacheHashCandidates(cacheKey);
 
-    if (cached) {
-      console.log(`[Cache] AI report cache HIT for hash ${hash.substring(0, 12)}...`);
-      // Handle both string and object responses from Redis
-      return typeof cached === 'string' ? JSON.parse(cached) : cached;
+    for (const hash of hashes) {
+      const key = getAIReportKey(hash);
+      const cached = await redis.get(key);
+
+      if (cached) {
+        console.log(`[Cache] AI report cache HIT for hash ${hash.substring(0, 12)}...`);
+        // Handle both string and object responses from Redis
+        return typeof cached === 'string' ? JSON.parse(cached) : cached;
+      }
     }
 
-    console.log(`[Cache] AI report cache MISS for hash ${hash.substring(0, 12)}...`);
+    console.log(`[Cache] AI report cache MISS for hash ${hashes[0].substring(0, 12)}...`);
     return null;
   } catch (error) {
     console.error('[Cache] Error getting AI report:', error.message);
@@ -196,9 +216,10 @@ export async function setCachedAIReport(cacheKey, report) {
   if (!isCacheEnabled()) return false;
 
   try {
-    // If cacheKey looks like a hash (16 hex chars), use it directly
-    const isHash = /^[a-f0-9]{16}$/i.test(cacheKey);
-    const hash = isHash ? cacheKey : hashContent(cacheKey);
+    // If cacheKey looks like a hash (16 hex chars), use it directly.
+    const hash = (typeof cacheKey === 'string' && HASH_HEX_RE.test(cacheKey))
+      ? cacheKey
+      : hashContent(cacheKey);
     const key = getAIReportKey(hash);
 
     await redis.set(key, JSON.stringify(report), { ex: CACHE_TTL_SECONDS });
@@ -219,16 +240,20 @@ export async function getCachedWinDBGAnalysis(fileBuffer) {
   if (!isCacheEnabled()) return null;
 
   try {
-    const hash = Buffer.isBuffer(fileBuffer) ? hashContent(fileBuffer) : fileBuffer;
-    const key = getWinDBGKey(hash);
-    const cached = await redis.get(key);
+    const hashes = cacheHashCandidates(fileBuffer);
 
-    if (cached) {
-      console.log(`[Cache] WinDBG analysis cache HIT for hash ${hash.substring(0, 12)}...`);
-      return typeof cached === 'string' ? JSON.parse(cached) : cached;
+    for (const hash of hashes) {
+      const key = getWinDBGKey(hash);
+      const cached = await redis.get(key);
+
+      if (cached) {
+        const legacy = hash !== hashes[0] ? ' legacy' : '';
+        console.log(`[Cache] WinDBG analysis${legacy} cache HIT for hash ${hash.substring(0, 12)}...`);
+        return typeof cached === 'string' ? JSON.parse(cached) : cached;
+      }
     }
 
-    console.log(`[Cache] WinDBG analysis cache MISS for hash ${hash.substring(0, 12)}...`);
+    console.log(`[Cache] WinDBG analysis cache MISS for hash ${hashes[0].substring(0, 12)}...`);
     return null;
   } catch (error) {
     console.error('[Cache] Error getting WinDBG analysis:', error.message);
@@ -349,47 +374,6 @@ export async function isAnalysisCached(fileHash) {
     return !!(cached && (cached.windbgOutput || cached.aiReport));
   } catch (error) {
     console.error('[Cache] Error checking analysis cache:', error.message);
-    return false;
-  }
-}
-
-/**
- * Get cache statistics (for monitoring)
- */
-export async function getCacheStats() {
-  if (!isCacheEnabled()) {
-    return { enabled: false };
-  }
-
-  try {
-    // Upstash doesn't support INFO command via REST, so we return basic status
-    return {
-      enabled: true,
-      connected: true,
-    };
-  } catch (error) {
-    return {
-      enabled: true,
-      connected: false,
-      error: error.message,
-    };
-  }
-}
-
-/**
- * Clear all cache entries (use with caution)
- * Only for admin/debugging purposes
- */
-export async function clearCache() {
-  if (!isCacheEnabled()) return false;
-
-  try {
-    // Upstash REST API doesn't support FLUSHALL
-    // Would need to iterate and delete keys - not recommended for production
-    console.warn('[Cache] Cache clear not supported via REST API');
-    return false;
-  } catch (error) {
-    console.error('[Cache] Error clearing cache:', error.message);
     return false;
   }
 }

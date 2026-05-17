@@ -47,7 +47,7 @@ export default defineConfig(({ mode }) => {
         // Inline small images/fonts up to 4KB, but never inline CSS: inlining CSS
         // as a data:text/css URL defeats the media="print" onload defer pattern and
         // forces 'data:' into the CSP style-src.
-        assetsInlineLimit: (filePath: string) => filePath.endsWith('.css') ? 0 : 4096,
+        assetsInlineLimit: (filePath: string) => filePath.endsWith('.css') ? false : undefined,
         cssCodeSplit: true, // Split CSS into separate chunks
         rollupOptions: {
           output: {

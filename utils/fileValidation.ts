@@ -1,14 +1,19 @@
 import { SECURITY_CONFIG } from '../config/security';
+import {
+  ARCHIVE_EXTENSIONS,
+  formatBytes,
+  getFileExtension,
+  hasAnyMagic,
+  MAGIC_SIGNATURES
+} from '../shared/ingestPolicy.js';
 
 export interface ValidationResult {
   valid: boolean;
   error?: string;
 }
 
-const ARCHIVE_EXTENSIONS = ['.zip', '.7z', '.rar'];
-
 export function validateFileSize(file: File): ValidationResult {
-  const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+  const ext = getFileExtension(file.name);
   const isArchive = ARCHIVE_EXTENSIONS.includes(ext);
   const minSize = isArchive ? SECURITY_CONFIG.file.archiveMinSize : SECURITY_CONFIG.file.minSize;
 
@@ -30,7 +35,7 @@ export function validateFileSize(file: File): ValidationResult {
 }
 
 export function validateFileExtension(file: File): ValidationResult {
-  const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+  const extension = getFileExtension(file.name);
   
   if (!SECURITY_CONFIG.file.allowedExtensions.includes(extension)) {
     return {
@@ -43,31 +48,27 @@ export function validateFileExtension(file: File): ValidationResult {
 }
 
 export async function validateFileMagicBytes(file: File): Promise<ValidationResult> {
-  const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+  const extension = getFileExtension(file.name);
   let magicBytesConfig;
   switch (extension) {
     case '.zip':
-      magicBytesConfig = SECURITY_CONFIG.validation.zipMagicBytes;
+      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.zipMagic;
       break;
     case '.7z':
-      magicBytesConfig = SECURITY_CONFIG.validation.sevenZipMagicBytes;
+      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.sevenZipMagic;
       break;
     case '.rar':
-      magicBytesConfig = SECURITY_CONFIG.validation.rarMagicBytes;
+      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.rarMagic;
       break;
     default:
-      magicBytesConfig = SECURITY_CONFIG.validation.dmpMagicBytes;
+      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.dmpMagic;
       break;
   }
   
   try {
     const headerBytes = await readFileHeader(file, 8);
     
-    const isValidMagic = magicBytesConfig.some(config => {
-      return config.bytes.every((byte, index) => 
-        headerBytes[config.offset + index] === byte
-      );
-    });
+    const isValidMagic = hasAnyMagic(headerBytes, magicBytesConfig);
     
     if (!isValidMagic) {
       return {
@@ -114,16 +115,6 @@ export function validateFileCount(currentCount: number, newFiles: number): Valid
   }
   
   return { valid: true };
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 Bytes';
-  
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 export async function validateFiles(files: File[], currentFileCount: number = 0): Promise<{

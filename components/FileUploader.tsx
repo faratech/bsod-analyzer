@@ -3,6 +3,7 @@ import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile from './CloudflareTurnstile';
 import { hasTurnstileHint, initializeSession, markSessionInitialized, onSessionInvalid, startSessionRefresh } from '../utils/sessionManager';
+import { ALLOWED_EXTENSIONS } from '../shared/ingestPolicy.js';
 
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
@@ -240,7 +241,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
         type="file"
         id="file-upload"
         multiple
-        accept=".dmp,.mdmp,.hdmp,.kdmp,.zip,.7z,.rar"
+        accept={ALLOWED_EXTENSIONS.join(',')}
         style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', borderWidth: 0 }}
         onChange={handleFileChange}
       />

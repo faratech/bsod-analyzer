@@ -3,8 +3,9 @@
  */
 
 import { handleSessionError } from '../utils/sessionManager';
+import { ARCHIVE_EXTENSIONS } from '../shared/ingestPolicy.js';
 
-const SERVER_ARCHIVE_EXTENSIONS = ['.7z', '.rar'];
+const SERVER_ARCHIVE_EXTENSIONS = ARCHIVE_EXTENSIONS.filter(ext => ext !== '.zip');
 
 /**
  * Check if a file needs server-side extraction (7z or RAR)
