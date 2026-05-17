@@ -12,6 +12,7 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
+import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -814,43 +815,18 @@ async function generateReportFromWinDBG(
     const analysisForPrompt = extractCrashSignal(windbgAnalysis);
     console.log(`[Analyzer] WinDBG signal extracted: ${windbgAnalysis.length} → ${analysisForPrompt.length} chars`);
 
-    const prompt = `You are an expert Windows crash analyst. Analyze this REAL WinDBG output from an actual crash dump analysis and provide a detailed, user-friendly report.
-
-**File Information:**
+    // Invariant WinDBG instructions live in WINDBG_PREFIX (shared, cache-stable);
+    // only the per-dump file info + WinDBG output go in the evidence tail.
+    const evidence = `**File Information:**
 - Filename: ${fileName}
 - Dump Type: ${dumpType}
 - File Size: ${fileSize} bytes
 
-**ACTUAL WinDBG Analysis Output:**
+${WINDBG_OUTPUT_MARKER}
 \`\`\`
 ${analysisForPrompt}
-\`\`\`
-
-## ANALYSIS REQUIREMENTS
-
-Based on the WinDBG output above, provide:
-
-1. **Summary**: A brief one-sentence summary of what caused the crash
-2. **Probable Cause**: A detailed but easy-to-understand explanation of the likely cause
-3. **Culprit**: The specific driver or module responsible (extract from WinDBG output)
-4. **Recommendations**: Actionable steps the user should take to fix the issue
-
-### IMPORTANT RULES:
-- Use ONLY the information from the WinDBG output - this is REAL analysis data
-- Extract the actual bug check code, culprit driver, and stack trace from the output
-- Do NOT invent or guess information not present in the WinDBG output
-- If WinDBG identified a specific driver as the cause, use that as the culprit
-- Parse the MODULE_NAME, IMAGE_NAME, and FAILURE_BUCKET_ID from the output
-- Look for STACK_TEXT and FAULTING_MODULE for crash location details
-
-### DRIVER WARNINGS:
-If the WinDBG output identifies problematic third-party drivers, include them in driverWarnings.
-
-### HARDWARE ERRORS:
-If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareError field.
-
-### PARAMETER ANALYSIS:
-Decode the bug check parameters shown in the WinDBG output.`;
+\`\`\``;
+    const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
 
     const ai = createGeminiProxy();
 
@@ -1442,9 +1418,10 @@ export const analyzeDumpFiles = async (
             const promptSections: { [key: string]: string } = {};
             
             // Essential sections (always include) - simplified with accurate parsing
-            const essentialPrefix = `Analyze this Windows crash dump. Use ONLY the verified data provided.
-
-**File:** ${dumpFile.file.name} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)`;
+            // Dump-specific evidence only — the invariant analysis instructions
+            // live in LOCAL_DUMP_PREFIX (shared, cache-stable) and are prepended
+            // below so Gemini implicit caching can reuse the prefix across dumps.
+            const essentialPrefix = `**File:** ${dumpFile.file.name} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)`;
             
             promptSections.essential = essentialPrefix;
             currentTokens += estimateTokens(essentialPrefix);
@@ -1619,17 +1596,18 @@ ${adjustedStrings}
                     return (priorities[a] || 99) - (priorities[b] || 99);
                 });
             
-            let prompt = promptSections.essential;
+            // Assemble dump-specific evidence only; the invariant analysis
+            // instructions live in LOCAL_DUMP_PREFIX (shared, cache-stable) and
+            // are prepended via wrapWithEvidence() below.
+            let evidence = promptSections.essential;
             for (const section of orderedSections) {
-                prompt += promptSections[section] || '';
+                evidence += promptSections[section] || '';
             }
-            
-            // Add analysis requirements
-            prompt += `\n\n## CRASH ANALYSIS REQUIREMENTS\n\n`;
-            
-            // Add analysis requirements based on bug check info
+
+            // Authoritative bug check for this dump (the shared prefix tells the
+            // model to use ONLY what appears here in the DUMP EVIDENCE section).
             if (structuredInfo.bugCheckInfo) {
-                prompt += `
+                evidence += `
 ### ⚠️ BUG CHECK DETECTED: ${structuredInfo.bugCheckInfo.name}
 **Code:** ${formatBugCheckHex(structuredInfo.bugCheckInfo.code)}
 **Parameters:**
@@ -1646,165 +1624,10 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
     structuredInfo.bugCheckInfo.parameter4
 ])}`;
             } else {
-                prompt += '\n### ⚠️ NO BUG CHECK CODE FOUND\nAnalyze crash based on exception data, stack trace, and string patterns.';
+                evidence += '\n\n### ⚠️ NO BUG CHECK CODE FOUND\nAnalyze crash based on exception data, stack trace, and string patterns.';
             }
             
-            // Add analysis instructions
-            prompt += `
-
-### ANALYSIS INSTRUCTIONS:
-
-1. **Root Cause Analysis**
-   - Identify the EXACT faulting module from the stack trace or strings
-   - Explain WHY this specific crash occurred based on the bug check parameters
-   - Reference specific evidence from the hex dump or strings
-
-2. **Evidence-Based Diagnosis**
-   - Quote specific driver names, error messages, or patterns from the data
-   - Identify the crash progression through the stack frames
-   - Note any memory corruption indicators (bad pool headers, invalid addresses)
-
-3. **Targeted Solutions**
-   - Provide solutions SPECIFIC to the identified cause
-   - Reference the actual driver/component names found in the dump
-   - Prioritize based on the bug check type and parameters
-
-### IMPORTANT RULES:
-- Only analyze what's IN THIS DUMP - no generic advice
-- **NEVER change or infer a different bug check code** - use ONLY the one explicitly stated above
-- The bug check code has been DEFINITIVELY IDENTIFIED as shown above - DO NOT suggest any other code
-- If the stack trace shows a specific driver, that's likely the culprit
-- Bug check parameters are CRITICAL - they tell you exactly what went wrong
-- Look for patterns: all zeros = freed memory, all FFs = uninitialized
-- Recent timestamps in module list = recently loaded/updated drivers
-
-### CRITICAL WARNING:
-**You MUST use the bug check code ${structuredInfo.bugCheckInfo ? formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'provided above'} in your analysis. Do NOT mention or suggest any other bug check code!**
-
-**ABSOLUTELY FORBIDDEN:**
-- DO NOT mention bug check 0x65F4 or any custom/non-standard bug check codes
-- DO NOT invent security software crashes unless explicitly shown in the data
-- DO NOT fabricate driver names like wXr.sys, wEB.sys, vS.sys unless they appear in the strings
-- DO NOT create fictional stack traces - use ONLY frames found in the extracted data
-
-**The ACTUAL bug check is ${structuredInfo.bugCheckInfo ? structuredInfo.bugCheckInfo.name + ' (' + formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ')' : 'shown above'} - anything else is WRONG!**
-
-### VALIDATION CHECK:
-The extracted bug check from this dump is: ${structuredInfo.bugCheckInfo ? formatBugCheckHex(structuredInfo.bugCheckInfo.code) + ' (' + structuredInfo.bugCheckInfo.name + ')' : 'UNKNOWN'}
-- If you mention ANY other bug check code, your analysis will be rejected
-- Common REAL bug checks: 0x1E, 0x50, 0x7E, 0x8E, 0xA, 0x124, 0xD1, 0x9F, 0xF5
-- FAKE bug checks to NEVER use: 0x65F4, 0x1234, any custom codes
-
-### DRIVER VALIDATION:
-Do NOT invent fake driver names like wXr.sys, wEB.sys, vS.sys - only mention drivers that appear in the module list.
-
-### DRIVER WARNINGS (driverWarnings field):
-Analyze the loaded modules list and identify any third-party drivers that:
-1. Are known to have stability issues (NVIDIA nvlddmkm.sys, AMD atikmdag.sys, Realtek rtkvhd64.sys, etc.)
-2. Are security software with deep system hooks (Avast asw*.sys, Norton sym*.sys, Kaspersky kl*.sys)
-3. Are commonly associated with this specific bug check code
-4. Are third-party (non-Microsoft) drivers in the call stack or near the crash
-
-For each problematic driver found IN THE LOADED MODULES:
-- Provide the exact driver filename
-- Identify the manufacturer
-- Explain known issues with this driver
-- Give specific recommendations (update, remove, or configure)
-- Set isAssociatedWithBugCheck to true if this driver commonly causes this type of crash
-
-**ONLY include drivers that are ACTUALLY in the loaded modules list. Do NOT speculate about drivers that might be installed.**
-
-### MICROSOFT VS THIRD-PARTY DRIVER IDENTIFICATION:
-Microsoft drivers (do NOT flag as problematic unless actually crashing):
-- Kernel: ntoskrnl.exe, ntkrnlmp.exe, ntkrnlpa.exe, hal.dll
-- File System: ntfs.sys, fastfat.sys, fltmgr.sys, fileinfo.sys
-- Networking: tcpip.sys, ndis.sys, netio.sys, http.sys, afd.sys
-- Storage: storport.sys, disk.sys, partmgr.sys, volsnap.sys
-- Graphics: dxgkrnl.sys, dxgmms1.sys, win32k.sys, win32kfull.sys
-- USB: usbhub.sys, usbport.sys, usbehci.sys, usbxhci.sys
-- Power: acpi.sys, intelppm.sys, processr.sys
-- Security: ci.dll, ksecdd.sys, ksecpkg.sys
-
-Third-party (flag if problematic):
-- Graphics: nvlddmkm.sys (NVIDIA), atikmdag.sys/amdkmdag.sys (AMD), igdkmd64.sys (Intel)
-- Audio: rtkvhd64.sys (Realtek), cmudaxp.sys (C-Media)
-- Network: netwtw*.sys (Intel WiFi), e1i*.sys (Intel Ethernet), athw*.sys (Qualcomm)
-- Security: aswsp.sys/asw*.sys (Avast), symefasi*.sys/sym*.sys (Norton), klif.sys/kl*.sys (Kaspersky), WdFilter.sys (Defender)
-- Virtualization: vmci.sys (VMware), vmmemctl.sys (VMware), VBoxDrv.sys (VirtualBox)
-- VPN: tap-windows.sys, wintun.sys, ndisimplatform.sys
-
-### HARDWARE ERROR ANALYSIS (hardwareError field):
-For bug checks 0x124 (WHEA_UNCORRECTABLE_ERROR), 0x9C (MACHINE_CHECK_EXCEPTION), 0x7F (UNEXPECTED_KERNEL_MODE_TRAP), or any hardware-related crash:
-
-**WHEA (0x124) Parameter Decoding:**
-- Param1: Error source type (0=MCE, 1=CMC, 2=NMI, 3=PCIe, 4=Generic, 5=INIT, 6=BOOT)
-- Param2: WHEA_ERROR_RECORD pointer
-- Param3/4: MCi_STATUS register bits (decode MCA error type)
-
-MCi_STATUS Error Types (bits 15:0):
-- 0x0000-0x000F: Compound errors (TLB, memory controller, bus)
-- 0x0010-0x00FF: Internal timer, register file, or microcode errors
-- 0x0100-0x01FF: Cache errors (Level in bits 7:6, Cache type in bits 5:4)
-- 0x0400-0x0FFF: Bus/interconnect errors
-
-**MCE (0x9C) Decoding:**
-- Usually indicates CPU, motherboard, or power supply issues
-- Check for overclocking, overheating, or failing hardware
-
-**Kernel Trap (0x7F) Decoding:**
-Param1 trap codes:
-- 0x00: Divide by zero - software bug or hardware math error
-- 0x04: Overflow - integer overflow in calculation
-- 0x05: Bounds check - array bounds exceeded
-- 0x06: Invalid opcode - corrupted code or incompatible CPU
-- 0x08: Double fault (0x08) - CRITICAL HARDWARE - usually stack overflow, bad RAM, or motherboard failure
-- 0x0C: Stack fault - stack corruption or overflow
-- 0x0D: General protection fault - memory access violation
-
-For hardware errors, always include:
-- isHardwareError: true
-- errorType: specific error name
-- component: CPU, RAM, GPU, Motherboard, or Storage
-- severity: fatal, recoverable, corrected, or deferred
-- details: decoded information from parameters
-- recommendations: hardware-specific fixes (temperatures, memtest, BIOS updates, etc.)
-
-### PARAMETER ANALYSIS (parameterAnalysis field):
-Decode ALL bug check parameters with their specific meanings:
-
-**Common NTSTATUS Codes to decode:**
-- 0xC0000005: STATUS_ACCESS_VIOLATION - Invalid memory read/write
-- 0xC0000094: STATUS_INTEGER_DIVIDE_BY_ZERO
-- 0xC0000096: STATUS_PRIVILEGED_INSTRUCTION
-- 0xC000001D: STATUS_ILLEGAL_INSTRUCTION
-- 0xC0000006: STATUS_IN_PAGE_ERROR - Page file or disk error
-- 0xC00000FD: STATUS_STACK_OVERFLOW
-- 0xC0000008: STATUS_INVALID_HANDLE
-- 0xC0000017: STATUS_NO_MEMORY
-- 0xC000009A: STATUS_INSUFFICIENT_RESOURCES
-- 0xC0000022: STATUS_ACCESS_DENIED
-- 0xC0000043: STATUS_SHARING_VIOLATION
-- 0xC0000034: STATUS_OBJECT_NAME_NOT_FOUND
-- 0xC0000135: STATUS_DLL_NOT_FOUND
-
-**For each parameter, provide:**
-- parameter: "Parameter 1", "Parameter 2", etc.
-- rawValue: The hex value (e.g., "0xC0000005")
-- decoded: Human-readable meaning (e.g., "STATUS_ACCESS_VIOLATION - Invalid memory access")
-- significance: What this tells us about the crash
-
-**IRQL Levels (for IRQL bug checks):**
-- 0: PASSIVE_LEVEL (normal user/kernel code)
-- 1: APC_LEVEL (async procedure calls)
-- 2: DISPATCH_LEVEL (scheduler, DPCs) - cannot access paged memory!
-- 3+: DEVICE_LEVEL/HIGH_LEVEL (interrupts)
-
-**Access Types:**
-- 0: Read operation
-- 1: Write operation
-- 2 or 8: Execute operation
-- 10: Execute DEP violation
-`;
+            const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, evidence);
             
             // Log final token usage
             const finalTokens = estimateTokens(prompt);
