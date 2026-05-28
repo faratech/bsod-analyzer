@@ -1358,10 +1358,38 @@ function normalizeAnalysisReport(report) {
   };
 
   if (Array.isArray(normalized.driverWarnings)) {
-    normalized.driverWarnings = normalized.driverWarnings.slice(0, 20);
+    // Filter out malformed driver warnings (AI sometimes returns entries with empty fields)
+    normalized.driverWarnings = normalized.driverWarnings
+      .filter(w => w && typeof w === 'object' &&
+        w.driverName && typeof w.driverName === 'string' && w.driverName.trim() &&
+        w.displayName && typeof w.displayName === 'string' && w.displayName.trim() &&
+        w.manufacturer && typeof w.manufacturer === 'string' && w.manufacturer.trim()
+      )
+      .map(w => ({
+        driverName: sanitizeString(w.driverName, 256) || w.driverName,
+        displayName: sanitizeString(w.displayName, 512) || w.displayName,
+        manufacturer: sanitizeString(w.manufacturer, 256) || w.manufacturer,
+        category: sanitizeString(w.category, 128) || 'other',
+        issues: sanitizeStringArray(w.issues, 10, 500) || [],
+        recommendations: sanitizeStringArray(w.recommendations, 10, 500) || [],
+        isAssociatedWithBugCheck: !!w.isAssociatedWithBugCheck
+      }))
+      .slice(0, 20);
   }
   if (Array.isArray(normalized.parameterAnalysis)) {
-    normalized.parameterAnalysis = normalized.parameterAnalysis.slice(0, 12);
+    // Filter out malformed parameter analysis entries
+    normalized.parameterAnalysis = normalized.parameterAnalysis
+      .filter(p => p && typeof p === 'object' &&
+        p.rawValue && typeof p.rawValue === 'string' && p.rawValue.trim() &&
+        p.decoded && typeof p.decoded === 'string' && p.decoded.trim()
+      )
+      .slice(0, 12);
+  }
+  // Ensure hardwareError has valid structure if present
+  if (normalized.hardwareError && typeof normalized.hardwareError === 'object') {
+    if (!normalized.hardwareError.isHardwareError) {
+      delete normalized.hardwareError; // Remove if not actually a hardware error
+    }
   }
 
   return normalized;
@@ -1522,6 +1550,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     }
     if (Number.isFinite(frontendConfig.temperature)) {
       sdkConfig.temperature = Math.min(Math.max(frontendConfig.temperature, 0), 1);
+    }
+    if (frontendConfig.responseSchema) {
+      sdkConfig.responseSchema = frontendConfig.responseSchema;
     }
 
     // Constant across every analysis call (shared) — systemInstruction is part
