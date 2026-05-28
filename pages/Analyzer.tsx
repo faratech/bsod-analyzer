@@ -91,7 +91,7 @@ const Analyzer: React.FC = () => {
         
         const newDumpFiles = await processFiles(acceptedFiles, dumpFiles.length, trackFileUpload);
         setDumpFiles(prevFiles => addFilesToState(newDumpFiles, prevFiles));
-    }, [processFiles, addFilesToState, trackFileUpload]);
+    }, [processFiles, addFilesToState, trackFileUpload, dumpFiles.length]);
     
     const handleRemoveFile = useCallback((fileId: string) => {
         setDumpFiles(prevFiles => {
