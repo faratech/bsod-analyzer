@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { memo } from 'react';
 
-const AnimatedBackground: React.FC = () => {
+const AnimatedBackground: React.FC = memo(() => {
     // Consolidated error codes and binary patterns
     const errorElements = [
         { type: 'hex', value: '0x0000000A', top: '15%', left: '10%' },
@@ -57,6 +57,8 @@ const AnimatedBackground: React.FC = () => {
             <div className="glitch-overlay"></div>
         </div>
     );
-};
+});
+
+AnimatedBackground.displayName = 'AnimatedBackground';
 
 export default AnimatedBackground;

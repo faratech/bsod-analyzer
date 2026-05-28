@@ -16,6 +16,7 @@ export const useFileProcessor = () => {
 
     const processFiles = useCallback(async (
         acceptedFiles: File[], 
+        currentFileCount: number = 0,
         onFileProcessed?: (dumpType: string, fileSize: number) => void
     ): Promise<DumpFile[]> => {
         clearError();
@@ -23,9 +24,18 @@ export const useFileProcessor = () => {
 
         for (const file of acceptedFiles) {
             const processFile = async (f: File) => {
+                if (currentFileCount + newDumpFiles.length >= SECURITY_CONFIG.file.maxFileCount) {
+                    setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                    return;
+                }
                 // Read file to validate format
                 try {
-                    const buffer = await f.arrayBuffer();
+                    if (f.size < 32) {
+                        setError(`File is too small to be a valid dump file (${f.size} bytes)`);
+                        return;
+                    }
+                    const slice = f.slice(0, 4096);
+                    const buffer = await slice.arrayBuffer();
                     const validation = validateDumpFile(buffer, f.name);
                     
                     if (!validation.isValid) {
@@ -59,7 +69,7 @@ export const useFileProcessor = () => {
                     }
 
                     // Check if extracting these files would exceed our limits
-                    const totalFiles = newDumpFiles.length + extractedFiles.length;
+                    const totalFiles = currentFileCount + newDumpFiles.length + extractedFiles.length;
                     if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
                         setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
                         continue;
@@ -81,7 +91,7 @@ export const useFileProcessor = () => {
                         continue;
                     }
 
-                    const totalFiles = newDumpFiles.length + extractedFiles.length;
+                    const totalFiles = currentFileCount + newDumpFiles.length + extractedFiles.length;
                     if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
                         setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
                         continue;

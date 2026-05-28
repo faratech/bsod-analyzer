@@ -61,7 +61,7 @@ const HeroAnimation: React.FC = React.memo(() => {
         if (!ctx) return;
 
         // Optimized canvas resize
-        const resizeCanvas = useCallback(() => {
+        const resizeCanvas = () => {
             const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x for performance
             canvas.width = window.innerWidth * dpr;
             canvas.height = window.innerHeight * dpr;
@@ -69,10 +69,10 @@ const HeroAnimation: React.FC = React.memo(() => {
             canvas.style.height = window.innerHeight + 'px';
             ctx.scale(dpr, dpr);
             initializeEffects();
-        }, []);
+        };
 
         // Optimized initialization
-        const initializeEffects = useCallback(() => {
+        const initializeEffects = () => {
             // Clear existing
             particlesRef.current = [];
             glitchLinesRef.current = [];
@@ -120,7 +120,7 @@ const HeroAnimation: React.FC = React.memo(() => {
                     speed: Math.random() * 3 + 1
                 });
             }
-        }, [canvas.width, canvas.height]);
+        };
 
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);

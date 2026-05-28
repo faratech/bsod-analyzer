@@ -42,7 +42,8 @@ import {
   isAnalysisCached,
   getRuntimeValue,
   setRuntimeValue,
-  deleteRuntimeValue
+  deleteRuntimeValue,
+  isCacheEnabled
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -323,6 +324,25 @@ const winDbgJobOwnership = new Map(); // uid -> { sessionId, fileHash, timestamp
 const OWNERSHIP_EXPIRY = SESSION_EXPIRY;
 const OWNERSHIP_EXPIRY_SECONDS = Math.ceil(OWNERSHIP_EXPIRY / 1000);
 
+// Track external asynchronous analysis jobs (fallback when Redis is not enabled)
+const externalJobs = new Map(); // uid -> jobData
+const JOB_EXPIRY_SECONDS = 30 * 60; // 30 minutes
+
+async function storeJob(uid, jobData) {
+  if (isCacheEnabled()) {
+    await setRuntimeValue(`job:${uid}`, jobData, JOB_EXPIRY_SECONDS);
+  } else {
+    externalJobs.set(uid, jobData);
+  }
+}
+
+async function loadJob(uid) {
+  if (isCacheEnabled()) {
+    return await getRuntimeValue(`job:${uid}`);
+  }
+  return externalJobs.get(uid);
+}
+
 function runtimeSessionKey(sessionId) {
   return `session:${sessionId}`;
 }
@@ -336,25 +356,27 @@ function runtimeWinDbgJobKey(uid) {
 }
 
 async function storeSession(sessionId, sessionData) {
-  validSessions.set(sessionId, sessionData);
-  await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
+  if (isCacheEnabled()) {
+    await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
+  } else {
+    validSessions.set(sessionId, sessionData);
+  }
 }
 
 async function loadSession(sessionId) {
-  let sessionData = validSessions.get(sessionId);
-  if (sessionData) return sessionData;
-
-  sessionData = await getRuntimeValue(runtimeSessionKey(sessionId));
-  if (sessionData) {
-    validSessions.set(sessionId, sessionData);
+  if (isCacheEnabled()) {
+    return await getRuntimeValue(runtimeSessionKey(sessionId));
   }
-  return sessionData;
+  return validSessions.get(sessionId);
 }
 
 async function deleteSession(sessionId) {
-  validSessions.delete(sessionId);
+  if (isCacheEnabled()) {
+    await deleteRuntimeValue(runtimeSessionKey(sessionId));
+  } else {
+    validSessions.delete(sessionId);
+  }
   sessionHashOwnership.delete(sessionId);
-  await deleteRuntimeValue(runtimeSessionKey(sessionId));
 }
 
 async function markSessionHash(sessionId, hash) {
@@ -453,6 +475,16 @@ setInterval(() => {
     if (now - data.timestamp > SESSION_EXPIRY) {
       validSessions.delete(sessionId);
       sessionHashOwnership.delete(sessionId);
+    }
+  }
+  for (const [sessionId, tracking] of sessionRequestTracking.entries()) {
+    if (now > tracking.resetTime) {
+      sessionRequestTracking.delete(sessionId);
+    }
+  }
+  for (const [uid, job] of externalJobs.entries()) {
+    if (now - job.timestamp > JOB_EXPIRY_SECONDS * 1000) {
+      externalJobs.delete(uid);
     }
   }
   for (const [sessionId, hashes] of sessionHashOwnership.entries()) {
@@ -926,7 +958,9 @@ function generateSessionCookie(turnstileVerified = false) {
     timestamp,
     turnstileVerified
   };
-  validSessions.set(sessionId, sessionData);
+  if (!isCacheEnabled()) {
+    validSessions.set(sessionId, sessionData);
+  }
   
   return {
     sessionId,
@@ -1559,7 +1593,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     res.json(responseData);
   } catch (error) {
     log.error('gemini.error', { message: error.message, stack: error.stack?.split('\n').slice(0, 3).join(' | ') });
-    res.status(500).json({ error: error.message || 'Failed to generate content' });
+    res.status(500).json({ error: 'AI analysis failed. Please try again later.' });
   }
 });
 
@@ -1866,7 +1900,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     log.error('windbg.upload.fail', { message: error.message });
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to upload to WinDBG server'
+      error: 'Failed to upload file to the debugging server. Please try again later.'
     });
   }
 });
@@ -2056,7 +2090,7 @@ app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SI
     console.error('[Archive] Extraction error:', error);
     res.status(400).json({
       success: false,
-      error: error.message || 'Failed to extract archive'
+      error: 'Failed to extract archive. Please ensure it is a valid format and is not password-protected.'
     });
   }
 });
@@ -2595,6 +2629,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 }
 
 // Main external API endpoint
+// Main external API endpoint
 app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
 
@@ -2671,6 +2706,9 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
     const fileHash = hashContent(fileBuffer);
     console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
 
+    // Generate UID for this job
+    const uid = generateWinDBGUID();
+
     // Check cache for previous WinDBG analysis of this exact file
     const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
     if (cachedAnalysis) {
@@ -2688,23 +2726,30 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       const processingTime = (Date.now() - startTime) / 1000;
       log.info('analyze.complete', { processingTime, analysisMethod: 'windbg', cached: true, dumpType, fileSize });
 
-      return res.json({
-        success: true,
+      const jobData = {
+        status: 'completed',
+        fileName,
+        dumpType,
+        fileSize,
+        uid,
+        originalZip: originalZip || undefined,
+        error: null,
         data: report,
         analysisMethod: 'windbg',
-        cached: true,
         processingTime,
-        metadata: {
-          fileName,
-          fileSize,
-          dumpType,
-          uid: cachedAnalysis.uid,
-          originalZip: originalZip || undefined
-        }
+        timestamp: Date.now()
+      };
+      await storeJob(uid, jobData);
+
+      return res.status(202).json({
+        success: true,
+        status: 'completed',
+        uid,
+        checkStatusUrl: `/api/analyze/status/${uid}`
       });
     }
 
-    console.log('[API/Analyze] Cache MISS - running full WinDBG analysis');
+    console.log('[API/Analyze] Cache MISS - setting up background WinDBG analysis');
 
     // Check if WinDBG is configured
     if (!WINDBG_API_KEY) {
@@ -2724,105 +2769,180 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       });
     }
 
-    // Generate UID for this analysis
-    const uid = generateWinDBGUID();
-    console.log(`[API/Analyze] Starting WinDBG analysis with UID: ${uid}`);
+    // Create job state
+    const jobData = {
+      status: 'processing',
+      fileName,
+      dumpType,
+      fileSize,
+      uid,
+      originalZip: originalZip || undefined,
+      error: null,
+      data: null,
+      analysisMethod: 'windbg',
+      processingTime: null,
+      timestamp: Date.now()
+    };
+    await storeJob(uid, jobData);
 
-    // Create timeout wrapper — track the timer so we can cancel it on success, and
-    // swallow the losing branch's rejection to avoid an unhandledRejection.
-    let timeoutHandle;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(new Error('Analysis timed out after 5 minutes'));
-      }, WINDBG_TOTAL_TIMEOUT_MS);
-    });
+    // Run the analysis pipeline asynchronously in the background
+    (async () => {
+      try {
+        const runStartTime = Date.now();
+        let timeoutHandle;
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new Error('Analysis timed out after 5 minutes'));
+          }, WINDBG_TOTAL_TIMEOUT_MS);
+        });
 
-    // Main analysis pipeline
-    const analysisPromise = (async () => {
-      // Step 1: Upload to WinDBG
-      console.log('[API/Analyze] Step 1: Uploading to WinDBG server...');
-      const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName, uid);
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || 'WinDBG upload failed');
+        const analysisPromise = (async () => {
+          // Step 1: Upload to WinDBG
+          console.log(`[API/Analyze] Job ${uid} Step 1: Uploading to WinDBG server...`);
+          const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName, uid);
+          if (!uploadResult.success) {
+            throw new Error(uploadResult.error || 'WinDBG upload failed');
+          }
+
+          // Step 2: Poll for completion
+          console.log(`[API/Analyze] Job ${uid} Step 2: Polling for completion...`);
+          await pollWinDBGStatus(uid);
+
+          // Step 3: Download results
+          console.log(`[API/Analyze] Job ${uid} Step 3: Downloading analysis...`);
+          const windbgAnalysis = await downloadWinDBGAnalysis(uid);
+
+          // Cache the WinDBG analysis for future requests with same file
+          await setCachedWinDBGAnalysis(fileHash, {
+            windbgOutput: windbgAnalysis,
+            uid,
+            fileName,
+            dumpType,
+            timestamp: Date.now()
+          });
+
+          // Step 4: Generate AI report
+          console.log(`[API/Analyze] Job ${uid} Step 4: Generating AI report...`);
+          const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash);
+
+          return {
+            report,
+            windbgAnalysis,
+            analysisMethod: 'windbg'
+          };
+        })();
+
+        analysisPromise.catch(() => {});
+        let result;
+        try {
+          result = await Promise.race([analysisPromise, timeoutPromise]);
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+
+        const processingTime = (Date.now() - runStartTime) / 1000;
+        log.info('analyze.complete', {
+          processingTime,
+          analysisMethod: result.analysisMethod,
+          dumpType,
+          fileSize
+        });
+
+        // Save complete status
+        jobData.status = 'completed';
+        jobData.data = result.report;
+        jobData.processingTime = processingTime;
+        jobData.timestamp = Date.now();
+        await storeJob(uid, jobData);
+
+      } catch (err) {
+        console.error(`[API/Analyze] Job ${uid} failed:`, err);
+        log.error('analyze.fail', {
+          message: err.message,
+          uid
+        });
+
+        jobData.status = 'failed';
+        jobData.error = 'Analysis failed. Please ensure the uploaded file is a valid Windows crash dump.';
+        jobData.timestamp = Date.now();
+        await storeJob(uid, jobData);
       }
-      console.log(`[API/Analyze] Upload successful, queue position: ${uploadResult.data?.queue_position}`);
-
-      // Step 2: Poll for completion
-      console.log('[API/Analyze] Step 2: Polling for completion...');
-      await pollWinDBGStatus(uid);
-      console.log('[API/Analyze] WinDBG analysis completed');
-
-      // Step 3: Download results
-      console.log('[API/Analyze] Step 3: Downloading analysis...');
-      const windbgAnalysis = await downloadWinDBGAnalysis(uid);
-      console.log(`[API/Analyze] Downloaded ${windbgAnalysis.length} bytes of analysis`);
-
-      // Cache the WinDBG analysis for future requests with same file
-      await setCachedWinDBGAnalysis(fileHash, {
-        windbgOutput: windbgAnalysis,
-        uid,
-        fileName,
-        dumpType,
-        timestamp: Date.now()
-      });
-
-      // Step 4: Generate AI report
-      console.log('[API/Analyze] Step 4: Generating AI report...');
-      const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash);
-
-      return {
-        report,
-        windbgAnalysis,
-        analysisMethod: 'windbg'
-      };
     })();
 
-    // Race between analysis and timeout. Attach a noop catch to analysisPromise so that
-    // if it loses the race and settles later, Node doesn't surface an unhandledRejection.
-    analysisPromise.catch(() => {});
-    let result;
-    try {
-      result = await Promise.race([analysisPromise, timeoutPromise]);
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
-
-    const processingTime = (Date.now() - startTime) / 1000;
-    log.info('analyze.complete', {
-      processingTime,
-      analysisMethod: result.analysisMethod,
-      dumpType,
-      fileSize
-    });
-
-    // Return structured response
-    res.json({
+    // Respond immediately with 202 Accepted
+    return res.status(202).json({
       success: true,
-      data: result.report,
-      analysisMethod: result.analysisMethod,
-      processingTime,
-      metadata: {
-        fileName,
-        fileSize,
-        dumpType,
-        uid,
-        originalZip: originalZip || undefined
-      }
+      status: 'processing',
+      uid,
+      checkStatusUrl: `/api/analyze/status/${uid}`
     });
 
   } catch (error) {
     const processingTime = (Date.now() - startTime) / 1000;
     log.error('analyze.fail', {
       message: error.message,
-      processingTime,
-      timedOut: /timed out/i.test(error.message || '')
+      processingTime
     });
 
     res.status(500).json({
       success: false,
-      error: error.message || 'Analysis failed',
-      code: 'ANALYSIS_FAILED',
+      error: 'An internal error occurred while initiating the analysis. Please try again later.',
+      code: 'ANALYSIS_INIT_FAILED',
       processingTime
+    });
+  }
+});
+
+// Poll status of external API analyze jobs
+app.get('/api/analyze/status/:uid', externalAnalyzeLimiter, requireApiKey, async (req, res) => {
+  const { uid } = req.params;
+  if (!uid || typeof uid !== 'string') {
+    return res.status(400).json({ success: false, error: 'Invalid UID parameter' });
+  }
+
+  try {
+    const job = await loadJob(uid);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+
+    if (job.status === 'processing') {
+      return res.json({
+        success: true,
+        status: 'processing'
+      });
+    }
+
+    if (job.status === 'failed') {
+      return res.status(500).json({
+        success: false,
+        status: 'failed',
+        error: job.error || 'Analysis failed',
+        code: 'ANALYSIS_FAILED'
+      });
+    }
+
+    // Completed
+    return res.json({
+      success: true,
+      status: 'completed',
+      data: job.data,
+      analysisMethod: job.analysisMethod,
+      processingTime: job.processingTime,
+      metadata: {
+        fileName: job.fileName,
+        fileSize: job.fileSize,
+        dumpType: job.dumpType,
+        uid: job.uid,
+        originalZip: job.originalZip
+      }
+    });
+
+  } catch (error) {
+    console.error('[API/Analyze/Status] Error loading job:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'An internal error occurred while retrieving job status. Please try again later.'
     });
   }
 });

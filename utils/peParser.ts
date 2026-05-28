@@ -254,18 +254,7 @@ export function extractDriverVersions(buffer: ArrayBuffer, modules: Array<{ name
     } catch (e) {
         console.error('Failed to parse driver versions from Minidump:', e);
     }
-    
-    // Fallback: Use legacy PE parser modulo offset if no versions found
-    if (versions.size === 0) {
-        const parser = new PEParser(buffer);
-        for (const module of modules) {
-            const offset = Number(module.baseAddress % BigInt(buffer.byteLength));
-            const info = parser.parseDriverInfo(offset);
-            if (info?.version) {
-                versions.set(module.name, info.version);
-            }
-        }
-    }
+
     
     return versions;
 }

@@ -37,16 +37,14 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
     throw new Error(result.error || 'Failed to extract archive');
   }
 
-  // Convert base64 responses back to File objects
-  const files: File[] = result.files.map((extracted: { fileName: string; data: string; size: number }) => {
-    const binaryString = atob(extracted.data);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: 'application/octet-stream' });
-    return new File([blob], extracted.fileName, { type: 'application/octet-stream' });
-  });
+  // Convert base64 responses back to File objects natively via data URL
+  const files: File[] = await Promise.all(
+    result.files.map(async (extracted: { fileName: string; data: string; size: number }) => {
+      const response = await fetch(`data:application/octet-stream;base64,${extracted.data}`);
+      const blob = await response.blob();
+      return new File([blob], extracted.fileName, { type: 'application/octet-stream' });
+    })
+  );
 
   return files;
 }

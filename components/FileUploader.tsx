@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, memo } from 'react';
 import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile from './CloudflareTurnstile';
@@ -10,7 +10,7 @@ interface FileUploaderProps {
   currentFileCount?: number;
 }
 
-const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCount = 0 }) => {
+const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentFileCount = 0 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isVerified, setIsVerified] = useState(false);
@@ -269,6 +269,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesAdded, currentFileCo
       </label>
     </div>
   );
-};
+});
+
+FileUploader.displayName = 'FileUploader';
 
 export default FileUploader;
