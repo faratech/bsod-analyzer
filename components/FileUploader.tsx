@@ -111,18 +111,23 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
     e.stopPropagation();
     setIsDragging(false);
     
+    // Extract files synchronously before any async await yields the event loop!
+    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    
     // Require verification before processing files
     if (!await ensureVerifiedSession()) {
       return;
     }
     
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      await processFiles(Array.from(e.dataTransfer.files));
-      e.dataTransfer.clearData();
+    if (droppedFiles.length > 0) {
+      await processFiles(droppedFiles);
     }
   }, [processFiles, ensureVerifiedSession]);
   
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Extract files synchronously before any async await yields the event loop!
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+
     // Require verification before processing files
     if (!await ensureVerifiedSession()) {
       e.preventDefault();
@@ -130,8 +135,8 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       return;
     }
     
-    if (e.target.files && e.target.files.length > 0) {
-        await processFiles(Array.from(e.target.files));
+    if (selectedFiles.length > 0) {
+        await processFiles(selectedFiles);
         // Reset input to allow re-selecting the same file
         e.target.value = '';
     }
