@@ -157,22 +157,6 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
     }
 }
 
-/**
- * Convert File to base64 string
- */
-async function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-            const result = reader.result as string;
-            // Remove the data URL prefix (e.g., "data:application/octet-stream;base64,")
-            const base64 = result.split(',')[1];
-            resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-    });
-}
 
 /**
  * Upload a .dmp file to the WinDBG server via our backend
@@ -186,20 +170,14 @@ export async function uploadToWinDBG(
 
     console.log(`[WinDBG] Uploading ${file.name} with file hash UID: ${uid}`);
 
-    // Convert file to base64
-    const fileData = await fileToBase64(file);
-
-    const body = JSON.stringify({
-        uid,
-        fileData,
-        fileName: file.name
-    });
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('uid', uid);
 
     // Use XMLHttpRequest for upload progress events
     const result = await new Promise<WinDBGUploadResponse>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/windbg/upload');
-        xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.withCredentials = true;
         xhr.timeout = UPLOAD_TIMEOUT_MS;
 
@@ -224,7 +202,7 @@ export async function uploadToWinDBG(
         xhr.onerror = () => reject(new Error('Upload network error'));
         xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-        xhr.send(body);
+        xhr.send(formData);
     });
 
     if (!result.success) {

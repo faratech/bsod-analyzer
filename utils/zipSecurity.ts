@@ -42,17 +42,23 @@ export async function validateZipFile(file: File): Promise<ZipValidationResult> 
         throw new Error(`ZIP contains non-dump files. Only .dmp, .mdmp, .hdmp, and .kdmp files are allowed within ZIP archives.`);
       }
 
-      // Calculate uncompressed size
-      filePromises.push(
-        zipEntry.async('uint8array').then(data => {
-          totalExtractedSize += data.length;
-
-          // Check cumulative size
-          if (totalExtractedSize > SECURITY_CONFIG.zip.maxExtractedSize) {
-            throw new Error(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
-          }
-        })
-      );
+      // Safely check uncompressed size from metadata first to avoid decompressing
+      const listedSize = (zipEntry as any)._data?.uncompressedSize;
+      if (typeof listedSize === 'number') {
+        totalExtractedSize += listedSize;
+        if (totalExtractedSize > SECURITY_CONFIG.zip.maxExtractedSize) {
+          throw new Error(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
+        }
+      } else {
+        filePromises.push(
+          zipEntry.async('uint8array').then(data => {
+            totalExtractedSize += data.length;
+            if (totalExtractedSize > SECURITY_CONFIG.zip.maxExtractedSize) {
+              throw new Error(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
+            }
+          })
+        );
+      }
     });
 
     // Wait for all file size calculations
