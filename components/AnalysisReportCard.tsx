@@ -167,9 +167,9 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             });
         }
 
-        report += `## Summary\n${summary}\n\n`;
+        report += `## Summary\n> ${summary}\n\n`;
         report += `## Probable Cause\n**Culprit:** \`${culprit}\`\n\n${probableCause}\n\n`;
-        report += `## Recommendations\n${recommendations.map(r => `- ${r}`).join('\n')}\n\n`;
+        report += `## Recommendations\n${recommendations.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`;
 
         // CPU Registers
         if (registers && Object.keys(registers).length > 0) {
@@ -312,14 +312,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                 const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
                 const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
-                // Debug logging for WinDBG fields
-                console.log('[UI] Report WinDBG fields:', {
-                    failureBucketId: failureBucketId || 'missing',
-                    symbolName: symbolName || 'missing',
-                    processName: systemInfo?.processName || 'missing',
-                    callStackFrames: callStack?.length || 0,
-                    rawWinDbgOutputLength: rawWinDbgOutput?.length || 0
-                });
 
                 return (
                     <div style={{padding: '1.5rem'}}>
@@ -637,8 +629,12 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                             </div>
                         )}
 
-                        {/* Driver Warnings */}
-                        {driverWarnings && driverWarnings.length > 0 && (
+                        {/* Driver Warnings - filter out malformed entries */}
+                        {(() => {
+                            const validWarnings = (driverWarnings || []).filter(w =>
+                                w.driverName?.trim() && w.displayName?.trim() && w.manufacturer?.trim()
+                            );
+                            return validWarnings.length > 0 && (
                             <div style={{
                                 backgroundColor: 'var(--bg-secondary)',
                                 border: '1px solid #f59e0b',
@@ -658,7 +654,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                     Known Problematic Drivers Detected
                                 </h3>
                                 <div style={{display: 'flex', flexDirection: 'column', gap: '0.75rem'}}>
-                                    {driverWarnings.slice(0, 3).map((warning, i) => (
+                                    {validWarnings.slice(0, 3).map((warning, i) => (
                                         <div key={i} style={{
                                             backgroundColor: 'var(--bg-primary)',
                                             padding: '0.75rem',
@@ -671,6 +667,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                                     fontWeight: '600',
                                                     color: warning.isAssociatedWithBugCheck ? 'var(--status-error)' : 'var(--text-primary)'
                                                 }}>{warning.driverName}</span>
+                                                {warning.category && (
                                                 <span style={{
                                                     backgroundColor: 'var(--bg-secondary)',
                                                     padding: '0.1rem 0.5rem',
@@ -678,6 +675,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                                     fontSize: '0.7rem',
                                                     color: 'var(--text-tertiary)'
                                                 }}>{warning.category}</span>
+                                                )}
                                                 {warning.isAssociatedWithBugCheck && (
                                                     <span style={{
                                                         backgroundColor: 'var(--status-error)',
@@ -690,61 +688,137 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                                 )}
                                             </div>
                                             <div style={{fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem'}}>
-                                                {warning.displayName} ({warning.manufacturer})
+                                                {warning.displayName}{warning.manufacturer ? ` — ${warning.manufacturer}` : ''}
                                             </div>
+                                            {warning.issues && warning.issues.length > 0 && (
                                             <ul style={{
                                                 margin: 0,
                                                 paddingLeft: '1.25rem',
                                                 fontSize: '0.8rem',
                                                 color: 'var(--text-secondary)'
                                             }}>
-                                                {warning.issues?.slice(0, 2).map((issue, j) => (
+                                                {warning.issues.slice(0, 2).map((issue, j) => (
                                                     <li key={j}>{issue}</li>
                                                 ))}
                                             </ul>
-                                            {warning.recommendations?.length > 0 && (
+                                            )}
+                                            {warning.recommendations && warning.recommendations.length > 0 && (
                                                 <div style={{
                                                     marginTop: '0.5rem',
                                                     fontSize: '0.75rem',
                                                     color: 'var(--brand-primary)'
                                                 }}>
-                                                    Tip: {warning.recommendations[0]}
+                                                    💡 {warning.recommendations[0]}
                                                 </div>
                                             )}
                                         </div>
                                     ))}
                                 </div>
-                                {driverWarnings.length > 3 && (
+                                {validWarnings.length > 3 && (
                                     <div style={{
                                         marginTop: '0.5rem',
                                         fontSize: '0.8rem',
                                         color: 'var(--text-tertiary)'
                                     }}>
-                                        +{driverWarnings.length - 3} more problematic drivers detected
+                                        +{validWarnings.length - 3} more problematic drivers detected
                                     </div>
                                 )}
+                            </div>
+                            );
+                        })()}
+
+                        {/* Summary */}
+                        {dumpFile.report.summary && (
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderLeft: '3px solid var(--brand-primary)',
+                                borderRadius: '0 0.5rem 0.5rem 0',
+                                padding: '1rem 1.25rem',
+                                marginBottom: '1.5rem',
+                                fontSize: '0.95rem',
+                                lineHeight: '1.6',
+                                color: 'var(--text-secondary)',
+                                fontStyle: 'italic'
+                            }}>
+                                {dumpFile.report.summary}
                             </div>
                         )}
 
-                        {/* Summary */}
-                        <p style={{fontStyle: 'italic', marginBottom: '1.5rem', color: 'var(--text-secondary)'}}>"...{dumpFile.report.summary}"</p>
-
                         <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem'}}>
-                            <div>
-                                <h3>Probable Cause</h3>
-                                <p>{dumpFile.report.probableCause}</p>
-                                {!crashLocation && (
-                                    <div style={{ marginTop: '1rem' }}>
-                                        <span className="code-block" style={{display: 'inline-block', padding: '0.25rem 0.75rem', fontSize: '0.8rem'}}>Culprit: {dumpFile.report.culprit}</span>
-                                    </div>
-                                )}
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderRadius: '0.5rem',
+                                padding: '1.25rem',
+                                border: '1px solid var(--border-primary)'
+                            }}>
+                                <h3 style={{
+                                    margin: '0 0 0.75rem 0',
+                                    fontSize: '0.95rem',
+                                    color: 'var(--text-primary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    <span style={{fontSize: '1rem'}}>🔍</span>
+                                    Probable Cause
+                                </h3>
+                                <p style={{
+                                    margin: 0,
+                                    lineHeight: '1.65',
+                                    fontSize: '0.9rem',
+                                    color: 'var(--text-secondary)'
+                                }}>{dumpFile.report.probableCause}</p>
+                                <div style={{
+                                    marginTop: '1rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    <span style={{
+                                        fontSize: '0.75rem',
+                                        color: 'var(--text-tertiary)',
+                                        flexShrink: 0
+                                    }}>Culprit:</span>
+                                    <span className="code-block" style={{
+                                        display: 'inline-block',
+                                        padding: '0.2rem 0.6rem',
+                                        fontSize: '0.8rem',
+                                        fontFamily: 'Jetbrains Mono, monospace',
+                                        fontWeight: '600',
+                                        color: crashLocation ? 'var(--status-error)' : 'var(--text-primary)'
+                                    }}>{dumpFile.report.culprit}</span>
+                                </div>
                             </div>
                             {dumpFile.report.recommendations && dumpFile.report.recommendations.length > 0 && (
-                            <div>
-                                <h3>Recommendations</h3>
-                                <ul style={{listStyle: 'disc', paddingLeft: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem'}}>
+                            <div style={{
+                                backgroundColor: 'var(--bg-secondary)',
+                                borderRadius: '0.5rem',
+                                padding: '1.25rem',
+                                border: '1px solid var(--border-primary)'
+                            }}>
+                                <h3 style={{
+                                    margin: '0 0 0.75rem 0',
+                                    fontSize: '0.95rem',
+                                    color: 'var(--text-primary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}>
+                                    <span style={{fontSize: '1rem'}}>✅</span>
+                                    Recommendations
+                                </h3>
+                                <ol style={{
+                                    margin: 0,
+                                    paddingLeft: '1.25rem',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '0.5rem',
+                                    fontSize: '0.9rem',
+                                    color: 'var(--text-secondary)',
+                                    lineHeight: '1.5'
+                                }}>
                                     {dumpFile.report.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
-                                </ul>
+                                </ol>
                             </div>
                             )}
                         </div>

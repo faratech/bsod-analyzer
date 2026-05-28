@@ -1273,6 +1273,32 @@ export const analyzeDumpFiles = async (
                         windbgResult.fileHash
                     );
 
+                    // Populate bugCheck from binary buffer (guarantees accurate code and parameters meanings)
+                    try {
+                        const bugCheckInfo = extractBugCheckInfo(fileBuffer);
+                        if (bugCheckInfo) {
+                            const bugCode = bugCheckInfo.code;
+                            const bugName = bugCheckInfo.name;
+                            const params = [
+                                bugCheckInfo.parameter1,
+                                bugCheckInfo.parameter2,
+                                bugCheckInfo.parameter3,
+                                bugCheckInfo.parameter4
+                            ];
+
+                            windbgReport.bugCheck = {
+                                code: formatBugCheckHex(bugCode),
+                                name: bugName,
+                                parameters: params.map((p, i) => ({
+                                    value: `0x${p.toString(16).toUpperCase()}`,
+                                    meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
+                                }))
+                            };
+                        }
+                    } catch (e) {
+                        console.error('[Analyzer] Failed to extract bug check info from binary buffer:', e);
+                    }
+
                     return {
                         id: dumpFile.id,
                         report: windbgReport,
