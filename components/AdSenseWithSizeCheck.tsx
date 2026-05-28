@@ -89,6 +89,7 @@ export const SafeAd: React.FC<{
   const containerRef = useRef<HTMLDivElement>(null);
   const hasWidth = useElementWidth(containerRef, minWidth);
   const [isVisible, setIsVisible] = useState(false);
+  const [adPushed, setAdPushed] = useState(false);
   
   // Check if element is visible in viewport
   useEffect(() => {
@@ -108,14 +109,15 @@ export const SafeAd: React.FC<{
   
   // Only push ad when visible and has width
   useEffect(() => {
-    if (hasWidth && isVisible) {
+    if (hasWidth && isVisible && !adPushed) {
       try {
         (window.adsbygoogle = window.adsbygoogle || []).push({});
+        setAdPushed(true);
       } catch (_) {
         // Ad failed to load, silently ignore
       }
     }
-  }, [hasWidth, isVisible, type]);
+  }, [hasWidth, isVisible, adPushed, type]);
   
   const getAdProps = () => {
     switch (type) {

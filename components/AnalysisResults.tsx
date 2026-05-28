@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { DumpFile } from '../types';
 import AnalysisReportCard from './AnalysisReportCard';
 
@@ -12,7 +12,7 @@ interface AnalysisResultsProps {
     AdComponent?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
 }
 
-const AnalysisResults: React.FC<AnalysisResultsProps> = ({
+const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
     title = "Analysis Results",
     dumpFiles,
     onUpdateAdvancedAnalysis,
@@ -49,6 +49,8 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = ({
             </div>
         </section>
     );
-};
+});
+
+AnalysisResults.displayName = 'AnalysisResults';
 
 export default AnalysisResults;

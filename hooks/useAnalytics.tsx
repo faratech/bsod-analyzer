@@ -1,3 +1,5 @@
+import { useCallback } from 'react';
+
 // Google Analytics event tracking hook
 declare global {
     interface Window {
@@ -6,7 +8,7 @@ declare global {
 }
 
 export const useAnalytics = () => {
-    const trackEvent = (action: string, category: string, label?: string, value?: number) => {
+    const trackEvent = useCallback((action: string, category: string, label?: string, value?: number) => {
         if (typeof window !== 'undefined' && window.gtag) {
             window.gtag('event', action, {
                 event_category: category,
@@ -14,35 +16,35 @@ export const useAnalytics = () => {
                 value: value
             });
         }
-    };
+    }, []);
 
-    const trackFileUpload = (fileType: string, fileSize: number) => {
+    const trackFileUpload = useCallback((fileType: string, fileSize: number) => {
         trackEvent('file_upload', 'engagement', fileType, Math.round(fileSize / 1024)); // Size in KB
-    };
+    }, [trackEvent]);
 
-    const trackAnalysisStart = (dumpType: string) => {
+    const trackAnalysisStart = useCallback((dumpType: string) => {
         trackEvent('analysis_start', 'engagement', dumpType);
-    };
+    }, [trackEvent]);
 
-    const trackAnalysisComplete = (success: boolean, dumpType: string) => {
+    const trackAnalysisComplete = useCallback((success: boolean, dumpType: string) => {
         trackEvent('analysis_complete', 'engagement', `${dumpType}_${success ? 'success' : 'error'}`);
-    };
+    }, [trackEvent]);
 
-    const trackAdvancedTool = (toolName: string) => {
+    const trackAdvancedTool = useCallback((toolName: string) => {
         trackEvent('advanced_tool_use', 'engagement', toolName);
-    };
+    }, [trackEvent]);
 
-    const trackDonation = (amount: string, type: 'one-time' | 'monthly') => {
+    const trackDonation = useCallback((amount: string, type: 'one-time' | 'monthly') => {
         trackEvent('donation_click', 'conversion', `${type}_${amount}`);
-    };
+    }, [trackEvent]);
 
-    const trackPageView = (pagePath: string) => {
+    const trackPageView = useCallback((pagePath: string) => {
         if (typeof window !== 'undefined' && window.gtag) {
             window.gtag('config', 'G-0HVHB49RDP', {
                 page_path: pagePath
             });
         }
-    };
+    }, []);
 
     return {
         trackEvent,

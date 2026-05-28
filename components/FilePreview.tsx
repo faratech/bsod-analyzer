@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { FileIcon, CloseIcon } from './Icons';
 
 interface FilePreviewProps {
@@ -9,7 +9,7 @@ interface FilePreviewProps {
   error?: string;
 }
 
-const FilePreview: React.FC<FilePreviewProps> = ({ file, progress, onRemove, status, error }) => {
+const FilePreview: React.FC<FilePreviewProps> = memo(({ file, progress, onRemove, status, error }) => {
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -77,6 +77,6 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, progress, onRemove, sta
       </button>
     </div>
   );
-};
+});
 
 export default FilePreview;

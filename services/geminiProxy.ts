@@ -1345,8 +1345,14 @@ export const analyzeDumpFiles = async (
             // Analyze memory patterns for additional corruption detection
             let memoryPatternAnalysis;
             try {
-                memoryPatternAnalysis = analyzeMemoryPatterns(fileBuffer);
-                console.log('[Analyzer] Memory pattern analysis complete:', memoryPatternAnalysis.summary);
+                // Skip memory pattern scanning for large files (above 5MB) on client
+                // to avoid blocking the UI thread with billions of loop iterations
+                if (fileBuffer.byteLength > 5 * 1024 * 1024) {
+                    memoryPatternAnalysis = { summary: 'Skipped for large dump file.' };
+                } else {
+                    memoryPatternAnalysis = analyzeMemoryPatterns(fileBuffer);
+                    console.log('[Analyzer] Memory pattern analysis complete:', memoryPatternAnalysis.summary);
+                }
             } catch (error) {
                 console.error('[Analyzer] Memory pattern analysis failed:', error);
                 memoryPatternAnalysis = null;

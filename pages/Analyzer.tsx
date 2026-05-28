@@ -15,7 +15,7 @@ import { useFileProcessor } from '../hooks/useFileProcessor';
 import { useAnalysis } from '../hooks/useAnalysis';
 import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
-import { initializeSession, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
+import { initializeSession, onSessionInvalid, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 
 const Analyzer: React.FC = () => {
     const { trackFileUpload, trackAnalysisStart, trackAnalysisComplete } = useAnalytics();
@@ -44,6 +44,20 @@ const Analyzer: React.FC = () => {
             intervals.forEach(clearInterval);
             intervals.clear();
         };
+    }, []);
+
+    // Handle session invalidation to reset file statuses so analysis can be re-run
+    useEffect(() => {
+        const unsubscribe = onSessionInvalid(() => {
+            setDumpFiles(prevFiles =>
+                prevFiles.map(df =>
+                    df.status === FileStatus.ANALYZING
+                        ? { ...df, status: FileStatus.PENDING }
+                        : df
+                )
+            );
+        });
+        return unsubscribe;
     }, []);
 
     const handleFilesAdded = useCallback(async (acceptedFiles: File[]) => {
@@ -75,7 +89,7 @@ const Analyzer: React.FC = () => {
             progressIntervals.current.set(file.name, interval);
         });
         
-        const newDumpFiles = await processFiles(acceptedFiles, trackFileUpload);
+        const newDumpFiles = await processFiles(acceptedFiles, dumpFiles.length, trackFileUpload);
         setDumpFiles(prevFiles => addFilesToState(newDumpFiles, prevFiles));
     }, [processFiles, addFilesToState, trackFileUpload]);
     

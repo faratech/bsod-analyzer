@@ -9,7 +9,7 @@
 
 import xxhash from 'xxhash-wasm';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
-import { hashBytes } from '../shared/hash.js';
+import { hashBytes, formatHash64 } from '../shared/hash.js';
 
 // Initialize xxhash
 let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
@@ -79,10 +79,20 @@ export interface WinDBGAnalysisResult {
  * Using xxhash64 for speed with large dump files
  */
 export async function generateFileHash(file: File): Promise<string> {
-    const buffer = await file.arrayBuffer();
-    const data = new Uint8Array(buffer);
     const activeHasher = hasher ?? await hasherReady;
-    return hashBytes(activeHasher, data);
+    const streamingHasher = activeHasher.create64();
+    const chunkSize = 2 * 1024 * 1024; // 2MB chunk size
+    let offset = 0;
+
+    while (offset < file.size) {
+        const slice = file.slice(offset, offset + chunkSize);
+        const buffer = await slice.arrayBuffer();
+        streamingHasher.update(new Uint8Array(buffer));
+        offset += chunkSize;
+    }
+
+    const hashVal = streamingHasher.digest();
+    return formatHash64(hashVal);
 }
 
 /**
