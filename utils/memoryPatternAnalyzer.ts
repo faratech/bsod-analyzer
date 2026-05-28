@@ -63,11 +63,7 @@ class MemoryPatternAnalyzer {
         const alignedLength = Math.floor(this.buffer.byteLength / 4) * 4;
         if (alignedLength < 4) return indicators; // Buffer too small
         
-        const alignedBuffer = alignedLength === this.buffer.byteLength 
-            ? this.buffer 
-            : this.buffer.slice(0, alignedLength);
-        
-        const uint32Array = new Uint32Array(alignedBuffer);
+        const uint32Array = new Uint32Array(this.buffer, 0, Math.floor(this.buffer.byteLength / 4));
         
         // Common free patterns
         const freePatterns = [
@@ -192,11 +188,7 @@ class MemoryPatternAnalyzer {
         const alignedLength = Math.floor(this.buffer.byteLength / 4) * 4;
         if (alignedLength < 4) return indicators; // Buffer too small
         
-        const alignedBuffer = alignedLength === this.buffer.byteLength 
-            ? this.buffer 
-            : this.buffer.slice(0, alignedLength);
-        
-        const uint32Array = new Uint32Array(alignedBuffer);
+        const uint32Array = new Uint32Array(this.buffer, 0, Math.floor(this.buffer.byteLength / 4));
         
         const uninitPatterns = [
             0xCDCDCDCD, // Uninitialized heap (debug)

@@ -563,55 +563,58 @@ function extractCrashTime(buffer: ArrayBuffer): string | null {
 function extractPrintableStrings(buffer: ArrayBuffer, minLength = 4): string {
     const startTime = Date.now();
     const view = new Uint8Array(buffer);
-    let result = '';
-    let currentString = '';
-    
-    // ASCII strings
+    const asciiChunks: string[] = [];
+
+    // 1. ASCII extraction using range scanning
+    let start = -1;
     for (let i = 0; i < view.length; i++) {
-        // Check timeout periodically
-        if (i % 10000 === 0 && !validateProcessingTimeout(startTime)) {
-            console.warn('String extraction timed out');
+        if (i % 50000 === 0 && !validateProcessingTimeout(startTime)) {
+            console.warn('ASCII extraction timed out');
             break;
         }
-        
-        const charCode = view[i];
-        if (charCode >= 32 && charCode <= 126) {
-            currentString += String.fromCharCode(charCode);
+        const b = view[i];
+        if (b >= 32 && b <= 126) {
+            if (start === -1) start = i;
         } else {
-            if (currentString.length >= minLength) {
-                result += currentString + '\n';
+            if (start !== -1) {
+                if (i - start >= minLength) {
+                    asciiChunks.push(new TextDecoder('ascii').decode(view.subarray(start, i)));
+                }
+                start = -1;
             }
-            currentString = '';
         }
     }
-    if (currentString.length >= minLength) {
-        result += currentString + '\n';
+    if (start !== -1 && (view.length - start) >= minLength) {
+        asciiChunks.push(new TextDecoder('ascii').decode(view.subarray(start, view.length)));
     }
 
-    // UTF-16LE strings
-    const dataView = new DataView(buffer);
-    currentString = '';
-     for (let i = 0; i < buffer.byteLength - 1; i += 2) {
-        try {
-            const charCode = dataView.getUint16(i, true); // true for little-endian
-            if (charCode >= 32 && charCode <= 126) { // Simple check for printable range
-                currentString += String.fromCharCode(charCode);
-            } else {
-                 if (currentString.length >= minLength) {
-                    result += currentString + '\n';
-                }
-                currentString = '';
-            }
-        } catch (e) {
-            // Reached end of buffer
+    // 2. UTF-16LE extraction using low/high byte checks
+    const utf16Chunks: string[] = [];
+    const u16Len = Math.floor(buffer.byteLength / 2);
+    let u16Start = -1;
+    for (let i = 0; i < u16Len; i++) {
+        if (i % 25000 === 0 && !validateProcessingTimeout(startTime)) {
+            console.warn('UTF-16 extraction timed out');
             break;
         }
+        const low = view[i * 2];
+        const high = view[i * 2 + 1];
+        if (low >= 32 && low <= 126 && high === 0) {
+            if (u16Start === -1) u16Start = i;
+        } else {
+            if (u16Start !== -1) {
+                if (i - u16Start >= minLength) {
+                    utf16Chunks.push(new TextDecoder('utf-16le').decode(view.subarray(u16Start * 2, i * 2)));
+                }
+                u16Start = -1;
+            }
+        }
     }
-    if (currentString.length >= minLength) {
-        result += currentString;
+    if (u16Start !== -1 && (u16Len - u16Start) >= minLength) {
+        utf16Chunks.push(new TextDecoder('utf-16le').decode(view.subarray(u16Start * 2, u16Len * 2)));
     }
 
-    return result.replace(new RegExp('(\\r\\n|\\n|\\r)', 'gm'), "\n"); // Normalize newlines
+    return [...asciiChunks, ...utf16Chunks].join('\n');
 }
 
 // Legacy function kept for compatibility - actual sanitization happens in sanitizeHexDump
@@ -1655,14 +1658,14 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
             // Enhance report with pattern-based recommendations
             if (report && structuredInfo.bugCheckInfo) {
                 const bugCheckName = structuredInfo.bugCheckInfo.name;
-                const pattern = findMatchingPattern(bugCheckName, rawExtractedStrings);
+                const pattern = findMatchingPattern(bugCheckName, extractedStrings);
                 
                 if (pattern) {
                     // Get enhanced recommendations
                     const enhancedRecs = getEnhancedRecommendations(
                         bugCheckName,
                         report.culprit,
-                        rawExtractedStrings
+                        extractedStrings
                     );
                     
                     // Merge with AI recommendations, removing duplicates

@@ -31,11 +31,11 @@ export function sanitizeExtractedContent(content: string): string {
 
 export function sanitizeHexDump(buffer: ArrayBuffer): string {
   const maxSize = Math.min(buffer.byteLength, SECURITY_CONFIG.processing.maxHexDumpSize);
-  const bytes = new Uint8Array(buffer.slice(0, maxSize));
+  const bytes = new Uint8Array(buffer, 0, maxSize);
   
   let hexDump = '';
   for (let i = 0; i < bytes.length; i += 16) {
-    const chunk = bytes.slice(i, Math.min(i + 16, bytes.length));
+    const chunk = bytes.subarray(i, Math.min(i + 16, bytes.length));
     const hex = Array.from(chunk, byte => byte.toString(16).padStart(2, '0')).join(' ');
     const ascii = Array.from(chunk, byte => 
       byte >= 0x20 && byte <= 0x7E ? String.fromCharCode(byte) : '.'

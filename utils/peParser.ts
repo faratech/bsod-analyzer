@@ -2,6 +2,8 @@
  * PE (Portable Executable) parser for extracting driver versions and signatures
  */
 
+import { MinidumpParser } from './minidumpStreams.js';
+
 interface PEHeader {
     signature: number;
     machine: number;
@@ -227,15 +229,41 @@ class PEParser {
  */
 export function extractDriverVersions(buffer: ArrayBuffer, modules: Array<{ name: string; baseAddress: bigint; sizeOfImage: number }>): Map<string, VersionInfo> {
     const versions = new Map<string, VersionInfo>();
-    const parser = new PEParser(buffer);
     
-    for (const module of modules) {
-        // Convert virtual address to file offset (simplified)
-        const offset = Number(module.baseAddress % BigInt(buffer.byteLength));
-        
-        const info = parser.parseDriverInfo(offset);
-        if (info?.version) {
-            versions.set(module.name, info.version);
+    // First attempt: Parse from Minidump structure
+    try {
+        const view = new DataView(buffer);
+        if (buffer.byteLength >= 32 && view.getUint32(0, true) === 0x504D444D) { // 'MDMP'
+            const parser = new MinidumpParser(buffer);
+            const mdmpModules = parser.getModules();
+            for (const m of mdmpModules) {
+                if (m.versionInfo && m.versionInfo.fileVersionMS !== 0) {
+                    const major = (m.versionInfo.fileVersionMS >> 16) & 0xFFFF;
+                    const minor = m.versionInfo.fileVersionMS & 0xFFFF;
+                    const build = (m.versionInfo.fileVersionLS >> 16) & 0xFFFF;
+                    const revision = m.versionInfo.fileVersionLS & 0xFFFF;
+                    
+                    const fileVersion = `${major}.${minor}.${build}.${revision}`;
+                    versions.set(m.name, {
+                        fileVersion,
+                        productVersion: fileVersion,
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to parse driver versions from Minidump:', e);
+    }
+    
+    // Fallback: Use legacy PE parser modulo offset if no versions found
+    if (versions.size === 0) {
+        const parser = new PEParser(buffer);
+        for (const module of modules) {
+            const offset = Number(module.baseAddress % BigInt(buffer.byteLength));
+            const info = parser.parseDriverInfo(offset);
+            if (info?.version) {
+                versions.set(module.name, info.version);
+            }
         }
     }
     

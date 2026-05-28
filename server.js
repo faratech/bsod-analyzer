@@ -478,13 +478,19 @@ let _modelCfgCache = { value: 'gemini-3.1-flash-lite', readAt: 0 };
 
 function getPrimaryModel() {
   const now = Date.now();
-  if (now - _modelCfgCache.readAt < MODEL_CFG_TTL_MS) return _modelCfgCache.value;
-  try {
-    const modelConfig = fs.readFileSync(MODEL_CFG_PATH, 'utf8').trim();
-    if (modelConfig) _modelCfgCache = { value: modelConfig, readAt: now };
-    else _modelCfgCache.readAt = now;
-  } catch {
-    _modelCfgCache.readAt = now; // keep last-good value; don't spam fs errors
+  if (now - _modelCfgCache.readAt >= MODEL_CFG_TTL_MS) {
+    // Trigger background read so we do not block the Express event loop
+    _modelCfgCache.readAt = now;
+    fs.promises.readFile(MODEL_CFG_PATH, 'utf8')
+      .then(modelConfig => {
+        const cleaned = modelConfig.trim();
+        if (cleaned) {
+          _modelCfgCache.value = cleaned;
+        }
+      })
+      .catch(() => {
+        // Keep last-good value on error
+      });
   }
   return _modelCfgCache.value;
 }
@@ -1701,7 +1707,7 @@ function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
 
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
-app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, largeJsonParser, async (req, res) => {
+app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
     if (!WINDBG_API_KEY) {
       return res.status(503).json({
@@ -1710,24 +1716,24 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       });
     }
 
-    let { uid, fileData, fileName } = req.body;
-
-    if (!uid || !fileData || !fileName) {
+    if (!req.file) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: uid, fileData, fileName'
+        error: 'No file uploaded. Use multipart form with "file" field.'
       });
     }
-    if (typeof uid !== 'string' || !HASH_RE.test(uid) || typeof fileData !== 'string' || typeof fileName !== 'string') {
+
+    let { uid } = req.body;
+    let fileName = sanitizeUploadFileName(req.file.originalname || 'upload.dmp');
+    const fileBuffer = req.file.buffer;
+
+    if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid upload fields'
+        error: 'Invalid or missing uid field'
       });
     }
-    fileName = sanitizeUploadFileName(fileName);
 
-    // Convert base64 file data to buffer
-    const fileBuffer = Buffer.from(fileData, 'base64');
     const validation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: false });
     if (!validation.valid) {
       return res.status(400).json({
@@ -1751,7 +1757,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
 
     // Check cache for existing WinDBG analysis
-    const cachedAnalysis = await getCachedWinDBGAnalysis(fileBuffer);
+    const cachedAnalysis = await getCachedWinDBGAnalysis(uid);
     if (cachedAnalysis) {
       console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
       return res.json({
@@ -2666,7 +2672,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
     console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
 
     // Check cache for previous WinDBG analysis of this exact file
-    const cachedAnalysis = await getCachedWinDBGAnalysis(fileBuffer);
+    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
     if (cachedAnalysis) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
 
