@@ -258,7 +258,7 @@ const Analyzer: React.FC = () => {
                 )}
 
                 <AnalysisResults
-                    dumpFiles={dumpFiles}
+                    dumpFiles={dumpFiles.filter(df => df.status !== FileStatus.PENDING)}
                     onUpdateAdvancedAnalysis={handleUpdateAdvancedAnalysis}
                     onRetry={handleRetry}
                     showAds={true}
@@ -266,7 +266,7 @@ const Analyzer: React.FC = () => {
                 />
                 
                 {/* Vertical ad on desktop, shown alongside results */}
-                {dumpFiles.length > 0 && (
+                {dumpFiles.some(df => df.status !== FileStatus.PENDING) && (
                     <aside className="desktop-only" style={{
                         position: 'absolute',
                         right: '-320px',

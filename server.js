@@ -2965,6 +2965,21 @@ app.use((req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
+
+  // In development/local testing, read from disk to avoid stale memory caching
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const indexPath = path.join(__dirname, 'dist', 'index.html');
+      if (fs.existsSync(indexPath)) {
+        const html = fs.readFileSync(indexPath, 'utf-8');
+        res.send(html);
+        return;
+      }
+    } catch (e) {
+      console.error('Failed to read index.html dynamically in development:', e);
+    }
+  }
+
   res.send(cachedIndexHtml);
 });
 
