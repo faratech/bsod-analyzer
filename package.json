@@ -23,7 +23,7 @@
     "@google/genai": "^2.7.0",
     "@upstash/redis": "^1.38.0",
     "compression": "^1.8.1",
-    "concurrently": "^10.0.0",
+    "concurrently": "^10.0.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
