@@ -9,7 +9,7 @@
 
 import xxhash from 'xxhash-wasm';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
-import { hashBytes, formatHash64 } from '../shared/hash.js';
+import { formatHash64 } from '../shared/hash.js';
 
 // Initialize xxhash
 let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
@@ -39,6 +39,7 @@ export interface WinDBGUploadResponse {
         total_pending: number;
     };
     error?: string;
+    code?: string;
 }
 
 export interface WinDBGStatusResponse {
@@ -57,6 +58,7 @@ export interface WinDBGStatusResponse {
         queue_position?: number;
     };
     error?: string;
+    code?: string;
 }
 
 export interface WinDBGDownloadResponse {
@@ -72,6 +74,16 @@ export interface WinDBGAnalysisResult {
     error?: string;
     fileHash?: string; // The xxhash64 of the file, used for cache key consistency
     cached?: boolean; // True if WinDBG result was served from cache
+    errorCode?: string;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isBusyError(error: unknown): boolean {
+    const err = error as Error & { code?: string };
+    return err?.code === 'WINDBG_UPLOAD_BUSY' || /Server is busy/i.test(err?.message || '');
 }
 
 /**
@@ -99,8 +111,8 @@ export async function generateFileHash(file: File): Promise<string> {
  * Check cache status for multiple files before upload
  * Returns a map of file hash -> cached status
  */
-export async function checkCacheStatus(files: File[]): Promise<Map<string, { hash: string; cached: boolean }>> {
-    const results = new Map<string, { hash: string; cached: boolean }>();
+export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash: string; cached: boolean }>> {
+    const results = new Map<File, { hash: string; cached: boolean }>();
 
     if (files.length === 0) {
         return results;
@@ -109,16 +121,14 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
     try {
         // Generate hashes for all files in parallel
         const hashPromises = files.map(async (file) => ({
-            name: file.name,
+            file,
             hash: await generateFileHash(file)
         }));
         const fileHashes = await Promise.all(hashPromises);
 
         // Create a map of hash -> filename for lookup
-        const hashToFile = new Map<string, string>();
         const hashes: string[] = [];
-        for (const { name, hash } of fileHashes) {
-            hashToFile.set(hash, name);
+        for (const { hash } of fileHashes) {
             hashes.push(hash);
         }
 
@@ -137,8 +147,8 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
             }
             console.warn('[WinDBG] Cache check failed:', response.status);
             // Return all as not cached on error
-            for (const { name, hash } of fileHashes) {
-                results.set(name, { hash, cached: false });
+            for (const { file, hash } of fileHashes) {
+                results.set(file, { hash, cached: false });
             }
             return results;
         }
@@ -146,16 +156,16 @@ export async function checkCacheStatus(files: File[]): Promise<Map<string, { has
         const data = await response.json();
 
         if (data.success && data.cached) {
-            for (const { name, hash } of fileHashes) {
-                results.set(name, { hash, cached: data.cached[hash] || false });
+            for (const { file, hash } of fileHashes) {
+                results.set(file, { hash, cached: data.cached[hash] || false });
             }
 
             const cachedCount = Object.values(data.cached).filter(Boolean).length;
             console.log(`[WinDBG] Cache check: ${cachedCount}/${files.length} files already cached`);
         } else {
             // Return all as not cached if response format is unexpected
-            for (const { name, hash } of fileHashes) {
-                results.set(name, { hash, cached: false });
+            for (const { file, hash } of fileHashes) {
+                results.set(file, { hash, cached: false });
             }
         }
 
@@ -216,7 +226,9 @@ export async function uploadToWinDBG(
     });
 
     if (!result.success) {
-        throw new Error(result.error || 'Upload failed');
+        const error = new Error(result.error || 'Upload failed') as Error & { code?: string };
+        error.code = result.code;
+        throw error;
     }
 
     // Handle cached response - include uid for cache key consistency
@@ -361,7 +373,24 @@ export async function analyzeWithWinDBG(
     try {
         // Stage 1: Upload
         onProgress?.('uploading', `Uploading ${file.name} to WinDBG server...`);
-        const uploadResult = await uploadToWinDBG(file, onUploadProgress);
+        let uploadResult: WinDBGUploadResponse | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                uploadResult = await uploadToWinDBG(file, onUploadProgress);
+                break;
+            } catch (error) {
+                if (!isBusyError(error) || attempt === 2) {
+                    throw error;
+                }
+                const delayMs = 1500 * (attempt + 1);
+                onProgress?.('queued', `WinDBG server is busy, retrying upload in ${Math.round(delayMs / 1000)}s...`);
+                await sleep(delayMs);
+            }
+        }
+
+        if (!uploadResult) {
+            throw new Error('Upload failed');
+        }
 
         // Handle cached response - skip polling and download
         if (uploadResult.cached && uploadResult.cachedAnalysis) {
@@ -477,25 +506,29 @@ export async function analyzeWithWinDBG(
             fileHash: uid
         };
 
-    } catch (error) {
-        console.error('[WinDBG] Analysis failed:', error);
-        return {
-            success: false,
-            analysisText: '',
-            error: (error as Error).message
-        };
-    }
+	    } catch (error) {
+	        console.error('[WinDBG] Analysis failed:', error);
+	        const err = error as Error & { code?: string };
+	        return {
+	            success: false,
+	            analysisText: '',
+	            error: err.message,
+	            errorCode: err.code
+	        };
+	    }
     })();
 
     // Race between analysis and timeout
     try {
         return await Promise.race([analysisPromise, timeoutPromise]);
-    } catch (error) {
-        console.error('[WinDBG] Analysis timed out or failed:', error);
-        return {
-            success: false,
-            analysisText: '',
-            error: (error as Error).message
-        };
-    }
+	    } catch (error) {
+	        console.error('[WinDBG] Analysis timed out or failed:', error);
+	        const err = error as Error & { code?: string };
+	        return {
+	            success: false,
+	            analysisText: '',
+	            error: err.message,
+	            errorCode: err.code
+	        };
+	    }
 }

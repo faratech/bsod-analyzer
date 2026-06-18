@@ -116,6 +116,10 @@ export async function extractZipSafely(file: File): Promise<{ files: File[], err
           const extractedFile = new File([blob], fileName, {
             type: 'application/octet-stream',
             lastModified: zipEntry.date.getTime()
+          }) as File & { sourcePath?: string };
+          Object.defineProperty(extractedFile, 'sourcePath', {
+            value: relativePath,
+            enumerable: false
           });
           files.push(extractedFile);
         }).catch(err => {

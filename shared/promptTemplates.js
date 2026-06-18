@@ -250,8 +250,23 @@ Respond with valid JSON matching this schema:
     "name": "string - e.g. MEMORY_MANAGEMENT",
     "parameters": ["array of 4 parameter values"]
   },
-  "driverWarnings": [{"name": "string", "description": "string", "severity": "critical|warning|info"}],
-  "hardwareError": {"type": "string", "details": "string"} or null
+  "driverWarnings": [{
+    "driverName": "string - driver filename, e.g. nvlddmkm.sys",
+    "displayName": "string - human-readable driver name",
+    "manufacturer": "string",
+    "category": "graphics|audio|network|storage|security|virtualization|other",
+    "issues": ["array of known issues"],
+    "recommendations": ["array of driver-specific actions"],
+    "isAssociatedWithBugCheck": true
+  }],
+  "hardwareError": {
+    "isHardwareError": true,
+    "errorType": "string",
+    "component": "CPU|RAM|GPU|Motherboard|Storage|Other",
+    "severity": "fatal|recoverable|corrected|deferred",
+    "details": ["array of technical details"],
+    "recommendations": ["array of hardware-specific actions"]
+  } or null
 }`;
 
 // Build a final prompt: cache-stable prefix first, per-dump evidence last.

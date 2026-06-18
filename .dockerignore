@@ -3,8 +3,8 @@ npm-debug.log
 .git
 .gitignore
 README.md
-.env
-.env.local
+.env*
+!.env.example
 .DS_Store
 dist
 .vscode

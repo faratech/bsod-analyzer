@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import { analyzeDumpFiles } from '../services/geminiProxy';
 import { useError } from './useError';
@@ -17,8 +17,12 @@ export const useAnalysis = () => {
     const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
     const [progress, setProgress] = useState<AnalysisProgress | null>(null);
     const { error, setError, clearError } = useError();
+    const runIdRef = useRef(0);
+    const abortRef = useRef<AbortController | null>(null);
 
     useEffect(() => onSessionInvalid(() => {
+        runIdRef.current += 1;
+        abortRef.current?.abort();
         setIsAnalyzing(false);
         setProgress(null);
         setError('Security check expired. Please complete Turnstile again, then retry analysis.');
@@ -34,17 +38,24 @@ export const useAnalysis = () => {
     ) => {
         setIsAnalyzing(true);
         clearError();
+        const runId = runIdRef.current + 1;
+        runIdRef.current = runId;
+        abortRef.current?.abort();
+        const abortController = new AbortController();
+        abortRef.current = abortController;
 
         const filesToAnalyze = dumpFiles.filter(df => df.status === FileStatus.PENDING);
         
         if (filesToAnalyze.length === 0) {
             setIsAnalyzing(false);
+            abortRef.current = null;
             return;
         }
 
         const sessionReady = await initializeSession(true);
         if (!sessionReady) {
             setIsAnalyzing(false);
+            abortRef.current = null;
             setError('Security check expired. Please complete Turnstile again, then retry analysis.');
             return;
         }
@@ -77,6 +88,7 @@ export const useAnalysis = () => {
             }
 
             const onProgress = (stage: AnalysisStage, message: string) => {
+                if (runIdRef.current !== runId) return;
                 setProgress(prev => ({
                     stage,
                     message,
@@ -88,11 +100,13 @@ export const useAnalysis = () => {
 
             // Upload progress callback
             const onUploadProgress = allCached ? undefined : (percent: number) => {
+                if (runIdRef.current !== runId) return;
                 setProgress(prev => prev ? { ...prev, percentage: percent } : null);
             };
 
             // Callback to update UI immediately when each file completes
             const onFileComplete = (result: { id: string; report?: typeof filesToAnalyze[0]['report']; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => {
+                if (runIdRef.current !== runId) return;
                 onUpdate(prevFiles =>
                     prevFiles.map(df => {
                         if (df.id === result.id) {
@@ -121,8 +135,11 @@ export const useAnalysis = () => {
             };
 
             // Process files in parallel - results stream to UI via onFileComplete
-            await analyzeDumpFiles(filesToAnalyze, onProgress, onFileComplete, onUploadProgress);
+            await analyzeDumpFiles(filesToAnalyze, onProgress, onFileComplete, onUploadProgress, {
+                signal: abortController.signal
+            });
         } catch (e) {
+            if (runIdRef.current !== runId) return;
             console.error("Analysis failed:", e);
             setError('A critical error occurred during analysis.');
             onUpdate(prevFiles =>
@@ -131,8 +148,11 @@ export const useAnalysis = () => {
                 )
             );
         } finally {
-            setIsAnalyzing(false);
-            setProgress(null);
+            if (runIdRef.current === runId) {
+                setIsAnalyzing(false);
+                setProgress(null);
+                abortRef.current = null;
+            }
         }
     }, []);
 
@@ -147,9 +167,15 @@ export const useAnalysis = () => {
     ) => {
         const fileToRetry = dumpFiles.find(df => df.id === fileId);
         if (!fileToRetry) return;
+        const runId = runIdRef.current + 1;
+        runIdRef.current = runId;
+        abortRef.current?.abort();
+        const abortController = new AbortController();
+        abortRef.current = abortController;
 
         const sessionReady = await initializeSession(true);
         if (!sessionReady) {
+            abortRef.current = null;
             setError('Security check expired. Please complete Turnstile again, then retry analysis.');
             return;
         }
@@ -180,6 +206,7 @@ export const useAnalysis = () => {
             }
 
             const onProgress = (stage: AnalysisStage, message: string) => {
+                if (runIdRef.current !== runId) return;
                 setProgress(prev => ({
                     stage,
                     message,
@@ -189,10 +216,12 @@ export const useAnalysis = () => {
             };
 
             const onUploadProgress = cachedRetry ? undefined : (percent: number) => {
+                if (runIdRef.current !== runId) return;
                 setProgress(prev => prev ? { ...prev, percentage: percent } : null);
             };
 
             const onFileComplete = (result: { id: string; report?: typeof fileToRetry['report']; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => {
+                if (runIdRef.current !== runId) return;
                 onUpdate(prevFiles =>
                     prevFiles.map(df => {
                         if (df.id === result.id) {
@@ -220,8 +249,11 @@ export const useAnalysis = () => {
 
             // Re-analyze just this one file
             const retryDumpFile = { ...fileToRetry, status: FileStatus.PENDING };
-            await analyzeDumpFiles([retryDumpFile], onProgress, onFileComplete, onUploadProgress);
+            await analyzeDumpFiles([retryDumpFile], onProgress, onFileComplete, onUploadProgress, {
+                signal: abortController.signal
+            });
         } catch (e) {
+            if (runIdRef.current !== runId) return;
             console.error("Retry analysis failed:", e);
             setError('A critical error occurred during analysis retry.');
             onUpdate(prevFiles =>
@@ -232,8 +264,11 @@ export const useAnalysis = () => {
                 )
             );
         } finally {
-            setIsAnalyzing(false);
-            setProgress(null);
+            if (runIdRef.current === runId) {
+                setIsAnalyzing(false);
+                setProgress(null);
+                abortRef.current = null;
+            }
         }
     }, []);
 

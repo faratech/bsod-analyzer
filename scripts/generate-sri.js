@@ -27,30 +27,37 @@ function updateHTMLWithSRI() {
   
   let html = fs.readFileSync(htmlPath, 'utf8');
   const sriMapping = {};
-  
-  // Find all JS files and generate SRI hashes
+
+  if (!fs.existsSync(assetsPath)) {
+    console.error('dist/assets not found. Run build first.');
+    return;
+  }
+
   const files = fs.readdirSync(assetsPath);
   for (const file of files) {
-    if (file.endsWith('.js')) {
-      const filePath = path.join(assetsPath, file);
-      const sriHash = generateSRIHash(filePath);
-      sriMapping[file] = sriHash;
-      
-      // Update script tags with integrity attribute
-      const scriptRegex = new RegExp(`<script([^>]*src="/assets/${file}"[^>]*)>`, 'g');
-      html = html.replace(scriptRegex, (match, attributes) => {
-        if (!attributes.includes('integrity=')) {
-          // Check if crossorigin already exists
-          if (attributes.includes('crossorigin')) {
-            return `<script${attributes} integrity="${sriHash}">`;
-          } else {
-            return `<script${attributes} integrity="${sriHash}" crossorigin="anonymous">`;
-          }
-        }
-        return match;
-      });
-    }
+    if (!/\.(js|css)$/.test(file)) continue;
+    sriMapping[file] = generateSRIHash(path.join(assetsPath, file));
   }
+
+  function addIntegrityToTag(tag) {
+    const assetMatch = tag.match(/\b(?:src|href)="\/assets\/([^"?]+)(?:\?[^"]*)?"/);
+    if (!assetMatch) return tag;
+
+    const sriHash = sriMapping[assetMatch[1]];
+    if (!sriHash) return tag;
+
+    const openingEnd = tag.indexOf('>');
+    if (openingEnd === -1) return tag;
+
+    let openingTag = tag.slice(0, openingEnd);
+    const suffix = tag.slice(openingEnd);
+    openingTag = openingTag.replace(/\s+integrity="[^"]*"/, '');
+    openingTag = openingTag.replace(/\s+crossorigin(?:="[^"]*")?/, '');
+    return `${openingTag} integrity="${sriHash}" crossorigin="anonymous"${suffix}`;
+  }
+
+  html = html.replace(/<script\b[^>]*\bsrc="\/assets\/[^"]+"[^>]*><\/script>/g, addIntegrityToTag);
+  html = html.replace(/<link\b[^>]*\bhref="\/assets\/[^"]+"[^>]*>/g, addIntegrityToTag);
   
   // Save the SRI mapping for server validation
   fs.writeFileSync(

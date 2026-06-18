@@ -3,13 +3,14 @@ import { FileIcon, CloseIcon } from './Icons';
 
 interface FilePreviewProps {
   file: File;
+  displayName?: string;
   progress: number;
   onRemove: () => void;
   status: 'pending' | 'processing' | 'completed' | 'error';
   error?: string;
 }
 
-const FilePreview: React.FC<FilePreviewProps> = memo(({ file, progress, onRemove, status, error }) => {
+const FilePreview: React.FC<FilePreviewProps> = memo(({ file, displayName, progress, onRemove, status, error }) => {
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -58,7 +59,7 @@ const FilePreview: React.FC<FilePreviewProps> = memo(({ file, progress, onRemove
       </div>
       
       <div className="file-preview-info">
-        <h4 className="file-preview-name">{file.name}</h4>
+        <h4 className="file-preview-name">{displayName || file.name}</h4>
         <div className="file-preview-meta">
           <span className="file-preview-size">{formatFileSize(file.size)}</span>
           <span className="file-preview-status" style={{ color: getStatusColor() }}>

@@ -1,5 +1,5 @@
 declare const __BUILD_VERSION__: string;
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
 import FilePreview from '../components/FilePreview';
@@ -26,7 +26,6 @@ const Analyzer: React.FC = () => {
 
     const error = fileError || analysisError;
     const [, setSessionReady] = useState(false);
-    const progressIntervals = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
     // Initialize session on component mount
     useEffect(() => {
@@ -37,12 +36,8 @@ const Analyzer: React.FC = () => {
             }
         });
 
-        // Cleanup on unmount — stop session refresh and any in-flight progress intervals.
-        const intervals = progressIntervals.current;
         return () => {
             stopSessionRefresh();
-            intervals.forEach(clearInterval);
-            intervals.clear();
         };
     }, []);
 
@@ -61,53 +56,26 @@ const Analyzer: React.FC = () => {
     }, []);
 
     const handleFilesAdded = useCallback(async (acceptedFiles: File[]) => {
-        // Set initial progress for new files
-        const progressInit: Record<string, number> = {};
-        acceptedFiles.forEach((file) => {
-            progressInit[file.name] = 0;
-        });
-        setFileProgress(prev => ({ ...prev, ...progressInit }));
-        
-        // Simulate processing progress — track each interval so we can cancel it on
-        // file removal or component unmount.
-        acceptedFiles.forEach((file) => {
-            const existing = progressIntervals.current.get(file.name);
-            if (existing) clearInterval(existing);
-
-            const interval = setInterval(() => {
-                setFileProgress(prev => {
-                    const newProgress = { ...prev };
-                    if (newProgress[file.name] < 100) {
-                        newProgress[file.name] = Math.min(newProgress[file.name] + 10, 100);
-                    } else {
-                        clearInterval(interval);
-                        progressIntervals.current.delete(file.name);
-                    }
-                    return newProgress;
-                });
-            }, 200);
-            progressIntervals.current.set(file.name, interval);
-        });
-        
         const newDumpFiles = await processFiles(acceptedFiles, dumpFiles.length, trackFileUpload);
+        if (newDumpFiles.length > 0) {
+            setFileProgress(prev => {
+                const next = { ...prev };
+                for (const dumpFile of newDumpFiles) {
+                    next[dumpFile.id] = 100;
+                }
+                return next;
+            });
+        }
         setDumpFiles(prevFiles => addFilesToState(newDumpFiles, prevFiles));
     }, [processFiles, addFilesToState, trackFileUpload, dumpFiles.length]);
     
     const handleRemoveFile = useCallback((fileId: string) => {
         setDumpFiles(prevFiles => {
-            const fileName = prevFiles.find(f => f.id === fileId)?.file.name;
-            if (fileName) {
-                const interval = progressIntervals.current.get(fileName);
-                if (interval) {
-                    clearInterval(interval);
-                    progressIntervals.current.delete(fileName);
-                }
-                setFileProgress(prev => {
-                    const next = { ...prev };
-                    delete next[fileName];
-                    return next;
-                });
-            }
+            setFileProgress(prev => {
+                const next = { ...prev };
+                delete next[fileId];
+                return next;
+            });
             return prevFiles.filter(file => file.id !== fileId);
         });
     }, []);
@@ -209,13 +177,14 @@ const Analyzer: React.FC = () => {
                             <>
                                 <div className="file-preview-list" style={{ marginTop: '1.5rem', marginBottom: '1.5rem' }}>
                                     {dumpFiles.filter(df => df.status === FileStatus.PENDING).map(dumpFile => (
-                                        <FilePreview
-                                            key={dumpFile.id}
-                                            file={dumpFile.file}
-                                            progress={fileProgress[dumpFile.file.name] || 100}
-                                            onRemove={() => handleRemoveFile(dumpFile.id)}
-                                            status={fileProgress[dumpFile.file.name] < 100 ? 'processing' : 'completed'}
-                                        />
+	                                        <FilePreview
+	                                            key={dumpFile.id}
+	                                            file={dumpFile.file}
+	                                            displayName={dumpFile.displayName}
+	                                            progress={fileProgress[dumpFile.id] ?? 100}
+	                                            onRemove={() => handleRemoveFile(dumpFile.id)}
+	                                            status={(fileProgress[dumpFile.id] ?? 100) < 100 ? 'processing' : 'completed'}
+	                                        />
                                     ))}
                                 </div>
                                 

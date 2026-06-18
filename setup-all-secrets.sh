@@ -197,20 +197,37 @@ done
 echo "🔓 Granting Cloud Build access to Cloudflare secrets..."
 PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)" 2>/dev/null || echo "")
 if [ -n "$PROJECT_NUMBER" ]; then
-    CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-    gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SERVICE_ACCOUNT}" \
-        --member="serviceAccount:${CLOUDBUILD_SA}" \
-        --role="roles/iam.serviceAccountUser" \
-        --project=${PROJECT_ID} >/dev/null 2>&1 || true
-    echo "  ✅ Cloud Build can deploy as ${RUNTIME_SERVICE_ACCOUNT}"
-    for SECRET in "cloudflare-purge-token" "cloudflare-zone-id"; do
-        if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
-            gcloud secrets add-iam-policy-binding ${SECRET} \
-                --member="serviceAccount:${CLOUDBUILD_SA}" \
-                --role="roles/secretmanager.secretAccessor" \
-                --project=${PROJECT_ID} >/dev/null 2>&1
-            echo "  ✅ Access granted for ${SECRET} to Cloud Build"
+    CLOUDBUILD_SERVICE_ACCOUNTS=(
+        "${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+        "${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+    )
+    if [ -n "${CLOUDBUILD_SERVICE_ACCOUNT:-}" ]; then
+        CLOUDBUILD_SERVICE_ACCOUNTS+=("${CLOUDBUILD_SERVICE_ACCOUNT}")
+    fi
+
+    for CLOUDBUILD_SA in "${CLOUDBUILD_SERVICE_ACCOUNTS[@]}"; do
+        MEMBER="serviceAccount:${CLOUDBUILD_SA}"
+        if gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SERVICE_ACCOUNT}" \
+            --member="${MEMBER}" \
+            --role="roles/iam.serviceAccountUser" \
+            --project=${PROJECT_ID} >/dev/null 2>&1; then
+            echo "  ✅ ${CLOUDBUILD_SA} can deploy as ${RUNTIME_SERVICE_ACCOUNT}"
+        else
+            echo "  ⚠️  Could not grant deploy-as access to ${CLOUDBUILD_SA}"
         fi
+
+        for SECRET in "cloudflare-purge-token" "cloudflare-zone-id"; do
+            if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
+                if gcloud secrets add-iam-policy-binding ${SECRET} \
+                    --member="${MEMBER}" \
+                    --role="roles/secretmanager.secretAccessor" \
+                    --project=${PROJECT_ID} >/dev/null 2>&1; then
+                    echo "  ✅ Access granted for ${SECRET} to ${CLOUDBUILD_SA}"
+                else
+                    echo "  ⚠️  Could not grant ${SECRET} access to ${CLOUDBUILD_SA}"
+                fi
+            fi
+        done
     done
 else
     echo "  ⚠️  Could not determine project number, skipping Cloud Build SA grants"

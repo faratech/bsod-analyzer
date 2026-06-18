@@ -43,7 +43,9 @@ import {
   getRuntimeValue,
   setRuntimeValue,
   deleteRuntimeValue,
-  isCacheEnabled
+  isCacheEnabled,
+  checkCacheConnection,
+  incrementRuntimeCounter
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -227,8 +229,36 @@ function jsonRateLimitHandler(req, res) {
   });
 }
 
-function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey }) {
-  return rateLimit({
+function createRuntimeRateLimitStore(name, windowMs) {
+  if (!isCacheEnabled()) return undefined;
+  const ttlSeconds = Math.ceil(windowMs / 1000);
+  return {
+    async increment(key) {
+      const result = await incrementRuntimeCounter(`rate-limit:${name}:${key}`, ttlSeconds);
+      if (!result) {
+        throw new Error('Runtime store unavailable while updating rate limit');
+      }
+      return {
+        totalHits: result.count,
+        resetTime: result.resetTime
+      };
+    },
+    async decrement() {
+      // Limits in this service do not use skipSuccessfulRequests/skipFailedRequests.
+    },
+    async resetKey(key) {
+      await deleteRuntimeValue(`rate-limit:${name}:${key}`);
+    }
+  };
+}
+
+function withRuntimeRateLimitStore(options, name, windowMs) {
+  const store = createRuntimeRateLimitStore(name, windowMs);
+  return store ? { ...options, store } : options;
+}
+
+function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey, name = 'generic' }) {
+  return rateLimit(withRuntimeRateLimitStore({
     windowMs,
     max,
     keyGenerator,
@@ -236,7 +266,7 @@ function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey }) {
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false
-  });
+  }, name, windowMs));
 }
 
 function createConcurrencyLimiter(max, code) {
@@ -293,6 +323,8 @@ let hasher;
 
 // Initialize Upstash Redis cache
 initCache();
+const REQUIRE_REDIS_RUNTIME =
+  (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
 
 // Secret for session validation
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -330,8 +362,14 @@ const JOB_EXPIRY_SECONDS = 30 * 60; // 30 minutes
 
 async function storeJob(uid, jobData) {
   if (isCacheEnabled()) {
-    await setRuntimeValue(`job:${uid}`, jobData, JOB_EXPIRY_SECONDS);
+    const stored = await setRuntimeValue(`job:${uid}`, jobData, JOB_EXPIRY_SECONDS);
+    if (!stored && REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store unavailable while saving analysis job');
+    }
   } else {
+    if (REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store required but Redis cache is not configured');
+    }
     externalJobs.set(uid, jobData);
   }
 }
@@ -355,11 +393,43 @@ function runtimeWinDbgJobKey(uid) {
   return `windbg-job:${uid}`;
 }
 
+function runtimeSessionTrackingKey(sessionId) {
+  return `session-tracking:${sessionId}`;
+}
+
 async function storeSession(sessionId, sessionData) {
   if (isCacheEnabled()) {
-    await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
+    const stored = await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
+    if (!stored && REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store unavailable while saving session');
+    }
   } else {
+    if (REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store required but Redis cache is not configured');
+    }
     validSessions.set(sessionId, sessionData);
+  }
+}
+
+async function loadSessionTracking(sessionId) {
+  if (isCacheEnabled()) {
+    return await getRuntimeValue(runtimeSessionTrackingKey(sessionId));
+  }
+  return sessionRequestTracking.get(sessionId);
+}
+
+async function storeSessionTracking(sessionId, tracking) {
+  if (isCacheEnabled()) {
+    const ttlSeconds = Math.max(1, Math.ceil((tracking.resetTime - Date.now()) / 1000));
+    const stored = await setRuntimeValue(runtimeSessionTrackingKey(sessionId), tracking, ttlSeconds);
+    if (!stored && REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store unavailable while saving session quota');
+    }
+  } else {
+    if (REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store required but Redis cache is not configured');
+    }
+    sessionRequestTracking.set(sessionId, tracking);
   }
 }
 
@@ -388,7 +458,12 @@ async function markSessionHash(sessionId, hash) {
   }
   const timestamp = Date.now();
   hashes.set(hash, timestamp);
-  await setRuntimeValue(runtimeSessionHashKey(sessionId, hash), { timestamp }, OWNERSHIP_EXPIRY_SECONDS);
+  if (isCacheEnabled()) {
+    const stored = await setRuntimeValue(runtimeSessionHashKey(sessionId, hash), { timestamp }, OWNERSHIP_EXPIRY_SECONDS);
+    if (!stored && REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store unavailable while saving file ownership');
+    }
+  }
 }
 
 async function sessionOwnsHash(sessionId, hash) {
@@ -421,10 +496,13 @@ async function markWinDbgJob(sessionId, uid, fileHash) {
   if (!sessionId || !uid || !fileHash) return;
   const ownership = { sessionId, fileHash, timestamp: Date.now() };
   winDbgJobOwnership.set(uid, ownership);
-  await Promise.all([
-    setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS),
-    markSessionHash(sessionId, fileHash)
-  ]);
+  if (isCacheEnabled()) {
+    const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
+    if (!stored && REQUIRE_REDIS_RUNTIME) {
+      throw new Error('Runtime store unavailable while saving WinDBG job ownership');
+    }
+  }
+  await markSessionHash(sessionId, fileHash);
 }
 
 async function sessionOwnsWinDbgJob(sessionId, uid) {
@@ -561,18 +639,6 @@ async function generateWithFallback(request) {
   }
 }
 
-// Load SRI mapping if available
-let sriMapping = {};
-try {
-  const sriPath = path.join(__dirname, 'dist', 'sri-mapping.json');
-  if (fs.existsSync(sriPath)) {
-    sriMapping = JSON.parse(fs.readFileSync(sriPath, 'utf8'));
-    console.log('SRI mapping loaded:', Object.keys(sriMapping).length, 'files');
-  }
-} catch (error) {
-  console.log('No SRI mapping found, continuing without integrity checks');
-}
-
 // Configure CORS with Cloud Run best practices
 const corsOptions = {
   origin: function (origin, callback) {
@@ -649,18 +715,20 @@ const apiLimiter = rateLimit({
   skip: (req) => {
     // Skip rate limiting for health check endpoint
     return req.path === '/health';
-  }
+  },
+  ...withRuntimeRateLimitStore({}, 'api', SECURITY_CONFIG.api.rateLimiting.windowMs)
 });
 
-const authLimiter = makeLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
-const cacheLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 120 });
-const geminiLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 40 });
-const windbgUploadLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
-const windbgPollLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300 });
-const archiveLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
+const authLimiter = makeLimiter({ windowMs: 10 * 60 * 1000, max: 20, name: 'auth' });
+const cacheLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 120, name: 'cache' });
+const geminiLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 40, name: 'gemini' });
+const windbgUploadLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 20, name: 'windbg-upload' });
+const windbgPollLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'windbg-poll' });
+const archiveLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 10, name: 'archive' });
 const externalAnalyzeLimiter = makeLimiter({
   windowMs: 60 * 60 * 1000,
   max: 60,
+  name: 'external-analyze',
   keyGenerator: (req) => {
     const apiKey = req.headers['x-api-key'];
     return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
@@ -1360,20 +1428,17 @@ function normalizeAnalysisReport(report) {
   if (Array.isArray(normalized.driverWarnings)) {
     // Filter out malformed driver warnings (AI sometimes returns entries with empty fields)
     normalized.driverWarnings = normalized.driverWarnings
-      .filter(w => w && typeof w === 'object' &&
-        w.driverName && typeof w.driverName === 'string' && w.driverName.trim() &&
-        w.displayName && typeof w.displayName === 'string' && w.displayName.trim() &&
-        w.manufacturer && typeof w.manufacturer === 'string' && w.manufacturer.trim()
-      )
       .map(w => ({
-        driverName: sanitizeString(w.driverName, 256) || w.driverName,
-        displayName: sanitizeString(w.displayName, 512) || w.displayName,
-        manufacturer: sanitizeString(w.manufacturer, 256) || w.manufacturer,
+        driverName: sanitizeString(w.driverName || w.name, 256),
+        displayName: sanitizeString(w.displayName || w.name || w.driverName, 512),
+        manufacturer: sanitizeString(w.manufacturer, 256) || 'Unknown',
         category: sanitizeString(w.category, 128) || 'other',
-        issues: sanitizeStringArray(w.issues, 10, 500) || [],
+        issues: sanitizeStringArray(w.issues, 10, 500) ||
+          (sanitizeString(w.description, 500) ? [sanitizeString(w.description, 500)] : []),
         recommendations: sanitizeStringArray(w.recommendations, 10, 500) || [],
         isAssociatedWithBugCheck: !!w.isAssociatedWithBugCheck
       }))
+      .filter(w => w.driverName && w.displayName && w.manufacturer)
       .slice(0, 20);
   }
   if (Array.isArray(normalized.parameterAnalysis)) {
@@ -1387,6 +1452,17 @@ function normalizeAnalysisReport(report) {
   }
   // Ensure hardwareError has valid structure if present
   if (normalized.hardwareError && typeof normalized.hardwareError === 'object') {
+    if (normalized.hardwareError.type && !normalized.hardwareError.errorType) {
+      normalized.hardwareError.errorType = sanitizeString(normalized.hardwareError.type, 256) || 'Hardware error';
+    }
+    if (typeof normalized.hardwareError.details === 'string') {
+      normalized.hardwareError.details = [normalized.hardwareError.details];
+    }
+    normalized.hardwareError.details = sanitizeStringArray(normalized.hardwareError.details, 12, 800) || [];
+    normalized.hardwareError.recommendations = sanitizeStringArray(normalized.hardwareError.recommendations, 10, 800) || [];
+    normalized.hardwareError.component = sanitizeString(normalized.hardwareError.component, 256) || 'Unknown';
+    normalized.hardwareError.severity = sanitizeString(normalized.hardwareError.severity, 128) || 'fatal';
+    normalized.hardwareError.isHardwareError = !!normalized.hardwareError.isHardwareError || !!normalized.hardwareError.errorType;
     if (!normalized.hardwareError.isHardwareError) {
       delete normalized.hardwareError; // Remove if not actually a hardware error
     }
@@ -1411,6 +1487,55 @@ function parseAndValidateAnalysisReport(text) {
 
   return { valid: true, report, text: JSON.stringify(report) };
 }
+
+const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    probableCause: { type: 'string' },
+    culprit: { type: 'string' },
+    recommendations: { type: 'array', items: { type: 'string' } },
+    driverWarnings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          driverName: { type: 'string' },
+          displayName: { type: 'string' },
+          manufacturer: { type: 'string' },
+          category: { type: 'string' },
+          issues: { type: 'array', items: { type: 'string' } },
+          recommendations: { type: 'array', items: { type: 'string' } },
+          isAssociatedWithBugCheck: { type: 'boolean' }
+        }
+      }
+    },
+    hardwareError: {
+      type: 'object',
+      properties: {
+        isHardwareError: { type: 'boolean' },
+        errorType: { type: 'string' },
+        component: { type: 'string' },
+        severity: { type: 'string' },
+        details: { type: 'array', items: { type: 'string' } },
+        recommendations: { type: 'array', items: { type: 'string' } }
+      }
+    },
+    parameterAnalysis: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          parameter: { type: 'string' },
+          rawValue: { type: 'string' },
+          decoded: { type: 'string' },
+          significance: { type: 'string' }
+        }
+      }
+    }
+  },
+  required: ['summary', 'probableCause', 'culprit', 'recommendations']
+});
 
 // Proxy endpoint for Gemini API calls - now requires session
 app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
@@ -1437,7 +1562,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     // SECURITY: Check per-session rate limiting (prevent abuse even with valid prompts)
     const now = Date.now();
-    let sessionTracking = sessionRequestTracking.get(sessionId);
+    let sessionTracking = await loadSessionTracking(sessionId);
 
     if (!sessionTracking || now > sessionTracking.resetTime) {
       // Initialize or reset tracking
@@ -1446,7 +1571,6 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         resetTime: now + (60 * 60 * 1000), // Reset after 1 hour
         totalTokens: 0
       };
-      sessionRequestTracking.set(sessionId, sessionTracking);
     }
 
     // Check request limit
@@ -1531,6 +1655,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
+    await storeSessionTracking(sessionId, sessionTracking);
     
     // Always use the model from config file (re-read with 30s TTL so model.cfg can be
     // swapped at runtime) — ignore any client-provided model for security.
@@ -1543,16 +1668,14 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       responseMimeType: 'application/json',
       candidateCount: 1,
       temperature: 0.5,
-      maxOutputTokens: 4096
+      maxOutputTokens: 4096,
+      responseSchema: SERVER_REPORT_RESPONSE_SCHEMA
     };
     if (Number.isFinite(frontendConfig.maxOutputTokens)) {
       sdkConfig.maxOutputTokens = Math.min(Math.max(Math.floor(frontendConfig.maxOutputTokens), 256), 4096);
     }
     if (Number.isFinite(frontendConfig.temperature)) {
       sdkConfig.temperature = Math.min(Math.max(frontendConfig.temperature, 0), 1);
-    }
-    if (frontendConfig.responseSchema) {
-      sdkConfig.responseSchema = frontendConfig.responseSchema;
     }
 
     // Constant across every analysis call (shared) — systemInstruction is part
@@ -1572,7 +1695,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
-    sessionTracking.totalTokens += actualInputTokens + outputTokens;
+    sessionTracking.totalTokens += actualInputTokens + outputTokens - estimatedInputTokens;
+    await storeSessionTracking(sessionId, sessionTracking);
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2104,19 +2228,22 @@ app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SI
 
     console.log(`[Archive] Extracted ${extractedDumps.length} dump file(s) from ${fileName}`);
 
-    // Return extracted files as base64-encoded JSON
-    const files = extractedDumps.map(dump => ({
-      fileName: dump.fileName,
-      data: dump.buffer.toString('base64'),
-      size: dump.buffer.length
-    }));
-
-    res.json({
-      success: true,
-      files,
-      originalArchive: fileName,
-      archiveType
+    const outputZip = new JSZip();
+    for (const dump of extractedDumps) {
+      outputZip.file(dump.sourcePath || dump.fileName, dump.buffer, { compression: 'STORE' });
+    }
+    const zipBuffer = await outputZip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'STORE'
     });
+
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${sanitizeUploadFileName(fileName.replace(/\.[^.]+$/, ''))}-dumps.zip"`,
+      'X-Archive-Type': archiveType,
+      'X-Original-Archive': encodeURIComponent(fileName)
+    });
+    res.send(zipBuffer);
   } catch (error) {
     console.error('[Archive] Extraction error:', error);
     res.status(400).json({
@@ -2465,6 +2592,7 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
         }
         results.push({
           fileName,
+          sourcePath: path,
           buffer: content,
           originalZip: originalName
         });
@@ -2676,6 +2804,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
           const content = fs.readFileSync(fullPath);
           dumpCount++;
           dumpBytes += content.length;
+          const sourcePath = path.relative(extractDir, fullPath).replace(/\\/g, '/');
           const fileName = sanitizeUploadFileName(entry.name);
           const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
           if (!validation.valid) {
@@ -2684,6 +2813,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
           }
           results.push({
             fileName,
+            sourcePath,
             buffer: content,
             originalArchive: originalName
           });
@@ -3022,6 +3152,71 @@ app.get('/api/analyze/status/:uid', externalAnalyzeLimiter, requireApiKey, async
   }
 });
 
+// Normalize parser/upload/rate-limit store failures before the SPA catch-all.
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+
+  let status = error.status || error.statusCode || 500;
+  let code = 'INTERNAL_ERROR';
+  let message = 'An internal server error occurred';
+
+  if (error instanceof multer.MulterError) {
+    status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    code = error.code;
+    message = error.code === 'LIMIT_FILE_SIZE'
+      ? `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB`
+      : error.message;
+  } else if (error.type === 'entity.too.large') {
+    status = 413;
+    code = 'REQUEST_TOO_LARGE';
+    message = 'Request body is too large';
+  } else if (error.type === 'entity.parse.failed' || error instanceof SyntaxError) {
+    status = 400;
+    code = 'INVALID_JSON';
+    message = 'Request body is not valid JSON';
+  } else if (/Invalid file type/i.test(error.message || '')) {
+    status = 400;
+    code = 'INVALID_FILE_TYPE';
+    message = error.message;
+  } else if (/Runtime store unavailable|Runtime store required/i.test(error.message || '')) {
+    status = 503;
+    code = 'RUNTIME_STORE_UNAVAILABLE';
+    message = 'Service state store is temporarily unavailable';
+  } else if (status < 500) {
+    message = error.message || message;
+  }
+
+  log.error('request.error', {
+    path: req.path,
+    status,
+    code,
+    message: error.message
+  });
+
+  if (req.path.startsWith('/api/')) {
+    return res.status(status).json({
+      success: false,
+      error: message,
+      code
+    });
+  }
+
+  return res.status(status).send(process.env.NODE_ENV === 'production' ? message : error.stack || message);
+});
+
+const KNOWN_SPA_ROUTES = new Set([
+  '/',
+  '/analyzer',
+  '/about',
+  '/documentation',
+  '/donate'
+]);
+
+function getSpaStatus(pathname) {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  return KNOWN_SPA_ROUTES.has(normalized) ? 200 : 404;
+}
+
 // Catch-all: serve React app for client-side routing
 app.use((req, res) => {
   const pathname = req.path;
@@ -3036,6 +3231,7 @@ app.use((req, res) => {
 
   // Serve React app for all other routes (non-asset routes only)
   // CDN caches 24h (purged on deploy), browser always revalidates
+  res.status(getSpaStatus(pathname));
   res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Link header enables Cloudflare Early Hints (103) for critical assets
@@ -3070,6 +3266,16 @@ async function startServer() {
     initHashing()
   ]);
   console.log('XXHash initialized for session management');
+
+  if (REQUIRE_REDIS_RUNTIME && !isCacheEnabled()) {
+    throw new Error('REQUIRE_REDIS_RUNTIME is enabled but Upstash Redis is not configured');
+  }
+  if (isCacheEnabled() && !(await checkCacheConnection())) {
+    if (REQUIRE_REDIS_RUNTIME) {
+      throw new Error('REQUIRE_REDIS_RUNTIME is enabled but Redis health check failed');
+    }
+    log.warn('redis.health.failed', { runtimeRequired: false });
+  }
 
   // Cache index.html in memory (~9KB, avoids disk read on every request)
   const indexPath = path.join(__dirname, 'dist', 'index.html');

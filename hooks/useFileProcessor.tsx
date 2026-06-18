@@ -11,6 +11,18 @@ import { isDumpFileName } from '../shared/ingestPolicy.js';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP;
 
+function createDumpFileId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getDumpFileSignature(dumpFile: DumpFile): string {
+    const sourcePath = dumpFile.sourcePath || dumpFile.displayName || dumpFile.file.name;
+    return `${sourcePath}\0${dumpFile.file.size}\0${dumpFile.file.lastModified}`;
+}
+
 export const useFileProcessor = () => {
     const { error, setError, clearError } = useError();
 
@@ -42,11 +54,13 @@ export const useFileProcessor = () => {
                         setError(validation.error || 'Invalid file format');
                         return;
                     }
-                    
                     const dumpType = f.size > DUMP_TYPE_THRESHOLD ? 'kernel' : 'minidump';
+                    const sourcePath = (f as File & { sourcePath?: string }).sourcePath || f.webkitRelativePath || f.name;
                     newDumpFiles.push({
-                        id: `${f.name}-${Date.now()}`,
+                        id: createDumpFileId(),
                         file: f,
+                        displayName: sourcePath,
+                        sourcePath,
                         status: FileStatus.PENDING,
                         dumpType: dumpType,
                     });
@@ -119,7 +133,7 @@ export const useFileProcessor = () => {
 
                 // Update files with cache info
                 for (const dumpFile of newDumpFiles) {
-                    const status = cacheStatus.get(dumpFile.file.name);
+                    const status = cacheStatus.get(dumpFile.file);
                     if (status) {
                         dumpFile.fileHash = status.hash;
                         dumpFile.knownCached = status.cached;
@@ -138,8 +152,13 @@ export const useFileProcessor = () => {
         newFiles: DumpFile[], 
         existingFiles: DumpFile[]
     ): DumpFile[] => {
-        const existingFileNames = new Set(existingFiles.map(df => df.file.name));
-        const uniqueNewFiles = newFiles.filter(df => !existingFileNames.has(df.file.name));
+        const existingSignatures = new Set(existingFiles.map(getDumpFileSignature));
+        const uniqueNewFiles = newFiles.filter(df => {
+            const signature = getDumpFileSignature(df);
+            if (existingSignatures.has(signature)) return false;
+            existingSignatures.add(signature);
+            return true;
+        });
         return [...existingFiles, ...uniqueNewFiles];
     }, []);
 

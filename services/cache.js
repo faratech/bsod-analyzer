@@ -119,6 +119,47 @@ export async function deleteRuntimeValue(key) {
   }
 }
 
+export async function checkCacheConnection() {
+  if (!isCacheEnabled()) return false;
+
+  try {
+    await redis.ping();
+    return true;
+  } catch (error) {
+    console.error('[Cache] Redis health check failed:', error.message);
+    return false;
+  }
+}
+
+export async function incrementRuntimeCounter(key, ttlSeconds) {
+  if (!isCacheEnabled()) return null;
+
+  try {
+    const runtimeKey = getRuntimeKey(key);
+    const count = Number(await redis.incr(runtimeKey));
+    if (!Number.isFinite(count)) {
+      throw new Error('Redis INCR returned a non-numeric counter');
+    }
+    if (count === 1) {
+      await redis.expire(runtimeKey, ttlSeconds);
+    }
+
+    let ttl = Number(await redis.ttl(runtimeKey));
+    if (!Number.isFinite(ttl) || ttl < 0) {
+      await redis.expire(runtimeKey, ttlSeconds);
+      ttl = ttlSeconds;
+    }
+
+    return {
+      count,
+      resetTime: new Date(Date.now() + ttl * 1000)
+    };
+  } catch (error) {
+    console.error('[Cache] Error incrementing runtime counter:', error.message);
+    return null;
+  }
+}
+
 /**
  * Generate an xxhash64 hash of content for cache keys.
  */

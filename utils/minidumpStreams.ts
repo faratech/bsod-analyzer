@@ -229,9 +229,9 @@ export class MinidumpParser {
                 framePointer: 0n,
             };
             
-            // Thread context is stored separately
-            const contextRva = this.view.getUint32(offset + 40, true);
-            const contextSize = this.view.getUint32(offset + 44, true);
+            // MINIDUMP_LOCATION_DESCRIPTOR stores DataSize first, then RVA.
+            const contextSize = this.view.getUint32(offset + 40, true);
+            const contextRva = this.view.getUint32(offset + 44, true);
             
             if (contextRva && contextSize >= 0x4D0 && contextRva + 0x4D0 <= this.buffer.byteLength) {
                 // Extract key registers from CONTEXT structure (x64)
