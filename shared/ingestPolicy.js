@@ -168,6 +168,12 @@ function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } =
 
   const ext = getFileExtension(fileName);
   if (DUMP_EXTENSIONS.includes(ext)) {
+    if (fileBuffer.length < FILE_LIMITS.minDumpSize) {
+      return {
+        valid: false,
+        error: `Dump file is too small. Minimum size is ${formatBytes(FILE_LIMITS.minDumpSize)}`
+      };
+    }
     if (!looksLikeDump(fileBuffer)) {
       return { valid: false, error: 'File does not appear to be a valid Windows dump' };
     }
@@ -175,6 +181,12 @@ function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } =
   }
 
   if (allowArchives && ARCHIVE_EXTENSIONS.includes(ext)) {
+    if (fileBuffer.length < FILE_LIMITS.minArchiveSize) {
+      return {
+        valid: false,
+        error: `Archive file is too small. Minimum size is ${formatBytes(FILE_LIMITS.minArchiveSize)}`
+      };
+    }
     const archiveType = detectArchiveType(fileBuffer);
     if (!archiveType) {
       return { valid: false, error: 'Archive extension does not match archive signature' };

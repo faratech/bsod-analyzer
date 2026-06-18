@@ -49,7 +49,7 @@ interface CertificateInfo {
     trusted?: boolean;
 }
 
-class PEParser {
+export class PEParser {
     private view: DataView;
     private buffer: ArrayBuffer;
     
@@ -229,6 +229,7 @@ class PEParser {
  */
 export function extractDriverVersions(buffer: ArrayBuffer, modules: Array<{ name: string; baseAddress: bigint; sizeOfImage: number }>): Map<string, VersionInfo> {
     const versions = new Map<string, VersionInfo>();
+    const allowedModuleNames = new Set(modules.map(module => module.name.toLowerCase()));
     
     // First attempt: Parse from Minidump structure
     try {
@@ -237,7 +238,8 @@ export function extractDriverVersions(buffer: ArrayBuffer, modules: Array<{ name
             const parser = new MinidumpParser(buffer);
             const mdmpModules = parser.getModules();
             for (const m of mdmpModules) {
-                if (m.versionInfo && m.versionInfo.fileVersionMS !== 0) {
+                if (m.versionInfo && m.versionInfo.fileVersionMS !== 0 &&
+                    (allowedModuleNames.size === 0 || allowedModuleNames.has(m.name.toLowerCase()))) {
                     const major = (m.versionInfo.fileVersionMS >> 16) & 0xFFFF;
                     const minor = m.versionInfo.fileVersionMS & 0xFFFF;
                     const build = (m.versionInfo.fileVersionLS >> 16) & 0xFFFF;

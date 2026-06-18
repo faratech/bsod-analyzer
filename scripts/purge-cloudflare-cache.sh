@@ -7,15 +7,20 @@ set -e
 
 HOSTNAME="bsod.windowsforum.com"
 
-# Check for required environment variables
-if [ -z "$CLOUDFLARE_PURGE_TOKEN" ]; then
-    echo "⚠️  CLOUDFLARE_PURGE_TOKEN not set, skipping cache purge"
+if [ "${SKIP_CF_PURGE:-}" = "true" ]; then
+    echo "Skipping Cloudflare cache purge because SKIP_CF_PURGE=true"
     exit 0
 fi
 
+# Check for required environment variables
+if [ -z "$CLOUDFLARE_PURGE_TOKEN" ]; then
+    echo "CLOUDFLARE_PURGE_TOKEN is required. Set SKIP_CF_PURGE=true to skip cache purge explicitly."
+    exit 1
+fi
+
 if [ -z "$CLOUDFLARE_ZONE_ID" ]; then
-    echo "⚠️  CLOUDFLARE_ZONE_ID not set, skipping cache purge"
-    exit 0
+    echo "CLOUDFLARE_ZONE_ID is required. Set SKIP_CF_PURGE=true to skip cache purge explicitly."
+    exit 1
 fi
 
 echo "🧹 Purging Cloudflare cache for ${HOSTNAME}..."
@@ -36,6 +41,7 @@ if [ "$HTTP_CODE" = "200" ]; then
     else
         echo "⚠️  Cloudflare returned 200 but success was not true"
         echo "$BODY"
+        exit 1
     fi
 else
     echo "❌ Failed to purge Cloudflare cache (HTTP ${HTTP_CODE})"

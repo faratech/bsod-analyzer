@@ -56,6 +56,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [showCallStack, setShowCallStack] = useState<boolean>(false);
     const [showRawOutput, setShowRawOutput] = useState<boolean>(false);
+    const displayName = dumpFile.displayName || dumpFile.file.name;
 
     const handleRunTool = async (tool: string) => {
         if (!dumpFile.report || !tool || runningTool) return;
@@ -76,7 +77,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
         if (!dumpFile.report) return '';
         const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
-        let report = `# BSOD Analysis Report for ${dumpFile.file.name}\n\n`;
+        let report = `# BSOD Analysis Report for ${displayName}\n\n`;
 
         // Bug Check Info
         if (bugCheck) {
@@ -238,7 +239,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${dumpFile.file.name.replace(/\.[^/.]+$/, "")}-analysis.md`;
+        a.download = `${displayName.split('/').pop()!.replace(/\.[^/.]+$/, "")}-analysis.md`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -253,10 +254,10 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
     const handleShare = async () => {
         if (navigator.share && dumpFile.report) {
             const shareUrl = getShareUrl();
-            const shareText = `BSOD Analysis for ${dumpFile.file.name}:\n\nSummary: ${dumpFile.report.summary}\n\nProbable Cause: ${dumpFile.report.probableCause}\n\nCheck out the BSOD AI Analyzer.`;
+            const shareText = `BSOD Analysis for ${displayName}:\n\nSummary: ${dumpFile.report.summary}\n\nProbable Cause: ${dumpFile.report.probableCause}\n\nCheck out the BSOD AI Analyzer.`;
             try {
                 await navigator.share({
-                    title: `BSOD Analysis: ${dumpFile.file.name}`,
+                    title: `BSOD Analysis: ${displayName}`,
                     text: shareText,
                     url: shareUrl,
                 });
@@ -1075,7 +1076,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             <div className="result-header">
                 <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap'}}>
                     <FileTypeIcon />
-                    <span className="result-filename">{dumpFile.file.name}</span>
+                    <span className="result-filename">{displayName}</span>
                     <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>({fileSize} KB)</span>
                     {getStatusBadge()}
                     {/* Show "Previously Analyzed" after analysis completes from cache */}

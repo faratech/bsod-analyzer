@@ -4,6 +4,7 @@
 
 import { handleSessionError } from '../utils/sessionManager';
 import { ARCHIVE_EXTENSIONS } from '../shared/ingestPolicy.js';
+import JSZip from 'jszip';
 
 const SERVER_ARCHIVE_EXTENSIONS = ARCHIVE_EXTENSIONS.filter(ext => ext !== '.zip');
 
@@ -28,23 +29,32 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
     body: formData
   });
 
-  const result = await response.json();
-
-  if (!response.ok || !result.success) {
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
     if (response.status === 401) {
       handleSessionError(result);
     }
     throw new Error(result.error || 'Failed to extract archive');
   }
 
-  // Convert base64 responses back to File objects natively via data URL
-  const files: File[] = await Promise.all(
-    result.files.map(async (extracted: { fileName: string; data: string; size: number }) => {
-      const response = await fetch(`data:application/octet-stream;base64,${extracted.data}`);
-      const blob = await response.blob();
-      return new File([blob], extracted.fileName, { type: 'application/octet-stream' });
-    })
-  );
+  const payload = await response.arrayBuffer();
+  const zip = await JSZip.loadAsync(payload);
+  const files: File[] = [];
+  const entries = Object.entries(zip.files).filter(([, entry]) => !entry.dir);
+
+  await Promise.all(entries.map(async ([sourcePath, entry]) => {
+      const blob = await entry.async('blob');
+      const fileName = sourcePath.split('/').pop() || 'dump.dmp';
+      const file = new File([blob], fileName, {
+        type: 'application/octet-stream',
+        lastModified: entry.date?.getTime?.() || Date.now()
+      }) as File & { sourcePath?: string };
+      Object.defineProperty(file, 'sourcePath', {
+        value: sourcePath,
+        enumerable: false
+      });
+      files.push(file);
+  }));
 
   return files;
 }

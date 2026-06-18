@@ -6,13 +6,14 @@ import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } fr
 import { parseDumpFile as parseKernelDump, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
 import { getParameterExplanation } from '../utils/crashPatternDatabase';
-import { PROCESSING_LIMITS } from '../constants';
+import { FILE_SIZE_THRESHOLDS, PROCESSING_LIMITS } from '../constants';
 import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
+import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -226,9 +227,87 @@ const reportSchema = {
     required: ["summary", "probableCause", "culprit", "recommendations"],
 };
 
+function normalizeText(value: unknown, fallback: string): string {
+    return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeTextArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim())
+        : [];
+}
+
+function normalizeAnalysisReportData(value: unknown): AnalysisReportData {
+    const input = (value && typeof value === 'object' && !Array.isArray(value))
+        ? value as Partial<AnalysisReportData> & Record<string, any>
+        : {};
+
+    const report: AnalysisReportData = {
+        ...input,
+        summary: normalizeText(input.summary, 'Crash analysis completed.'),
+        probableCause: normalizeText(input.probableCause, 'The probable cause could not be determined from the available data.'),
+        culprit: normalizeText(input.culprit, 'Unknown'),
+        recommendations: normalizeTextArray(input.recommendations)
+    };
+
+    if (report.recommendations.length === 0) {
+        report.recommendations = ['Review the dump analysis details and update drivers or Windows components identified in the report.'];
+    }
+
+    if (Array.isArray(input.driverWarnings)) {
+        report.driverWarnings = (input.driverWarnings as unknown[])
+            .filter((warning): warning is Record<string, any> => !!warning && typeof warning === 'object')
+            .map(warning => ({
+                driverName: normalizeText(warning.driverName ?? warning.name, 'Unknown driver'),
+                displayName: normalizeText(warning.displayName ?? warning.name ?? warning.driverName, 'Unknown driver'),
+                manufacturer: normalizeText(warning.manufacturer, 'Unknown'),
+                category: normalizeText(warning.category, 'other'),
+                issues: normalizeTextArray(warning.issues).concat(
+                    typeof warning.description === 'string' && warning.description.trim() ? [warning.description.trim()] : []
+                ),
+                recommendations: normalizeTextArray(warning.recommendations),
+                isAssociatedWithBugCheck: Boolean(warning.isAssociatedWithBugCheck)
+            }));
+    }
+
+    if (input.hardwareError && typeof input.hardwareError === 'object') {
+        const hardware = input.hardwareError as Record<string, any>;
+        const details = typeof hardware.details === 'string'
+            ? [hardware.details]
+            : normalizeTextArray(hardware.details);
+        const isHardwareError = Boolean(hardware.isHardwareError || hardware.errorType || hardware.type);
+        if (isHardwareError) {
+            report.hardwareError = {
+                isHardwareError: true,
+                errorType: normalizeText(hardware.errorType ?? hardware.type, 'Hardware error'),
+                component: normalizeText(hardware.component, 'Unknown'),
+                severity: normalizeText(hardware.severity, 'fatal'),
+                details,
+                recommendations: normalizeTextArray(hardware.recommendations)
+            };
+        }
+    }
+
+    if (Array.isArray(input.parameterAnalysis)) {
+        report.parameterAnalysis = (input.parameterAnalysis as unknown[])
+            .filter((param): param is Record<string, any> => !!param && typeof param === 'object')
+            .map(param => ({
+                parameter: normalizeText(param.parameter, 'Parameter'),
+                rawValue: normalizeText(param.rawValue, 'Unknown'),
+                decoded: normalizeText(param.decoded, 'Unknown'),
+                significance: normalizeText(param.significance, 'No additional interpretation available.')
+            }));
+    }
+
+    return report;
+}
+
 // --- Binary Processing Helpers ---
 
-const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
+const readBlobAsArrayBuffer = (blob: Blob): Promise<ArrayBuffer> => {
+    if (typeof blob.arrayBuffer === 'function') {
+        return blob.arrayBuffer();
+    }
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (event) => {
@@ -239,9 +318,28 @@ const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
             }
         };
         reader.onerror = (error) => reject(error);
-        reader.readAsArrayBuffer(file);
+        reader.readAsArrayBuffer(blob);
     });
 };
+
+const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => readBlobAsArrayBuffer(file);
+
+async function readSampledDumpBuffer(file: File): Promise<{ buffer: ArrayBuffer; ranges: Array<{ label: string; start: number; end: number }> }> {
+    const ranges = getLargeDumpSampleRanges(file.size);
+    const chunks = await Promise.all(
+        ranges.map(range => readBlobAsArrayBuffer(file.slice(range.start, range.end)))
+    );
+
+    const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    const combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        combined.set(new Uint8Array(chunk), offset);
+        offset += chunk.byteLength;
+    }
+
+    return { buffer: combined.buffer, ranges };
+}
 
 // Enhanced extraction functions
 function getBugCheckParameterMeaning(code: number, params: bigint[]): string {
@@ -255,7 +353,7 @@ function getBugCheckParameterMeaning(code: number, params: bigint[]): string {
         
         case 0x00000050: // PAGE_FAULT_IN_NONPAGED_AREA
             return `- Arg1: Memory referenced (0x${params[0].toString(16)})
-- Arg2: 0=Read, 1=Write, 2=Execute (${params[2]})
+- Arg2: 0=Read, 1=Write, 2=Execute (${params[1]})
 - Arg3: Address that referenced memory (0x${params[2].toString(16)})
 - Arg4: Reserved`;
         
@@ -689,7 +787,7 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
         try {
             // First attempt: direct parse
             const parsedJson = JSON.parse(jsonText);
-            return parsedJson as AnalysisReportData;
+            return normalizeAnalysisReportData(parsedJson);
         } catch (parseError) {
             console.error('[AI] JSON parse error:', parseError);
             console.error('[AI] Raw response preview:', jsonText.substring(0, 500) + '...');
@@ -719,7 +817,7 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
                         const fixedJson = fix();
                         const parsedJson = JSON.parse(fixedJson);
                         console.warn('[AI] Successfully fixed JSON with strategy:', fixes.indexOf(fix));
-                        return parsedJson as AnalysisReportData;
+                        return normalizeAnalysisReportData(parsedJson);
                     } catch {
                         // Try next fix
                     }
@@ -750,6 +848,78 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
         throw new Error(`Failed to generate analysis for ${fileName}. ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 };
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error || 'Unknown WinDBG failure');
+}
+
+function formatSampleRanges(ranges: Array<{ label: string; start: number; end: number }>): string {
+    return ranges
+        .map(range => `${range.label}: bytes ${range.start}-${Math.max(range.start, range.end - 1)} (${range.end - range.start} bytes)`)
+        .join('; ');
+}
+
+async function generateLargeDumpAiFailoverReport(
+    dumpFile: DumpFile,
+    fileLabel: string,
+    windbgFailure: unknown
+): Promise<AnalysisReportData> {
+    console.log('[Analyzer] Using lightweight AI failover for large dump:', fileLabel);
+    const { buffer: sampledBuffer, ranges } = await readSampledDumpBuffer(dumpFile.file);
+    const rawExtractedStrings = extractPrintableStrings(sampledBuffer);
+    const extractedStrings = sanitizeExtractedContent(rawExtractedStrings)
+        .substring(0, PROCESSING_LIMITS.MAX_STRINGS_LENGTH);
+    const bugCheckCode = extractBugCheckCode(sampledBuffer);
+    const windowsVersion = extractWindowsVersion(rawExtractedStrings);
+    const sampleHexDump = generateHexDump(sampledBuffer, PROCESSING_LIMITS.HEX_DUMP_LENGTH);
+    const samplingSummary = formatSampleRanges(ranges);
+
+    let evidence = `**File:** ${fileLabel} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)
+
+**Fallback Mode:** WinDBG server was unavailable, so this is a lightweight AI failover analysis using sampled dump bytes only.
+**WinDBG Failure:** ${errorMessage(windbgFailure).slice(0, 500)}
+**Sampling:** ${samplingSummary || 'No bytes sampled'}
+**Sample Size:** ${sampledBuffer.byteLength} bytes
+
+${windowsVersion ? `**Windows Version Evidence:** ${windowsVersion}\n` : ''}
+${bugCheckCode ? `**Bug Check:** ${bugCheckCode}\n` : ''}
+
+**Binary Sample Hex Dump (${Math.min(sampledBuffer.byteLength, PROCESSING_LIMITS.HEX_DUMP_LENGTH)} bytes):**
+\`\`\`hex
+${sampleHexDump}
+\`\`\`
+
+**Extracted Strings From Sample (${extractedStrings.length} of ${rawExtractedStrings.length} chars):**
+\`\`\`
+${extractedStrings}
+\`\`\``;
+
+    if (bugCheckCode) {
+        evidence += `
+
+### ⚠️ BUG CHECK DETECTED: ${bugCheckCode}
+The bug check code above was found in the sampled bytes. Full parameter decoding was skipped to avoid main-thread parsing of a large dump while WinDBG was unavailable.`;
+    } else {
+        evidence += `
+
+### ⚠️ NO BUG CHECK CODE FOUND
+WinDBG was unavailable and the sampled bytes did not contain a validated bug check code. Analyze only the sampled evidence and clearly state uncertainty.`;
+    }
+
+    evidence += `
+
+### FAILOVER LIMITATION
+This is not a full WinDBG analysis. Do not invent missing stack frames, modules, parameters, or bug check codes. Prefer cautious recommendations that fit the sampled evidence.`;
+
+    const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, evidence);
+    const report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash);
+
+    if (!report.summary.toLowerCase().includes('failover') && !report.summary.toLowerCase().includes('limited')) {
+        report.summary = `Limited WinDBG failover analysis: ${report.summary}`;
+    }
+
+    return report;
+}
 
 // Add global error handler for debugging
 if (typeof window !== 'undefined') {
@@ -850,7 +1020,7 @@ ${analysisForPrompt}
 
         // Parse the JSON response
         try {
-            const aiReport = JSON.parse(responseText) as AnalysisReportData;
+            const aiReport = normalizeAnalysisReportData(JSON.parse(responseText));
             console.log('[Analyzer] Successfully parsed WinDBG-based report');
             // Merge AI report with directly parsed fields (parsed fields take precedence for structured data)
             const mergedReport = {
@@ -865,7 +1035,7 @@ ${analysisForPrompt}
                 rawWinDbgOutput: mergedReport.rawWinDbgOutput ? `${mergedReport.rawWinDbgOutput.length} chars` : 'missing',
                 callStack: mergedReport.callStack?.length || 0
             });
-            return mergedReport;
+            return normalizeAnalysisReportData(mergedReport);
         } catch (parseError) {
             console.error('[Analyzer] Failed to parse WinDBG AI response:', parseError);
 
@@ -873,13 +1043,13 @@ ${analysisForPrompt}
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
-                    const aiReport = JSON.parse(jsonMatch[0]) as AnalysisReportData;
+                    const aiReport = normalizeAnalysisReportData(JSON.parse(jsonMatch[0]));
                     console.log('[Analyzer] Extracted JSON from WinDBG response');
-                    return {
+                    return normalizeAnalysisReportData({
                         ...aiReport,
                         ...parsedFields,
                         systemInfo: { ...aiReport.systemInfo, ...parsedFields.systemInfo }
-                    };
+                    });
                 } catch {
                     // Continue to fallback
                 }
@@ -1228,24 +1398,45 @@ export const analyzeDumpFiles = async (
     files: DumpFile[],
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void,
     onFileComplete?: (result: { id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => void,
-    onUploadProgress?: (percent: number) => void
+    onUploadProgress?: (percent: number) => void,
+    options?: { signal?: AbortSignal }
 ) => {
-    // Process files in parallel for better performance
+    const MAX_CLIENT_ANALYSIS_CONCURRENCY = 2;
+    const FULL_LOCAL_ANALYSIS_LIMIT = FILE_SIZE_THRESHOLDS.MINIDUMP;
+    const throwIfAborted = () => {
+        if (options?.signal?.aborted) {
+            throw new Error('Analysis cancelled');
+        }
+    };
+
+    // Process files through a small queue so the browser does not exceed backend
+    // WinDBG upload concurrency and force avoidable local-analysis fallbacks.
     // Each file's result is streamed to onFileComplete as it finishes
 
     const analyzeFile = async (dumpFile: DumpFile): Promise<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }> => {
+        const fileLabel = dumpFile.displayName || dumpFile.file.name;
         const result = await (async () => {
         try {
-            console.log('[Analyzer] Starting analysis for:', dumpFile.file.name);
+            throwIfAborted();
+            console.log('[Analyzer] Starting analysis for:', fileLabel);
             if (dumpFile.knownCached && dumpFile.fileHash) {
-                console.log(`[Analyzer] Cache hint found for ${dumpFile.file.name}; upload will prove file ownership before any cached result is returned`);
+                console.log(`[Analyzer] Cache hint found for ${fileLabel}; upload will prove file ownership before any cached result is returned`);
             }
 
-            const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
-            console.log('[Analyzer] File buffer loaded, size:', fileBuffer.byteLength);
+            let cachedFileBuffer: ArrayBuffer | null = null;
+            const getFileBuffer = async (): Promise<ArrayBuffer> => {
+                throwIfAborted();
+                if (!cachedFileBuffer) {
+                    cachedFileBuffer = await readFileAsArrayBuffer(dumpFile.file);
+                    console.log('[Analyzer] File buffer loaded, size:', cachedFileBuffer.byteLength);
+                }
+                return cachedFileBuffer;
+            };
 
             // Try WinDBG server analysis first
             let windbgResult: WinDBGAnalysisResult | null = null;
+            let useLightweightAiFailover = false;
+            let windbgFailure: unknown = null;
             try {
                 console.log('[Analyzer] Attempting WinDBG server analysis...');
                 windbgResult = await analyzeWithWinDBG(dumpFile.file, (stage, message) => {
@@ -1266,7 +1457,7 @@ export const analyzeDumpFiles = async (
 
                     // Use WinDBG analysis to generate AI report
                     const windbgReport = await generateReportFromWinDBG(
-                        dumpFile.file.name,
+                        fileLabel,
                         dumpFile.dumpType,
                         dumpFile.file.size,
                         windbgResult.analysisText,
@@ -1274,26 +1465,31 @@ export const analyzeDumpFiles = async (
                     );
 
                     // Populate bugCheck from binary buffer (guarantees accurate code and parameters meanings)
-                    try {
-                        const bugCheckInfo = extractBugCheckInfo(fileBuffer);
-                        if (bugCheckInfo) {
-                            const bugCode = bugCheckInfo.code;
-                            const bugName = bugCheckInfo.name;
-                            const params = [
-                                bugCheckInfo.parameter1,
-                                bugCheckInfo.parameter2,
-                                bugCheckInfo.parameter3,
-                                bugCheckInfo.parameter4
-                            ];
+	                    try {
+	                        if (dumpFile.file.size <= 5 * 1024 * 1024) {
+	                            const fileBuffer = await getFileBuffer();
+	                            const bugCheckInfo = extractBugCheckInfo(fileBuffer);
+	                            if (bugCheckInfo) {
+	                                const bugCode = bugCheckInfo.code;
+	                                const bugName = bugCheckInfo.name;
+	                                const params = [
+	                                    bugCheckInfo.parameter1,
+	                                    bugCheckInfo.parameter2,
+	                                    bugCheckInfo.parameter3,
+	                                    bugCheckInfo.parameter4
+	                                ];
 
-                            windbgReport.bugCheck = {
-                                code: formatBugCheckHex(bugCode),
-                                name: bugName,
-                                parameters: params.map((p, i) => ({
-                                    value: `0x${p.toString(16).toUpperCase()}`,
-                                    meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
-                                }))
-                            };
+	                                windbgReport.bugCheck = {
+	                                    code: formatBugCheckHex(bugCode),
+	                                    name: bugName,
+	                                    parameters: params.map((p, i) => ({
+	                                        value: `0x${p.toString(16).toUpperCase()}`,
+	                                        meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
+	                                    }))
+	                                };
+	                            }
+	                        } else {
+                            console.log('[Analyzer] Skipping client-side bug check extraction for large WinDBG-analyzed dump');
                         }
                     } catch (e) {
                         console.error('[Analyzer] Failed to extract bug check info from binary buffer:', e);
@@ -1311,20 +1507,38 @@ export const analyzeDumpFiles = async (
                     if (/turnstile verification required/i.test(windbgResult.error || '')) {
                         throw new Error(windbgResult.error);
                     }
-                    console.log('[Analyzer] Falling back to local analysis...');
-                    onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
+                    windbgFailure = windbgResult.error || 'WinDBG analysis failed';
+                    if (shouldUseLightweightAiFailover(dumpFile.file.size, FULL_LOCAL_ANALYSIS_LIMIT)) {
+                        useLightweightAiFailover = true;
+                        onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using lightweight AI fallback for this large dump');
+                    } else {
+                        console.log('[Analyzer] Falling back to local analysis...');
+                        onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
+                    }
                 }
             } catch (windbgError) {
                 console.error('[Analyzer] WinDBG server error:', windbgError);
                 if (isTurnstileRequiredError(windbgError)) {
                     throw windbgError;
                 }
-                console.log('[Analyzer] Falling back to local analysis...');
-                onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
+                windbgFailure = windbgError;
+                if (shouldUseLightweightAiFailover(dumpFile.file.size, FULL_LOCAL_ANALYSIS_LIMIT)) {
+                    useLightweightAiFailover = true;
+                    onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using lightweight AI fallback for this large dump');
+                } else {
+                    console.log('[Analyzer] Falling back to local analysis...');
+                    onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
+                }
+            }
+
+            if (useLightweightAiFailover) {
+                const report = await generateLargeDumpAiFailoverReport(dumpFile, fileLabel, windbgFailure);
+                return { id: dumpFile.id, report, status: FileStatus.ANALYZED, analysisMethod: 'local' as const };
             }
 
             // Fallback: Use local analysis if WinDBG failed
             // AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
+            const fileBuffer = await getFileBuffer();
 
             const MAX_STRINGS_LENGTH = PROCESSING_LIMITS.MAX_STRINGS_LENGTH;
             console.log('[Analyzer] Extracting printable strings...');
@@ -1456,7 +1670,7 @@ export const analyzeDumpFiles = async (
             // Dump-specific evidence only — the invariant analysis instructions
             // live in LOCAL_DUMP_PREFIX (shared, cache-stable) and are prepended
             // below so Gemini implicit caching can reuse the prefix across dumps.
-            const essentialPrefix = `**File:** ${dumpFile.file.name} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)`;
+	            const essentialPrefix = `**File:** ${fileLabel} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)`;
             
             promptSections.essential = essentialPrefix;
             currentTokens += estimateTokens(essentialPrefix);
@@ -1545,13 +1759,13 @@ ${adjustedHexDump}
             
             // Priority 7: Module list - prefer accurate parser when available
             // Use accurate module list from kernelDumpModuleParser if we have it
-            if (accurateModuleInfo?.modules && accurateModuleInfo.modules.length > 0) {
-                const moduleCount = Math.min(accurateModuleInfo.modules.length, 50); // Limit to 50 modules
-                const moduleSection = `\n\n**VERIFIED Module List (${moduleCount} of ${accurateModuleInfo.modules.length}):**
-IMPORTANT: Only these modules were loaded at crash time. Do NOT reference any module not in this list.
-${accurateModuleInfo.modules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
-                addSection('modules', moduleSection, 7);
-            } else {
+	            if (accurateModuleInfo?.modules && accurateModuleInfo.modules.length > 0) {
+	                const moduleCount = Math.min(accurateModuleInfo.modules.length, 50); // Limit to 50 modules
+	                const moduleSection = `\n\n**VERIFIED Module List (${moduleCount} of ${accurateModuleInfo.modules.length}):**
+	IMPORTANT: Only these modules were loaded at crash time. Do NOT reference any module not in this list.
+	${accurateModuleInfo.modules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
+	                addSection('modules', moduleSection, 7);
+	            } else {
                 // Fallback to old parser's module list
                 const legitimateModules = structuredInfo.moduleList.filter(m => isLegitimateModuleName(m.name));
                 const moduleCount = Math.min(
@@ -1561,11 +1775,17 @@ ${accurateModuleInfo.modules.slice(0, moduleCount).map(m => `- ${m.name}`).join(
                 if (moduleCount > 0) {
                     const moduleSection = `\n\n**Module List from Dump (${moduleCount} of ${legitimateModules.length}):**
 ${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
-                    addSection('modules', moduleSection, 7);
-                }
-            }
-            
-            // Priority 8: Extracted strings (use remaining tokens)
+	                    addSection('modules', moduleSection, 7);
+	                }
+	            }
+
+	            if (outdatedDrivers.length > 0) {
+	                const outdatedSection = `\n\n**Driver Version Warnings:**
+	${outdatedDrivers.map(driver => `- ${driver.name} ${driver.version}: ${driver.status}`).join('\n')}`;
+	                addSection('outdatedDrivers', outdatedSection, 7);
+	            }
+
+	            // Priority 8: Extracted strings (use remaining tokens)
             const stringTokensAvailable = Math.max(0, TARGET_TOKENS - currentTokens - 10000); // Reserve 10k for analysis requirements
             const maxStringLength = Math.min(
                 extractedStrings.length,
@@ -1625,8 +1845,8 @@ ${adjustedStrings}
                 .sort((a, b) => {
                     const priorities: { [key: string]: number } = {
                         bugcheck: 1, windows: 1, time: 1,
-                        structured: 2, stack: 3, hexdump: 4,
-                        stackmem: 5, threads: 6, modules: 7, strings: 8
+	                        structured: 2, stack: 3, hexdump: 4,
+	                        stackmem: 5, threads: 6, modules: 7, outdatedDrivers: 7, strings: 8
                     };
                     return (priorities[a] || 99) - (priorities[b] || 99);
                 });
@@ -1669,7 +1889,7 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
             console.log(`[Analyzer] Final prompt size: ${prompt.length} chars, ~${finalTokens} tokens (${(finalTokens / MAX_TOKENS * 100).toFixed(1)}% of limit)`);
             
             // Generate the analysis
-            let report = await generateInitialAnalysis(dumpFile.file.name, prompt);
+	            let report = await generateInitialAnalysis(fileLabel, prompt);
 
             // If AI failed but we have accurate structured data, generate a basic analysis
             if (report.summary.includes('malformed response') && (accurateModuleInfo || structuredInfo.bugCheckInfo)) {
@@ -1876,7 +2096,7 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
 
             return { id: dumpFile.id, report, status: FileStatus.ANALYZED, analysisMethod: 'local' as const };
         } catch (error) {
-            console.error(`Analysis failed for ${dumpFile.file.name}:`, error);
+	            console.error(`Analysis failed for ${fileLabel}:`, error);
             return { id: dumpFile.id, error: `Failed to read or analyze file. ${(error as Error).message}`, status: FileStatus.ERROR };
         }
         })();
@@ -1884,32 +2104,26 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
         return result;
     };
 
-    // Process all files in parallel and stream results as they complete
-    const filePromises = files.map(async (dumpFile) => {
-        const result = await analyzeFile(dumpFile);
-        // Stream result to callback immediately when this file completes
-        if (onFileComplete) {
-            onFileComplete(result);
+    const results: Array<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' } | undefined> = new Array(files.length);
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: Math.min(MAX_CLIENT_ANALYSIS_CONCURRENCY, files.length) }, async () => {
+        while (nextIndex < files.length && !options?.signal?.aborted) {
+            const index = nextIndex++;
+            const result = await analyzeFile(files[index]);
+            results[index] = result;
+            if (onFileComplete && !options?.signal?.aborted) {
+                onFileComplete(result);
+            }
         }
-        return result;
     });
 
-    // Wait for all files to complete and return all results
-    const results = await Promise.allSettled(filePromises);
+    await Promise.all(workers);
 
-    // Extract successful results, handling any rejected promises
-    return results.map((result, index) => {
-        if (result.status === 'fulfilled') {
-            return result.value;
-        } else {
-            // Handle rejected promise (shouldn't happen since we catch errors inside analyzeFile)
-            console.error(`Promise rejected for file ${files[index].file.name}:`, result.reason);
-            return {
-                id: files[index].id,
-                error: `Unexpected error: ${result.reason}`,
-                status: FileStatus.ERROR
-            };
-        }
+    return results.map((result, index) => result ?? {
+        id: files[index].id,
+        error: 'Analysis was cancelled before this file started',
+        status: FileStatus.ERROR
     });
 };
 

@@ -28,6 +28,19 @@ test('shared policy accepts all advertised upload extensions', () => {
   }
 });
 
+test('shared policy rejects undersized dumps and archives', () => {
+  const tinyDump = Buffer.from('MDMP', 'ascii');
+  const tinyZip = Buffer.from([0x50, 0x4B, 0x03, 0x04]);
+  const paddedZip = Buffer.concat([
+    Buffer.from([0x50, 0x4B, 0x03, 0x04]),
+    Buffer.alloc(FILE_LIMITS.minArchiveSize)
+  ]);
+
+  assert.equal(validateUploadedBuffer(tinyDump, 'tiny.dmp', { allowArchives: false }).valid, false);
+  assert.equal(validateUploadedBuffer(tinyZip, 'tiny.zip').valid, false);
+  assert.equal(validateUploadedBuffer(paddedZip, 'archive.zip').valid, true);
+});
+
 test('shared policy rejects unsafe paths and keeps safe nested dump paths', () => {
   assert.equal(validatePathEntry('folder/crash.mdmp'), true);
   assert.equal(validatePathEntry('a/b/c/dump.kdmp'), true);

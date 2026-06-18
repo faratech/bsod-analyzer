@@ -385,7 +385,7 @@ export function analyzeCrashContext(
         urgency = 'Address promptly - system integrity compromised';
     }
     // Driver issues are medium priority
-    else if (bugCheckCode === 0xD1 || bugCheckCode === 0xA || bugCheckCode === 0x9F) {
+    else if (bugCheckCode === 0xD1 || bugCheckCode === 0xA) {
         severity = 'medium';
         category = 'Driver Issue';
         urgency = 'Address soon - system stability affected';

@@ -117,6 +117,8 @@ export interface AnalysisReportData {
 export interface DumpFile {
   id: string;
   file: File;
+  displayName?: string;
+  sourcePath?: string;
   status: FileStatus;
   dumpType: 'minidump' | 'kernel';
   report?: AnalysisReportData;
