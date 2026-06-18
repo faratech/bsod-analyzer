@@ -13,6 +13,9 @@ npm run dev:frontend     # Start Vite dev server only
 # Build
 npm run build            # Build production frontend + generate SRI hashes
 npm run build:no-sri     # Build without SRI generation
+npm test                 # Run Node test suite
+npm run typecheck        # Run TypeScript without emitting files
+npm run check            # Run tests, typecheck, production build, and SRI generation
 
 # Production
 npm start                # Run production server (NODE_ENV=production)
@@ -50,7 +53,7 @@ npm run optimize-css     # Apply CSS purging
 
 ### Data Flow
 
-1. User uploads .dmp/.zip files
+1. User uploads dump files or `.zip`, `.7z`, `.rar` archives
 2. Files categorized as 'minidump' (<5MB) or 'kernel' (≥5MB)
 3. **Primary path (WinDBG):** If `WINDBG_API_KEY` is configured:
    - Client uploads file to backend → backend proxies to WinDBG server
@@ -58,7 +61,8 @@ npm run optimize-css     # Apply CSS purging
    - Backend downloads analysis and returns to client
    - AI interprets WinDBG output for user-friendly report
 4. **Fallback path:** If WinDBG unavailable or fails:
-   - Client extracts ASCII/UTF-16LE strings and hex dumps locally
+   - Minidumps use full local parsing, ASCII/UTF-16LE strings, hex evidence, and direct Gemini analysis
+   - Large dumps avoid full browser-side parsing and use bounded head/tail sampling for a lightweight AI report
    - Client sends request with session cookies
    - Backend validates session, rate limits, and prompt content
    - Backend proxies to Gemini API with server-side API key
@@ -80,17 +84,25 @@ npm run optimize-css     # Apply CSS purging
 | `GEMINI_API_KEY` | Gemini AI API access | Yes |
 | `TURNSTILE_SECRET_KEY` | Cloudflare verification | Production |
 | `SESSION_SECRET` | Session security | Production |
-| `WINDBG_API_KEY` | WinDBG server API access | No (falls back to local parsing) |
+| `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
+| `REQUIRE_REDIS_RUNTIME` | Require Redis-backed sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Express `trust proxy` hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 
 For local development, set in `.env.local` or export directly. To run with
-`NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` — otherwise
-every request will 403 because the immediate peer isn't a Cloudflare edge IP.
+`NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` and
+`REQUIRE_REDIS_RUNTIME=false` unless local Redis/Upstash credentials are configured.
+Otherwise requests may 403 at ingress checks or startup may fail because the
+runtime store is required.
 
 ## Deployment
 
 Pushes to `main` automatically deploy to Cloud Run. Secrets managed via Google Secret Manager.
+Use `deploy-with-secret.sh`; `deploy.sh` is only a compatibility wrapper. Static-only
+deployment is unsupported because uploads, archive extraction, WinDBG proxying,
+AI proxying, sessions, and rate limits require the Node/Express backend.
 
 ```bash
 # Manual deploy
@@ -114,6 +126,7 @@ Pushes to `main` automatically deploy to Cloud Run. Secrets managed via Google S
 - **CSP hashes**: Run `node scripts/hash-inline-scripts.js`
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
+- **Runtime state**: Keep sessions, ownership, jobs, rate limits, and token accounting Redis-backed in production
 
 ### Session Errors
 

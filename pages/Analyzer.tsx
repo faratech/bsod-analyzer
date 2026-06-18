@@ -124,7 +124,7 @@ const Analyzer: React.FC = () => {
                 "url": `${SITE_URL}/analyzer`,
                 "name": "BSOD Dump File Analyzer - Upload & Analyze Crash Dumps",
                 "isPartOf": { "@id": IDS.website },
-                "description": "Upload your Windows crash dump files (.dmp) for instant AI-powered analysis. Support for minidumps, kernel dumps, and complete memory dumps.",
+                "description": "Upload Windows crash dump files or supported archives for WinDBG-backed AI analysis. Supports minidumps, kernel dumps, and complete memory dumps.",
                 "inLanguage": "en-US"
             },
             {
@@ -144,8 +144,8 @@ const Analyzer: React.FC = () => {
                 "isPartOf": { "@id": IDS.webApplication },
                 "featureList": [
                     "Drag-and-drop file upload",
-                    "Supports .dmp, .zip, .7z, .rar files",
-                    "Real WinDBG server-side analysis",
+                    "Supports .dmp, .mdmp, .hdmp, .kdmp, .zip, .7z, and .rar files",
+                    "WinDBG analysis with AI fallback",
                     "AI-powered result interpretation",
                     "Detailed crash reports"
                 ]
@@ -157,7 +157,7 @@ const Analyzer: React.FC = () => {
         <>
             <SEO
                 title="BSOD Dump File Analyzer - Upload & Analyze Crash Dumps"
-                description="Upload your Windows crash dump files (.dmp) for instant AI-powered analysis. Support for minidumps, kernel dumps, and complete memory dumps. Get detailed crash analysis in seconds."
+                description="Upload Windows crash dump files or supported archives for WinDBG-backed AI analysis. Supports minidumps, kernel dumps, and complete memory dumps."
                 keywords="upload dump file, analyze BSOD, crash dump analyzer, minidump upload, kernel dump analysis, Windows debugging tool"
                 canonicalUrl="https://bsod.windowsforum.com/analyzer"
             />

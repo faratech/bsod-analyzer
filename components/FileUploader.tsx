@@ -253,7 +253,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       <label htmlFor="file-upload" style={{ cursor: 'pointer', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 2 }}>
           <UploadIcon className="upload-icon" />
           <span className="upload-text">
-              Drop .dmp, .zip, .7z, or .rar files here
+              Drop dump files or .zip, .7z, or .rar archives here
           </span>
           <span className="upload-hint">or click to browse</span>
           <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-success)' }}>

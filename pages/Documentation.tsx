@@ -63,7 +63,7 @@ const Documentation: React.FC = () => {
                         "name": "How do I analyze a BSOD dump file?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Simply upload your .dmp file to BSOD AI Analyzer. Your file is sent to our WinDBG server for real debugging, then our AI interprets the results to identify error codes, problematic drivers, call stacks, and provide step-by-step solutions."
+                            "text": "Upload your Windows dump file or supported archive to BSOD AI Analyzer. The primary path runs real WinDBG debugging, then AI interprets the output. If WinDBG is unavailable, the backend uses validated local or sampled dump evidence to produce a clearly marked fallback report."
                         }
                     },
                     {
@@ -90,7 +90,7 @@ const Documentation: React.FC = () => {
                 "supply": [
                     {
                         "@type": "HowToSupply",
-                        "name": "Windows dump file (.dmp)"
+                        "name": "Windows dump or archive file"
                     }
                 ],
                 "tool": [
@@ -110,14 +110,14 @@ const Documentation: React.FC = () => {
                     {
                         "@type": "HowToStep",
                         "name": "Upload the dump file",
-                        "text": "Go to the BSOD AI Analyzer page and drag-drop your .dmp file or click to browse and select it.",
+                        "text": "Go to the BSOD AI Analyzer page and drag-drop your .dmp, .mdmp, .hdmp, .kdmp, .zip, .7z, or .rar file, or click to browse and select it.",
                         "url": `${SITE_URL}/analyzer`,
                         "image": IMAGES.ogImage
                     },
                     {
                         "@type": "HowToStep",
                         "name": "Click Analyze",
-                        "text": "Click the 'Analyze' button to start the AI-powered analysis of your crash dump.",
+                        "text": "Click the 'Analyze' button to start WinDBG-backed analysis with AI interpretation, or validated AI fallback if WinDBG is unavailable.",
                         "url": `${SITE_URL}/analyzer`,
                         "image": IMAGES.ogImage
                     },
@@ -183,15 +183,15 @@ const Documentation: React.FC = () => {
                                 </p>
                                 
                                 <div className="alert alert-info">
-                                    <strong>Quick Start:</strong> Simply drag and drop your .dmp file onto the analyzer
-                                    page and click "Analyze." Your file is sent to our WinDBG server for real debugging,
-                                    then our AI interprets the results into a clear report. Analysis typically takes
-                                    30-60 seconds.
+                                    <strong>Quick Start:</strong> Simply drag and drop your dump file or supported archive
+                                    onto the analyzer page and click "Analyze." The primary path runs real WinDBG debugging,
+                                    then AI interprets the results into a clear report. If WinDBG is unavailable, the backend
+                                    uses validated local or sampled evidence and marks the result as fallback analysis.
                                 </div>
                                 
                                 <h3>What You'll Need</h3>
                                 <ul>
-                                    <li>A Windows crash dump file (.dmp) - typically found in C:\Windows\Minidump</li>
+                                    <li>A Windows crash dump file or supported archive - typically found in C:\Windows\Minidump</li>
                                     <li>A modern web browser (Chrome, Firefox, Edge, or Safari)</li>
                                     <li>An internet connection for AI-powered analysis</li>
                                     <li>No installation or technical knowledge required</li>
@@ -270,7 +270,7 @@ const Documentation: React.FC = () => {
                                 <h3>Step 1: Prepare Your Files</h3>
                                 <p>Supported formats:</p>
                                 <ul>
-                                    <li>.dmp files (any type of Windows dump)</li>
+                                    <li>.dmp, .mdmp, .hdmp, and .kdmp files (any type of Windows dump)</li>
                                     <li>.zip, .7z, and .rar archives containing .dmp files</li>
                                     <li>Multiple files can be analyzed in one session</li>
                                 </ul>
@@ -280,7 +280,7 @@ const Documentation: React.FC = () => {
                                     <li>Navigate to the <Link to="/analyzer">Analyzer page</Link></li>
                                     <li>Drag and drop your files or click to browse</li>
                                     <li>Click "Analyze" to start the analysis</li>
-                                    <li>Your file is uploaded to our WinDBG server for real debugging</li>
+                                    <li>The backend uses WinDBG when available, or validated AI fallback when it is not</li>
                                     <li>Wait for results (typically 30-60 seconds for first analysis, instant for cached files)</li>
                                 </ol>
                                 
@@ -695,8 +695,9 @@ const Documentation: React.FC = () => {
                                 <h2>Advanced Analysis Tools</h2>
 
                                 <p>
-                                    Our analyzer runs real WinDBG debugging commands on your crash dump server-side.
-                                    The output comes directly from WinDBG — not a simulation. Key commands include:
+                                    The primary analysis path runs real WinDBG debugging commands on your crash dump
+                                    server-side. When this path is available, the output comes directly from WinDBG -
+                                    not a simulation. Key commands include:
                                 </p>
                                 
                                 <div className="command-list">
@@ -724,8 +725,8 @@ const Documentation: React.FC = () => {
                                 
                                 <h3>Symbol Resolution</h3>
                                 <p>
-                                    Our WinDBG server automatically downloads and resolves Windows symbols from
-                                    Microsoft's symbol servers, providing accurate function names and call stacks:
+                                    On successful WinDBG analyses, the server automatically downloads and resolves Windows
+                                    symbols from Microsoft's symbol servers, providing accurate function names and call stacks:
                                 </p>
                                 <ul>
                                     <li>Downloads PDB symbols for the exact Windows version from the crash</li>
@@ -736,8 +737,8 @@ const Documentation: React.FC = () => {
 
                                 <div className="alert alert-info">
                                     <strong>Pro Tip:</strong> First-time analysis of a dump may take 30-60 seconds
-                                    while WinDBG processes the file. If the same file is analyzed again, results are
-                                    returned instantly from cache.
+                                    while WinDBG processes the file. Fallback reports may return different detail levels,
+                                    and repeated analyses of the same file are returned instantly from cache.
                                 </div>
                                 
                                 <h3>Reading Stack Traces</h3>
@@ -831,10 +832,11 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>Is my dump file data kept private?</h3>
                                     <p>
-                                        Yes. Your dump file is securely uploaded to our WinDBG server for analysis
-                                        and is not retained after processing. Analysis results are cached temporarily
-                                        to speed up repeat queries. All communications are encrypted via TLS,
-                                        and no personal information is collected.
+                                        Yes. Your dump file is processed by our secure backend. The primary path uses
+                                        the WinDBG server; fallback analysis uses local or sampled evidence. Files are
+                                        not retained after processing. Analysis results are cached temporarily to speed
+                                        up repeat queries. All communications are encrypted via TLS, and no personal
+                                        information is collected.
                                     </p>
                                 </div>
                                 
@@ -849,10 +851,10 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>How accurate is the analysis?</h3>
                                     <p>
-                                        Our analyzer runs real WinDBG debugging on your crash dump, producing the same
-                                        output a Microsoft engineer would see. The AI then interprets this data to
-                                        identify the root cause with high accuracy. However, complex hardware issues
-                                        may require additional diagnostic tools.
+                                        When WinDBG is available, our analyzer runs real debugging on your crash dump,
+                                        producing professional WinDBG output for AI interpretation. If WinDBG is unavailable,
+                                        the report is generated from validated local or sampled dump evidence and is marked
+                                        as fallback analysis. Complex hardware issues may still require additional diagnostic tools.
                                     </p>
                                 </div>
                                 

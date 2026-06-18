@@ -133,24 +133,24 @@ const About: React.FC = () => {
                     <section id="how-it-works" className="about-section content-section">
                         <h2>How It Works</h2>
                         <p>
-                            Our analyzer combines real WinDBG debugging with Google's Gemini AI to deliver
-                            professional-grade crash analysis. When you upload a dump file:
+                            Our analyzer combines real WinDBG debugging, Google's Gemini AI, and validated
+                            fallback analysis to deliver professional-grade crash reports. When you upload a dump file:
                         </p>
                         <ol>
                             <li>
-                                <strong>Real WinDBG Analysis:</strong> Your dump file is securely uploaded to our
-                                WinDBG server, which runs actual debugging commands ({<code>!analyze -v</code>})
-                                against the crash dump — the same tool Microsoft engineers use.
+                                <strong>Primary WinDBG Analysis:</strong> When available, your dump file is securely
+                                uploaded to our WinDBG server, which runs actual debugging commands ({<code>!analyze -v</code>})
+                                against the crash dump - the same tool Microsoft engineers use.
                             </li>
                             <li>
-                                <strong>Symbol Resolution:</strong> The WinDBG server automatically resolves
+                                <strong>Symbol Resolution:</strong> On the WinDBG path, the server automatically resolves
                                 symbols from Microsoft's symbol servers, providing accurate function names,
                                 driver versions, and call stacks.
                             </li>
                             <li>
-                                <strong>AI Interpretation:</strong> Google's Gemini AI interprets the raw WinDBG
-                                output and translates it into a clear, actionable report with plain-language
-                                explanations and step-by-step solutions.
+                                <strong>AI Interpretation and Fallback:</strong> Google's Gemini AI interprets WinDBG
+                                output into a clear report. If WinDBG is unavailable, the backend analyzes validated
+                                local or sampled dump evidence and marks the report as fallback analysis.
                             </li>
                             <li>
                                 <strong>Intelligent Caching:</strong> Results are cached by file content hash,
@@ -171,7 +171,7 @@ const About: React.FC = () => {
                             Your privacy is our priority. Here's how we protect your data:
                         </p>
                         <ul>
-                            <li>Dump files are sent to our secure WinDBG server for analysis and are not retained after processing</li>
+                            <li>Dump files are processed by our secure backend. The primary path uses the WinDBG server; fallback analysis uses local or sampled evidence. Files are not retained after processing</li>
                             <li>Analysis results are cached temporarily to speed up repeat queries for the same file</li>
                             <li>All communications are encrypted using industry-standard SSL/TLS</li>
                             <li>No personal information is collected or retained</li>
@@ -205,8 +205,8 @@ const About: React.FC = () => {
                     <section id="features" className="about-section content-section">
                         <h2>Advanced Features</h2>
                         <p>
-                            Our analyzer runs real WinDBG debugging commands on your crash dump server-side.
-                            The output you see comes directly from WinDBG — not a simulation:
+                            When the WinDBG path is available, our analyzer runs real debugging commands on your
+                            crash dump server-side. That output comes directly from WinDBG - not a simulation:
                         </p>
                         <ul>
                             <li><code>!analyze -v</code> - Full automated crash analysis with stack traces and module info</li>
@@ -216,7 +216,8 @@ const About: React.FC = () => {
                         </ul>
                         <p>
                             The raw WinDBG output is then interpreted by our AI into a user-friendly report
-                            with plain-language explanations and actionable recommendations.
+                            with plain-language explanations and actionable recommendations. If WinDBG is unavailable,
+                            reports switch to validated AI fallback and show that status in the result.
                         </p>
                     </section>
 
@@ -254,12 +255,12 @@ const About: React.FC = () => {
                                     </tr>
                                     <tr>
                                         <td><strong>Memory Analysis</strong></td>
-                                        <td>✅ Server-side WinDBG analysis of full dump</td>
+                                        <td>✅ WinDBG full-dump analysis with validated AI fallback</td>
                                         <td>✅ Direct memory structure access</td>
                                     </tr>
                                     <tr>
                                         <td><strong>Symbol Resolution</strong></td>
-                                        <td>✅ Automatic via server-side WinDBG</td>
+                                        <td>✅ Microsoft symbols via WinDBG when available</td>
                                         <td>✅ Full Microsoft symbol server integration</td>
                                     </tr>
                                     <tr>
