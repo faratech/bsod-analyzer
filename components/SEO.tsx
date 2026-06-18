@@ -17,7 +17,7 @@ const SITE_URL = 'https://bsod.windowsforum.com';
 
 const SEO: React.FC<SEOProps> = ({
     title = 'BSOD AI Analyzer - Instant Windows Crash Dump Analysis',
-    description = 'Free AI-powered Blue/Black Screen of Death analyzer. Upload your Windows crash dump files (.dmp) and get instant diagnosis with actionable solutions. Analyzes both classic blue and modern black crash screens.',
+    description = 'Free AI-powered Blue/Black Screen of Death analyzer. Upload Windows crash dump files or supported archives and get actionable diagnostics. Analyzes both classic blue and modern black crash screens.',
     keywords = 'BSOD analyzer, blue screen of death, Windows crash dump, minidump analysis, kernel dump, crash analysis, Windows debugging, dump file analyzer, BSOD fix, Windows error',
     ogImage = `${SITE_URL}/og-image.webp`,
     ogImageWidth = 1200,

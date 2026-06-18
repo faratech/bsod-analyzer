@@ -332,7 +332,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                 gap: '0.5rem'
                             }}>
                                 <span style={{fontSize: '1rem', flexShrink: 0}}>&#x2139;</span>
-                                Analyzed with local parsing &#x2014; WinDBG was unavailable. Results may be less detailed.
+                                Analyzed with AI fallback using local or sampled dump evidence because WinDBG was unavailable. Results may be less detailed.
                             </div>
                         )}
 

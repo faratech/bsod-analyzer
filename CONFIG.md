@@ -8,7 +8,7 @@ To control advertisements in the application, edit the `config.ts` file:
 // config.ts
 export const config = {
     ads: {
-        enabled: false,  // Change to true to enable ads
+        enabled: true,  // Change to false to disable ads
         publisherId: 'ca-pub-7455498979488414',
         autoAds: true
     },
@@ -23,7 +23,7 @@ export const config = {
 
 ### To enable ads:
 1. Open `config.ts`
-2. Change `ads.enabled` from `false` to `true`
+2. Change `ads.enabled` to `true`
 3. Rebuild the application: `npm run build`
 4. Deploy the updated build
 
@@ -43,11 +43,14 @@ analytics: {
 Configure Gemini API settings:
 ```typescript
 api: {
-    geminiModel: 'gemini-3.1-flash-lite',
     maxFileSize: 100 * 1024 * 1024, // 100MB
-    minidumpThreshold: 5 * 1024 * 1024 // 5MB
+    minidumpThreshold: FILE_SIZE_THRESHOLDS.MINIDUMP
 }
 ```
+
+The Gemini model is controlled server-side through `model.cfg`, not through
+client configuration. Upload extension, size, and archive validation rules are
+shared through `shared/ingestPolicy.js`.
 
 ## Important Notes
 - Configuration changes require rebuilding the application

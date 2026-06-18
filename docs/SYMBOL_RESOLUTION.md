@@ -2,16 +2,19 @@
 
 ## Current Implementation
 
-The BSOD Analyzer includes basic symbol resolution that maps memory addresses to module names and offsets:
-- `0xfffff80012345678` → `ntoskrnl.exe+0x12345678`
+Current production symbol resolution is primarily provided by WinDBG:
+- When the WinDBG path is available, the remote debugger resolves Microsoft symbols and returns professional stack/module output.
+- When WinDBG is unavailable, AI fallback reports use validated local or sampled dump evidence. These reports can include module names, strings, and stack-like evidence, but symbol detail may be less complete.
+- Static JSON symbol files exist under `public/symbols/` as reference data, but there is no active browser-side `SymbolResolver` implementation wired into the analyzer.
 
 ## Enhanced Symbol Resolution Options
 
-### 1. **Symbol Database Approach (Implemented)**
+### 1. **Symbol Database Approach (Reference Data Present)**
 - Pre-built database of common Windows system symbols
 - Fast, no external dependencies
 - Works offline
 - Limited to known symbols
+- Not currently wired into the production analyzer flow
 
 **Pros:**
 - Fast and reliable
@@ -24,10 +27,10 @@ The BSOD Analyzer includes basic symbol resolution that maps memory addresses to
 - Needs regular updates
 - Larger bundle size
 
-### 2. **Microsoft Symbol Server (Partial Implementation)**
-- Download actual PDB files from Microsoft servers
-- Most accurate symbol resolution
-- Requires server-side proxy due to CORS
+### 2. **Microsoft Symbol Server via WinDBG (Production Primary)**
+- WinDBG downloads and resolves symbols from Microsoft symbol servers
+- Most accurate path for supported dumps
+- Requires the WinDBG service and `WINDBG_API_KEY`
 
 **Pros:**
 - 100% accurate symbols
@@ -40,25 +43,24 @@ The BSOD Analyzer includes basic symbol resolution that maps memory addresses to
 - Complex PDB parsing
 - Not suitable for client-side
 
-### 3. **Hybrid Approach (Recommended)**
+### 3. **Hybrid Approach (Future Option)**
 Combine both methods:
-1. Use symbol database for common symbols (fast path)
-2. Fall back to symbol server for unknown symbols
+1. Use WinDBG symbol output when available
+2. Use a local/static symbol database for fallback enrichment
 3. Cache results for performance
 
 ## Implementation Status
 
 ✅ **Completed:**
-- Basic symbol resolution (module+offset)
-- Symbol database with common Windows symbols
-- Integration with stack trace extraction
-- Symbol caching for performance
+- WinDBG-backed symbol resolution on the primary analysis path
+- Static symbol JSON files for common Windows modules under `public/symbols/`
+- AI report generation from WinDBG output
 
 🚧 **Partial:**
-- Symbol server client (needs backend proxy)
-- PDB parser (basic implementation)
+- Fallback report enrichment from local or sampled dump evidence
 
 ❌ **Not Implemented:**
+- Active browser-side symbol resolver wiring
 - Full PDB parsing
 - Symbol server backend proxy
 - Automatic symbol updates
@@ -106,21 +108,7 @@ The AI can now:
 
 ## Using Symbol Resolution
 
-The symbol resolver is automatically used during dump analysis:
-
-```typescript
-// Automatic in analyzeDumpFiles
-const symbolResolver = new SymbolResolver();
-const stackTrace = extractStackTrace(buffer, strings, symbolResolver, moduleList);
-```
-
-For manual usage:
-```typescript
-import { SymbolResolver } from './utils/symbolResolver';
-
-const resolver = new SymbolResolver();
-resolver.registerModule(0xfffff80000000000, 0x800000, 'ntoskrnl.exe');
-
-const symbol = resolver.resolve(0xfffff80000012345);
-console.log(symbol.formatted); // "ntoskrnl.exe!KeBugCheckEx+0x11345"
-```
+Symbol resolution is automatic on the WinDBG-backed path. For fallback reports,
+the analyzer extracts bounded local evidence and sends it through the validated
+AI proxy. Future work can wire `public/symbols/` into that fallback path if
+local symbol enrichment becomes necessary.

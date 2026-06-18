@@ -1,21 +1,28 @@
-# Client-Side Symbol Download
+# Client-Side Symbol Download (Reference Design)
 
 ## Overview
 
-The BSOD Analyzer now downloads symbol files directly in the browser, providing enhanced stack trace resolution without any server-side storage or persistence requirements.
+This document is a reference design for browser-side symbol downloads. It is
+not the current production path.
 
-## How It Works
+Current production behavior:
+- WinDBG is the primary source of resolved symbols when the WinDBG path is available
+- AI fallback reports use validated local or sampled dump evidence and may include less complete stack/symbol detail
+- Static JSON files exist under `public/symbols/`, but there is no active `SymbolResolver` or `ClientSymbolDownloader` implementation wired into the analyzer
+
+## Proposed Flow
 
 1. **On-Demand Downloads**: When analyzing a dump file, the system identifies which modules need symbols
 2. **CDN Fetching**: Symbol files are downloaded from public CDN sources (GitHub, jsDelivr)
 3. **Memory-Only Storage**: Downloaded symbols are kept in browser memory only
 4. **No Persistence**: Symbols are re-downloaded each session (keeps Cloud Run stateless)
 
-## Implementation
+## Reference Implementation
 
 ### Symbol Sources
 
-Symbols are hosted as static JSON files on GitHub:
+The repository includes static JSON symbol data under `public/symbols/`. A
+future CDN-hosted flow could use sources like:
 ```
 https://raw.githubusercontent.com/faratech/bsod-symbols/main/
 ├── ntoskrnl.exe.json
@@ -26,6 +33,9 @@ https://raw.githubusercontent.com/faratech/bsod-symbols/main/
 ```
 
 ### Usage Example
+
+The following example is illustrative only; these classes are not currently
+implemented in the production codebase.
 
 ```typescript
 // Automatic download during analysis
@@ -57,7 +67,7 @@ const stats = downloader.getStats();
 02: somedriver.sys+0x5678
 ```
 
-## Benefits
+## Potential Benefits
 
 1. **No Server Storage**: Perfect for stateless Cloud Run
 2. **Privacy**: No data sent to servers
@@ -86,8 +96,11 @@ Simple JSON mapping of RVA to function name:
 
 ### Building Symbol Database
 
+No symbol-build script is currently present in this repository. A future helper
+could follow this shape:
+
 ```bash
-# Script to generate symbol files
+# Example future script to generate symbol files
 node scripts/build-symbols.js
 
 # Generates:

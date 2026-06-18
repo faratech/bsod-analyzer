@@ -7,7 +7,7 @@ The BSOD AI Analyzer is an enterprise-grade application designed to diagnose Win
 This project uses Node.js and npm for dependency management and script execution.
 
 **Prerequisites:**
-*   Node.js 18+
+*   Node.js 22+
 *   Google Cloud account (for deployment)
 *   Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 
@@ -41,7 +41,10 @@ This project uses Node.js and npm for dependency management and script execution
 *   `npm run dev`: Starts both backend and frontend servers.
 *   `npm run dev:backend`: Starts the backend server only.
 *   `npm run dev:frontend`: Starts the frontend development server only.
-*   `npm run build`: Builds the production-ready frontend.
+*   `npm run build`: Builds the production-ready frontend and adds SRI hashes.
+*   `npm test`: Runs the Node test suite.
+*   `npm run typecheck`: Runs TypeScript checks without emitting files.
+*   `npm run check`: Runs tests, typecheck, production build, and SRI generation.
 *   `npm start`: Runs the production server.
 
 **Deployment:**
@@ -53,11 +56,11 @@ The application can be deployed to Google Cloud Run. The `README.md` provides de
 *   **Technology Stack:**
     *   **Frontend:** React 19, TypeScript, Vite
     *   **Backend:** Express.js with ES modules
-    *   **AI Service:** Google Gemini 3.1 Flash Lite with grounding via `@google/genai` SDK
+    *   **AI Service:** Google Gemini via `@google/genai` SDK with server-owned JSON response schemas
     *   **Styling:** Custom CSS
     *   **Deployment:** Docker, Google Cloud Run, Secret Manager
 *   **Secret Management:**
-    *   **Production:** All secrets (e.g., `GEMINI_API_KEY`, `TURNSTILE_SECRET_KEY`, `SESSION_SECRET`) are stored in Google Secret Manager and injected as environment variables by Cloud Run.
+    *   **Production:** All secrets (e.g., `GEMINI_API_KEY`, `TURNSTILE_SECRET_KEY`, `SESSION_SECRET`, `WINDBG_API_KEY`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`) are stored in Google Secret Manager and injected as environment variables by Cloud Run.
     *   **Local Development:** Secrets are managed via `.env.local` files or direct environment variables. The `.env.local` file is git-ignored and should never be committed.
     *   Dedicated scripts (`setup-all-secrets.sh`, `update-turnstile-secret.sh`, `deploy-with-secret.sh`) are provided for secret management.
 *   **Security Best Practices:**
@@ -69,4 +72,4 @@ The application can be deployed to Google Cloud Run. The `README.md` provides de
     *   Frontend components are located in the `components/` and `pages/` directories.
     *   Backend logic is primarily in `server.js` and `services/`.
     *   Utility functions are in the `utils/` directory.
-*   **Testing:** (No explicit testing commands or frameworks were identified in the `README.md` beyond general development commands. Further exploration would be needed to determine specific testing conventions.)
+*   **Testing:** Use `npm run check` before shipping. It runs the Node test suite, TypeScript checks, production build, and SRI generation.

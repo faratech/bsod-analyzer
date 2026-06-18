@@ -1,9 +1,17 @@
-# Cloud Symbol Architecture for BSOD Analyzer
+# Cloud Symbol Architecture for BSOD Analyzer (Reference Design)
 
 ## Problem
 Cloud Run is stateless - containers can be destroyed/recreated at any time, so we can't store persistent data.
 
-## Recommended Solution: Hybrid Approach
+## Current Production Status
+
+This is a reference design for a future symbol service. The current production
+analyzer does not store or submit symbols through Cloud Run:
+- WinDBG is the primary source of resolved symbols when that path is available
+- AI fallback reports use validated local or sampled dump evidence
+- Static symbol JSON files exist under `public/symbols/`, but they are not wired into an active Cloud Run symbol service
+
+## Proposed Solution: Hybrid Approach
 
 ### 1. **Static Symbol Database (Primary)**
 - Pre-built symbol database hosted on CDN (GitHub Pages, jsDelivr, or Cloud Storage)
@@ -45,9 +53,12 @@ const stats = await BrowserOnlySymbolCollector.getStatistics();
 
 ## Implementation Steps
 
+These steps are proposal notes. The repository does not currently include a
+`build-symbols` npm script or a Cloud Run symbol submission service.
+
 ### Step 1: Create Static Symbol Database
 ```bash
-# Build symbol database from public sources
+# Example future command to build symbol database from public sources
 npm run build-symbols
 
 # Output: public/symbols/
@@ -197,7 +208,7 @@ graph LR
     └─────────┘      └──────────┘
 ```
 
-This architecture:
+If implemented, this architecture:
 - Works with Cloud Run's stateless nature
 - Provides fast symbol resolution
 - Respects user privacy
