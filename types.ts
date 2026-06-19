@@ -56,7 +56,7 @@ export interface StackFrame {
 }
 
 export interface SystemInfo {
-  windowsVersion?: string;    // e.g., "10.0.22631.4460"
+  windowsVersion?: string;    // Raw WinDBG OS version evidence, e.g., "10.0.22631.4460"
   systemUptime?: string;      // e.g., "0 days 4:23:45"
   processName?: string;       // e.g., "System", "chrome.exe"
 }
