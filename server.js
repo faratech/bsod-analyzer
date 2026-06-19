@@ -28,6 +28,14 @@ import {
   validatePathEntry,
   validateUploadedBuffer
 } from './shared/ingestPolicy.js';
+import {
+  DEFAULT_WINDBG_API_BASE_URL,
+  extractWinDbgAnalysisText,
+  getWinDbgJob,
+  normalizeWinDbgApiBaseUrl,
+  submitWinDbgJob,
+  toLegacyWinDbgStatusResponse
+} from './shared/windbgApiClient.js';
 
 const execFileAsync = promisify(execFile);
 import {
@@ -492,9 +500,9 @@ async function sessionOwnsHash(sessionId, hash) {
   return true;
 }
 
-async function markWinDbgJob(sessionId, uid, fileHash) {
+async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
   if (!sessionId || !uid || !fileHash) return;
-  const ownership = { sessionId, fileHash, timestamp: Date.now() };
+  const ownership = { sessionId, fileHash, upstreamJobId, timestamp: Date.now() };
   winDbgJobOwnership.set(uid, ownership);
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
@@ -505,19 +513,24 @@ async function markWinDbgJob(sessionId, uid, fileHash) {
   await markSessionHash(sessionId, fileHash);
 }
 
-async function sessionOwnsWinDbgJob(sessionId, uid) {
+async function loadWinDbgJobOwnership(uid) {
   let job = winDbgJobOwnership.get(uid);
   if (!job) {
     job = await getRuntimeValue(runtimeWinDbgJobKey(uid));
     if (job) winDbgJobOwnership.set(uid, job);
   }
-  if (!job || job.sessionId !== sessionId) return false;
+  return job;
+}
+
+async function getOwnedWinDbgJob(sessionId, uid) {
+  const job = await loadWinDbgJobOwnership(uid);
+  if (!job || job.sessionId !== sessionId) return null;
   if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
     winDbgJobOwnership.delete(uid);
     await deleteRuntimeValue(runtimeWinDbgJobKey(uid));
-    return false;
+    return null;
   }
-  return true;
+  return job;
 }
 
 // ============================================================
@@ -1756,7 +1769,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 // WinDBG Server Proxy Endpoints
 // ============================================================
 
-const WINDBG_API_URL = 'https://windbg.stack-tech.net/api';
+const WINDBG_API_BASE_URL = normalizeWinDbgApiBaseUrl(
+  process.env.WINDBG_API_BASE_URL || process.env.WINDBG_API_URL || DEFAULT_WINDBG_API_BASE_URL
+);
 const WINDBG_API_KEY = process.env.WINDBG_API_KEY;
 
 if (!WINDBG_API_KEY) {
@@ -1865,35 +1880,6 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
   }
 });
 
-/**
- * Build multipart form body for WinDBG uploads
- */
-function buildWinDBGMultipartBody(apiKey, uid, fileBuffer, fileName) {
-  const boundary = '----WinDBGBoundary' + Date.now();
-  const CRLF = '\r\n';
-  const safeFileName = sanitizeUploadFileName(fileName);
-
-  let body = '';
-  body += `--${boundary}${CRLF}`;
-  body += `Content-Disposition: form-data; name="APIKEY"${CRLF}${CRLF}`;
-  body += `${apiKey}${CRLF}`;
-  body += `--${boundary}${CRLF}`;
-  body += `Content-Disposition: form-data; name="UID"${CRLF}${CRLF}`;
-  body += `${uid}${CRLF}`;
-
-  const fileHeader = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${safeFileName}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
-  const fileFooter = `${CRLF}--${boundary}--${CRLF}`;
-
-  const fullBody = Buffer.concat([
-    Buffer.from(body, 'utf8'),
-    Buffer.from(fileHeader, 'utf8'),
-    fileBuffer,
-    Buffer.from(fileFooter, 'utf8')
-  ]);
-
-  return { fullBody, boundary };
-}
-
 // Upload dump file to WinDBG server
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
@@ -1959,98 +1945,28 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
 
     console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
-    const { fullBody, boundary } = buildWinDBGMultipartBody(WINDBG_API_KEY, uid, fileBuffer, fileName);
-    console.log('[WinDBG] Request body size:', fullBody.length);
-
-    // Upload to WinDBG server
-    const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
-      method: 'POST',
-      body: fullBody,
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`
-      },
+    const submitResult = await submitWinDbgJob({
+      baseUrl: WINDBG_API_BASE_URL,
+      apiKey: WINDBG_API_KEY,
+      fileBuffer,
+      fileName,
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
     });
+    await markWinDbgJob(req.sessionId, uid, uid, submitResult.job_id);
 
-    // Log response details
-    const responseText = await response.text();
-    console.log('[WinDBG] Response status:', response.status);
-    console.log('[WinDBG] Response body:', responseText.substring(0, 500));
-
-    // Handle 409 - UID already exists (file was previously uploaded)
-    // Check if analysis is complete and cache it if so
-    if (response.status === 409) {
-      console.log('[WinDBG] UID already exists, checking if analysis is complete...');
-      await markWinDbgJob(req.sessionId, uid, uid);
-
-      try {
-        // Check status on WinDBG server
-        const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-        const statusResponse = await fetch(statusUrl, {
-          signal: timeoutSignal(WINDBG_POLL_TIMEOUT_MS)
-        });
-
-        if (statusResponse.ok) {
-          const statusResult = await statusResponse.json();
-          console.log('[WinDBG] Status for existing UID:', statusResult.data?.status);
-
-          // If completed, download and cache the result
-          if (statusResult.data?.status === 'completed') {
-            console.log('[WinDBG] Analysis already complete, downloading and caching...');
-            const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-            const downloadResponse = await fetch(downloadUrl, {
-              signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
-            });
-
-            if (downloadResponse.ok) {
-              const analysisText = await downloadResponse.text();
-              console.log('[WinDBG] Downloaded existing analysis:', analysisText.length, 'bytes');
-
-              // Cache the result
-              await setCachedWinDBGAnalysis(uid, {
-                windbgOutput: analysisText,
-                timestamp: Date.now()
-              });
-
-              // Return cached response
-              return res.json({
-                success: true,
-                cached: true,
-                cachedAnalysis: analysisText,
-                data: { uid, queue_position: 0 }
-              });
-            }
-          }
-        }
-      } catch (statusError) {
-        console.error('[WinDBG] Error checking status for 409:', statusError);
+    console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id);
+    res.json({
+      success: true,
+      message: 'WinDBG analysis queued',
+      data: {
+        uid,
+        filename: fileName,
+        size: fileBuffer.length,
+        status: 'pending',
+        queue_position: submitResult.queue_position ?? 0,
+        total_pending: undefined
       }
-
-      // If we couldn't get/cache the result, let client poll
-      return res.json({
-        success: true,
-        alreadyExists: true,
-        data: { uid, queue_position: 0 }
-      });
-    }
-
-    if (!response.ok) {
-      throw new Error(`WinDBG upload failed with status ${response.status}: ${responseText}`);
-    }
-
-    // Parse the response
-    let result;
-    try {
-      result = JSON.parse(responseText);
-    } catch (e) {
-      throw new Error(`Failed to parse WinDBG response: ${responseText}`);
-    }
-    console.log('[WinDBG] Upload response:', result.success ? 'success' : 'failed');
-    if (result.success) {
-      await markWinDbgJob(req.sessionId, uid, uid);
-    }
-
-    res.json(result);
+    });
   } catch (error) {
     log.error('windbg.upload.fail', { message: error.message });
     res.status(500).json({
@@ -2078,7 +1994,8 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
         error: 'Invalid or missing parameter: uid'
       });
     }
-    if (!(await sessionOwnsWinDbgJob(req.sessionId, uid))) {
+    const ownership = await getOwnedWinDbgJob(req.sessionId, uid);
+    if (!ownership) {
       return res.status(403).json({
         success: false,
         error: 'WinDBG job is not available for this session',
@@ -2086,22 +2003,16 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
       });
     }
 
-    const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-    console.log('[WinDBG] Checking status for UID:', uid);
+    const upstreamJobId = ownership.upstreamJobId || uid;
+    console.log('[WinDBG] Checking status for UID:', uid, 'Upstream job:', upstreamJobId);
 
-    const response = await fetch(statusUrl, {
-      headers: {
-        'Cache-Control': 'no-cache, no-store',
-        'Pragma': 'no-cache'
-      },
+    const job = await getWinDbgJob({
+      baseUrl: WINDBG_API_BASE_URL,
+      apiKey: WINDBG_API_KEY,
+      jobId: upstreamJobId,
       signal: timeoutSignal(WINDBG_POLL_TIMEOUT_MS)
     });
-
-    if (!response.ok) {
-      throw new Error(`WinDBG status check failed with status ${response.status}`);
-    }
-
-    const result = await response.json();
+    const result = toLegacyWinDbgStatusResponse(job, uid);
     console.log('[WinDBG] Status response:', result.data?.status, 'for UID:', uid);
 
     // CRITICAL: Set no-cache headers on response to prevent browser/CDN caching
@@ -2138,7 +2049,8 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
         error: 'Invalid or missing parameter: uid'
       });
     }
-    if (!(await sessionOwnsWinDbgJob(req.sessionId, uid))) {
+    const ownership = await getOwnedWinDbgJob(req.sessionId, uid);
+    if (!ownership) {
       return res.status(403).json({
         success: false,
         error: 'WinDBG job is not available for this session',
@@ -2146,17 +2058,25 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       });
     }
 
-    const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-
-    const response = await fetch(downloadUrl, {
+    const upstreamJobId = ownership.upstreamJobId || uid;
+    const job = await getWinDbgJob({
+      baseUrl: WINDBG_API_BASE_URL,
+      apiKey: WINDBG_API_KEY,
+      jobId: upstreamJobId,
       signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
     });
-
-    if (!response.ok) {
-      throw new Error(`WinDBG download failed with status ${response.status}`);
+    const status = toLegacyWinDbgStatusResponse(job, uid).data.status;
+    if (status !== 'completed') {
+      return res.status(409).json({
+        success: false,
+        error: `WinDBG analysis is not complete (status: ${status})`
+      });
     }
 
-    const analysisText = await response.text();
+    const analysisText = extractWinDbgAnalysisText(job);
+    if (!analysisText) {
+      throw new Error('Completed WinDBG job did not include analysis output');
+    }
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
 
     // Cache the WinDBG output (UID is the file hash)
@@ -2277,55 +2197,47 @@ function generateWinDBGUID() {
 /**
  * Upload file buffer to WinDBG server
  */
-async function uploadBufferToWinDBG(fileBuffer, fileName, uid) {
-  const { fullBody, boundary } = buildWinDBGMultipartBody(WINDBG_API_KEY, uid, fileBuffer, fileName);
-
-  const response = await fetch(`${WINDBG_API_URL}/upload.php`, {
-    method: 'POST',
-    body: fullBody,
-    headers: {
-      'Content-Type': `multipart/form-data; boundary=${boundary}`
-    },
+async function uploadBufferToWinDBG(fileBuffer, fileName) {
+  const result = await submitWinDbgJob({
+    baseUrl: WINDBG_API_BASE_URL,
+    apiKey: WINDBG_API_KEY,
+    fileBuffer,
+    fileName,
     signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`WinDBG upload failed: ${response.status} - ${text}`);
-  }
-
-  return await response.json();
+  return {
+    success: true,
+    jobId: result.job_id,
+    data: result
+  };
 }
 
 /**
  * Poll WinDBG server for analysis completion
  */
-async function pollWinDBGStatus(uid) {
+async function pollWinDBGStatus(jobId) {
   let attempts = 0;
 
   while (attempts < WINDBG_MAX_POLL_ATTEMPTS) {
     attempts++;
     console.log(`[API/WinDBG] Polling status (attempt ${attempts}/${WINDBG_MAX_POLL_ATTEMPTS})...`);
 
-    const statusUrl = `${WINDBG_API_URL}/status.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-    const response = await fetch(statusUrl, {
-      headers: { 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache' },
+    const result = await getWinDbgJob({
+      baseUrl: WINDBG_API_BASE_URL,
+      apiKey: WINDBG_API_KEY,
+      jobId,
       signal: timeoutSignal(WINDBG_POLL_TIMEOUT_MS)
     });
 
-    if (!response.ok) {
-      throw new Error(`WinDBG status check failed: ${response.status}`);
-    }
+    console.log(`[API/WinDBG] Status: ${result.status}`);
 
-    const result = await response.json();
-    console.log(`[API/WinDBG] Status: ${result.data?.status}`);
-
-    if (result.data?.status === 'completed') {
+    if (result.status === 'complete' || result.status === 'completed') {
       return result;
     }
 
-    if (result.data?.status === 'failed') {
-      throw new Error(result.data.error_message || 'WinDBG analysis failed');
+    if (result.status === 'failed' || result.status === 'timed_out' || result.status === 'cancelled') {
+      throw new Error(result.error || 'WinDBG analysis failed');
     }
 
     await new Promise(resolve => setTimeout(resolve, WINDBG_POLL_INTERVAL_MS));
@@ -2337,17 +2249,19 @@ async function pollWinDBGStatus(uid) {
 /**
  * Download analysis result from WinDBG server
  */
-async function downloadWinDBGAnalysis(uid) {
-  const downloadUrl = `${WINDBG_API_URL}/download.php?APIKEY=${encodeURIComponent(WINDBG_API_KEY)}&UID=${encodeURIComponent(uid)}`;
-  const response = await fetch(downloadUrl, {
+async function downloadWinDBGAnalysis(jobId) {
+  const result = await getWinDbgJob({
+    baseUrl: WINDBG_API_BASE_URL,
+    apiKey: WINDBG_API_KEY,
+    jobId,
     signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
   });
 
-  if (!response.ok) {
-    throw new Error(`WinDBG download failed: ${response.status}`);
+  const analysisText = extractWinDbgAnalysisText(result);
+  if (!analysisText) {
+    throw new Error('Completed WinDBG job did not include analysis output');
   }
-
-  return await response.text();
+  return analysisText;
 }
 
 /**
@@ -3004,18 +2918,19 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         const analysisPromise = (async () => {
           // Step 1: Upload to WinDBG
           console.log(`[API/Analyze] Job ${uid} Step 1: Uploading to WinDBG server...`);
-          const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName, uid);
+          const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName);
           if (!uploadResult.success) {
             throw new Error(uploadResult.error || 'WinDBG upload failed');
           }
+          const upstreamJobId = uploadResult.jobId;
 
           // Step 2: Poll for completion
           console.log(`[API/Analyze] Job ${uid} Step 2: Polling for completion...`);
-          await pollWinDBGStatus(uid);
+          await pollWinDBGStatus(upstreamJobId);
 
           // Step 3: Download results
           console.log(`[API/Analyze] Job ${uid} Step 3: Downloading analysis...`);
-          const windbgAnalysis = await downloadWinDBGAnalysis(uid);
+          const windbgAnalysis = await downloadWinDBGAnalysis(upstreamJobId);
 
           // Cache the WinDBG analysis for future requests with same file
           await setCachedWinDBGAnalysis(fileHash, {
@@ -3308,6 +3223,7 @@ async function startServer() {
     console.log(`Gemini API Key configured: ${process.env.GEMINI_API_KEY ? 'Yes' : 'No'}`);
     console.log(`Turnstile Secret Key configured: ${TURNSTILE_SECRET_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Key configured: ${WINDBG_API_KEY ? 'Yes' : 'No'}`);
+    console.log(`WinDBG API Base URL: ${WINDBG_API_BASE_URL}`);
   });
 }
 
