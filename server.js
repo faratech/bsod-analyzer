@@ -30,7 +30,7 @@ import {
 } from './shared/ingestPolicy.js';
 import {
   DEFAULT_WINDBG_API_BASE_URL,
-  extractWinDbgAnalysisText,
+  extractWinDbgAnalysisPackage,
   getWinDbgJob,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
@@ -1939,6 +1939,8 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
         success: true,
         cached: true,
         cachedAnalysis: cachedAnalysis.windbgOutput,
+        cachedSignal: cachedAnalysis.windbgSignal || cachedAnalysis.analysisSignalText,
+        cachedStructured: cachedAnalysis.structured,
         data: { uid, queue_position: 0 }
       });
     }
@@ -2073,21 +2075,29 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       });
     }
 
-    const analysisText = extractWinDbgAnalysisText(job);
+    const {
+      analysisText,
+      analysisSignalText,
+      structured
+    } = extractWinDbgAnalysisPackage(job);
     if (!analysisText) {
       throw new Error('Completed WinDBG job did not include analysis output');
     }
-    console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes');
+    console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes', 'AI signal:', analysisSignalText.length, 'bytes');
 
     // Cache the WinDBG output (UID is the file hash)
     await setCachedWinDBGAnalysis(uid, {
       windbgOutput: analysisText,
+      windbgSignal: analysisSignalText,
+      structured,
       timestamp: Date.now()
     });
 
     res.json({
       success: true,
-      analysisText
+      analysisText,
+      analysisSignalText,
+      structured
     });
   } catch (error) {
     log.error('windbg.download.fail', { message: error.message });
@@ -2257,11 +2267,12 @@ async function downloadWinDBGAnalysis(jobId) {
     signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
   });
 
-  const analysisText = extractWinDbgAnalysisText(result);
+  const analysisPackage = extractWinDbgAnalysisPackage(result);
+  const { analysisText } = analysisPackage;
   if (!analysisText) {
     throw new Error('Completed WinDBG job did not include analysis output');
   }
-  return analysisText;
+  return analysisPackage;
 }
 
 /**
@@ -2356,7 +2367,7 @@ function persistCrashSignal(report, fileHash) {
   }
 }
 
-async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash) {
+async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
   // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
   const cacheKey = fileHash || windbgAnalysis;
   const cachedReport = await getCachedAIReport(cacheKey);
@@ -2381,19 +2392,24 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
   console.log('[API/AI] Generating AI report from WinDBG analysis...');
 
-  const analysisForPrompt = extractCrashSignal(windbgAnalysis);
-  console.log(`[API/AI] WinDBG signal extracted: ${windbgAnalysis.length} → ${analysisForPrompt.length} chars`);
+  const structuredSignal = typeof options.analysisSignalText === 'string'
+    ? options.analysisSignalText.trim()
+    : '';
+  const analysisForPrompt = structuredSignal || extractCrashSignal(windbgAnalysis);
+  const promptSource = structuredSignal ? 'structured JSON' : 'raw excerpt';
+  console.log(`[API/AI] WinDBG AI evidence (${promptSource}): ${windbgAnalysis.length} -> ${analysisForPrompt.length} chars`);
 
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
-  // cache-stable). Only per-dump file info + WinDBG output go in the evidence
-  // tail so Gemini implicit caching can reuse the prefix across analyses.
+  // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
+  // the tail so Gemini implicit caching can reuse the prefix across analyses.
   const evidence = `**File Information:**
 - Filename: ${fileName}
 - Dump Type: ${dumpType}
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-\`\`\`
+${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the legacy raw output.'}
+\`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
   const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
@@ -2839,7 +2855,11 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         dumpType,
         fileSize,
         cachedAnalysis.windbgOutput,
-        fileHash
+        fileHash,
+        {
+          analysisSignalText: cachedAnalysis.windbgSignal || cachedAnalysis.analysisSignalText,
+          structured: cachedAnalysis.structured
+        }
       );
 
       const processingTime = (Date.now() - startTime) / 1000;
@@ -2930,11 +2950,14 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
 
           // Step 3: Download results
           console.log(`[API/Analyze] Job ${uid} Step 3: Downloading analysis...`);
-          const windbgAnalysis = await downloadWinDBGAnalysis(upstreamJobId);
+          const windbgPackage = await downloadWinDBGAnalysis(upstreamJobId);
+          const windbgAnalysis = windbgPackage.analysisText;
 
           // Cache the WinDBG analysis for future requests with same file
           await setCachedWinDBGAnalysis(fileHash, {
             windbgOutput: windbgAnalysis,
+            windbgSignal: windbgPackage.analysisSignalText,
+            structured: windbgPackage.structured,
             uid,
             fileName,
             dumpType,
@@ -2943,7 +2966,10 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
 
           // Step 4: Generate AI report
           console.log(`[API/Analyze] Job ${uid} Step 4: Generating AI report...`);
-          const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash);
+          const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, {
+            analysisSignalText: windbgPackage.analysisSignalText,
+            structured: windbgPackage.structured
+          });
 
           return {
             report,

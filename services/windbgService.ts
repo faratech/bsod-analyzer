@@ -30,6 +30,8 @@ export interface WinDBGUploadResponse {
     message?: string;
     cached?: boolean;
     cachedAnalysis?: string;
+    cachedSignal?: string;
+    cachedStructured?: Record<string, unknown>;
     data?: {
         uid: string;
         filename: string;
@@ -64,12 +66,16 @@ export interface WinDBGStatusResponse {
 export interface WinDBGDownloadResponse {
     success: boolean;
     analysisText?: string;
+    analysisSignalText?: string;
+    structured?: Record<string, unknown>;
     error?: string;
 }
 
 export interface WinDBGAnalysisResult {
     success: boolean;
     analysisText: string;
+    analysisSignalText?: string;
+    structured?: Record<string, unknown>;
     processingTime?: number;
     error?: string;
     fileHash?: string; // The xxhash64 of the file, used for cache key consistency
@@ -311,7 +317,11 @@ export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
 /**
  * Download the analysis result from the WinDBG server via our backend
  */
-export async function downloadAnalysis(uid: string): Promise<string> {
+export async function downloadAnalysis(uid: string): Promise<{
+    analysisText: string;
+    analysisSignalText?: string;
+    structured?: Record<string, unknown>;
+}> {
     console.log(`[WinDBG] Downloading analysis for UID: ${uid}`);
 
     let response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
@@ -343,8 +353,12 @@ export async function downloadAnalysis(uid: string): Promise<string> {
         throw new Error(result.error || 'Download failed');
     }
 
-    console.log(`[WinDBG] Downloaded ${result.analysisText.length} bytes of analysis`);
-    return result.analysisText;
+    console.log(`[WinDBG] Downloaded ${result.analysisText.length} bytes of analysis; AI signal ${result.analysisSignalText?.length || 0} bytes`);
+    return {
+        analysisText: result.analysisText,
+        analysisSignalText: result.analysisSignalText,
+        structured: result.structured
+    };
 }
 
 /**
@@ -398,6 +412,8 @@ export async function analyzeWithWinDBG(
             return {
                 success: true,
                 analysisText: uploadResult.cachedAnalysis,
+                analysisSignalText: uploadResult.cachedSignal,
+                structured: uploadResult.cachedStructured,
                 fileHash: uploadResult.data?.uid,
                 cached: true
             };
@@ -495,13 +511,15 @@ export async function analyzeWithWinDBG(
 
         // Stage 3: Download the analysis
         onProgress?.('downloading', 'Downloading WinDBG analysis...');
-        const analysisText = await downloadAnalysis(uid);
+        const downloadedAnalysis = await downloadAnalysis(uid);
 
         onProgress?.('complete', 'WinDBG analysis complete');
 
         return {
             success: true,
-            analysisText,
+            analysisText: downloadedAnalysis.analysisText,
+            analysisSignalText: downloadedAnalysis.analysisSignalText,
+            structured: downloadedAnalysis.structured,
             processingTime: statusResult.data?.processing_time_seconds,
             fileHash: uid
         };

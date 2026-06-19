@@ -211,11 +211,11 @@ ${JSON_CONTRACT}`;
 // `## ANALYSIS REQUIREMENTS` marker the validator requires for the windbg shape.
 export const WINDBG_PREFIX = `${WINDBG_INTRO} and provide a detailed, user-friendly report.
 
-The crash dump's file information and the ACTUAL WinDBG Analysis Output appear in the "## DUMP EVIDENCE" section at the END of this message. Base your analysis ONLY on that WinDBG output.
+The crash dump's file information and the relevant WinDBG evidence appear in the "## DUMP EVIDENCE" section at the END of this message. The evidence may be a compact structured JSON signal extracted from the WinDBG API result rather than full stdout. Base your analysis ONLY on that evidence.
 
 ## ANALYSIS REQUIREMENTS
 
-Based on the WinDBG output in the DUMP EVIDENCE section, provide:
+Based on the WinDBG evidence in the DUMP EVIDENCE section, provide:
 
 1. **Summary**: A brief one-sentence summary of what caused the crash
 2. **Probable Cause**: A detailed but easy-to-understand explanation of the likely cause
@@ -223,15 +223,15 @@ Based on the WinDBG output in the DUMP EVIDENCE section, provide:
 4. **Recommendations**: Actionable steps the user should take to fix the issue
 
 ### IMPORTANT RULES:
-- Use ONLY the information from the WinDBG output - this is REAL analysis data
-- Extract the actual bug check code, culprit driver, and stack trace from the output
-- Do NOT invent or guess information not present in the WinDBG output
+- Use ONLY the information from the WinDBG evidence - this is REAL analysis data
+- Extract the actual bug check code, culprit driver, and stack trace from the evidence
+- Do NOT invent or guess information not present in the WinDBG evidence
 - If WinDBG identified a specific driver as the cause, use that as the culprit
-- Parse the MODULE_NAME, IMAGE_NAME, and FAILURE_BUCKET_ID from the output
+- Parse the MODULE_NAME, IMAGE_NAME, and FAILURE_BUCKET_ID from the evidence when present
 - Look for STACK_TEXT and FAULTING_MODULE for crash location details
 
 ### DRIVER WARNINGS:
-If the WinDBG output identifies problematic third-party drivers, include them in driverWarnings.
+If the WinDBG evidence identifies problematic third-party drivers, include them in driverWarnings.
 
 ### HARDWARE ERRORS:
 If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareError field.
