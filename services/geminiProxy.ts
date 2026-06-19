@@ -968,7 +968,11 @@ async function generateReportFromWinDBG(
     dumpType: 'minidump' | 'kernel',
     fileSize: number,
     windbgAnalysis: string,
-    fileHash?: string
+    fileHash?: string,
+    options: {
+        analysisSignalText?: string;
+        structured?: Record<string, unknown>;
+    } = {}
 ): Promise<AnalysisReportData> {
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
@@ -982,22 +986,23 @@ async function generateReportFromWinDBG(
         processName: parsedFields.systemInfo?.processName || 'missing'
     });
 
-    // Extract the signal-bearing slice. Raw WinDBG outputs are ~600KB but ~96% is init
-    // banners, per-module symbol-load status, and NatVis teardown. The bugcheck header,
-    // BUGCHECK_CODE/P1-P4, STACK_TEXT, FAILURE_BUCKET_ID, MODULE_NAME all sit between
-    // the "Bugcheck Analysis" banner and the terminating `quit:`.
-    const analysisForPrompt = extractCrashSignal(windbgAnalysis);
-    console.log(`[Analyzer] WinDBG signal extracted: ${windbgAnalysis.length} → ${analysisForPrompt.length} chars`);
+    const structuredSignal = typeof options.analysisSignalText === 'string'
+        ? options.analysisSignalText.trim()
+        : '';
+    const analysisForPrompt = structuredSignal || extractCrashSignal(windbgAnalysis);
+    const promptSource = structuredSignal ? 'structured JSON' : 'raw excerpt';
+    console.log(`[Analyzer] WinDBG AI evidence (${promptSource}): ${windbgAnalysis.length} -> ${analysisForPrompt.length} chars`);
 
     // Invariant WinDBG instructions live in WINDBG_PREFIX (shared, cache-stable);
-    // only the per-dump file info + WinDBG output go in the evidence tail.
+    // only the per-dump file info + relevant WinDBG evidence goes in the tail.
     const evidence = `**File Information:**
 - Filename: ${fileName}
 - Dump Type: ${dumpType}
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-\`\`\`
+${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the legacy raw output.'}
+\`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
     const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
@@ -1377,7 +1382,11 @@ export const analyzeDumpFiles = async (
                         dumpFile.dumpType,
                         dumpFile.file.size,
                         windbgResult.analysisText,
-                        windbgResult.fileHash
+                        windbgResult.fileHash,
+                        {
+                            analysisSignalText: windbgResult.analysisSignalText,
+                            structured: windbgResult.structured
+                        }
                     );
 
                     // Populate bugCheck from binary buffer (guarantees accurate code and parameters meanings)
