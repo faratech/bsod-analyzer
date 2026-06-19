@@ -1778,6 +1778,17 @@ if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
 }
 
+// Map a WinDBG upstream error to an HTTP status: an invalid/garbled or failing
+// upstream response is a bad-gateway (502), not an internal error (500), so the
+// browser can retry the poll instead of treating it as a hard local failure.
+function winDbgUpstreamHttpStatus(error) {
+  const code = error?.code;
+  if (code === 'WINDBG_UPSTREAM_INVALID_JSON' || code === 'WINDBG_UPSTREAM_ERROR') {
+    return 502;
+  }
+  return 500;
+}
+
 // Get cached analysis by file hash (skip upload for known-cached files)
 // Returns combined WinDBG analysis and AI report from single cache key
 app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
@@ -2026,9 +2037,10 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
     res.json(result);
   } catch (error) {
     console.error('[WinDBG] Status error:', error);
-    res.status(500).json({
+    res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
-      error: error.message || 'Failed to check WinDBG status'
+      error: error.message || 'Failed to check WinDBG status',
+      code: error.code
     });
   }
 });
@@ -2101,9 +2113,10 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
     });
   } catch (error) {
     log.error('windbg.download.fail', { message: error.message });
-    res.status(500).json({
+    res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
-      error: error.message || 'Failed to download WinDBG analysis'
+      error: error.message || 'Failed to download WinDBG analysis',
+      code: error.code
     });
   }
 });

@@ -4,11 +4,23 @@ import {
   extractRelevantWinDbgSignal,
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisText,
+  extractWinDbgAnalysisPackage,
   mapWinDbgJobStatus,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
   toLegacyWinDbgStatusResponse
 } from '../shared/windbgApiClient.js';
+
+// A minimal `!analyze -v` body with the fields the extractor cares about.
+const ANALYZE_V = [
+  'IRQL_NOT_LESS_OR_EQUAL (a)',
+  'BUGCHECK_CODE:  a',
+  'BUGCHECK_P1: 29c9a2',
+  'SYMBOL_NAME:  nt!KiExecuteAllDpcs+8ca',
+  'MODULE_NAME: nt',
+  'IMAGE_NAME:  ntkrnlmp.exe',
+  'FAILURE_BUCKET_ID:  AV_nt!KiExecuteAllDpcs'
+].join('\n');
 
 test('WinDBG API base URL normalizes to the new production host', () => {
   assert.equal(normalizeWinDbgApiBaseUrl(), 'https://windbg-api.stack-tech.net');
@@ -161,4 +173,126 @@ test('WinDBG signal extraction keeps crash facts and omits full stdout noise', (
   assert.match(signalText, /IRQL_NOT_LESS_OR_EQUAL/);
   assert.doesNotMatch(signalText, /Preparing the environment/);
   assert.doesNotMatch(signalText, /103\.4\.3\.103947305/);
+});
+
+// ── Robust JSON handling: section resolution across command chains ────────────
+
+test('signal extraction resolves !analyze -v in the USER chain (STEP_02)', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: { sections: { STEP_01_vertarget: 'x64', STEP_02_analyze_v: ANALYZE_V } }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+  assert.equal(signal.crash.failureBucketId, 'AV_nt!KiExecuteAllDpcs');
+  assert.equal(signal.crash.imageName, 'ntkrnlmp.exe');
+});
+
+test('signal extraction resolves !analyze -v in the DOTNET chain (STEP_03)', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: { sections: { STEP_01_loadby_sos_clr: '', STEP_02_vertarget: 'x64', STEP_03_analyze_v: ANALYZE_V } }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+  assert.equal(signal.crash.symbolName, 'nt!KiExecuteAllDpcs+8ca');
+});
+
+test('signal extraction tolerates an array-valued section', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: { sections: { STEP_04_analyze_v: ANALYZE_V.split('\n') } }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+});
+
+// ── Robust JSON handling: every `result` shape ────────────────────────────────
+
+test('result coercion handles object, JSON-string, plain text, array, and null', () => {
+  // JSON-encoded string (double-encoded blob)
+  const jsonString = extractRelevantWinDbgSignal({
+    result: JSON.stringify({ sections: { STEP_04_analyze_v: ANALYZE_V } })
+  });
+  assert.equal(jsonString.bugcheck.code, '0xA');
+
+  // plain cdb text → used as analyze text
+  const plainText = extractRelevantWinDbgSignal({ result: ANALYZE_V });
+  assert.equal(plainText.bugcheck.code, '0xA');
+
+  // null / array / number never throw and yield no signal
+  assert.deepEqual(extractRelevantWinDbgSignal({ result: null }), {});
+  assert.deepEqual(extractRelevantWinDbgSignal({ result: [1, 2, 3] }), {});
+  assert.deepEqual(extractRelevantWinDbgSignal({}), {});
+
+  // analysis text falls back across shapes
+  assert.equal(extractWinDbgAnalysisText({ result: 'raw text' }), 'raw text');
+  assert.equal(extractWinDbgAnalysisText({ result: JSON.stringify({ stdout: 'hi' }) }), 'hi');
+  assert.equal(extractWinDbgAnalysisText({ result: null }), '');
+});
+
+test('timed_out / exit_code are coerced from strings', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: { timed_out: 'true', exit_code: '-1', sections: { STEP_04_analyze_v: ANALYZE_V } }
+  });
+  assert.equal(signal.execution.timedOut, true);
+  assert.equal(signal.execution.exitCode, -1);
+});
+
+test('malformed parsed/sections never throw', () => {
+  assert.doesNotThrow(() => extractRelevantWinDbgSignal({
+    result: { parsed: 'not-an-object', sections: 42, stdout: ANALYZE_V }
+  }));
+  const signal = extractRelevantWinDbgSignal({
+    result: { parsed: 'not-an-object', sections: 42, stdout: ANALYZE_V }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+});
+
+// ── Robust JSON handling: server-authoritative ai_signal (Phase 3) ────────────
+
+test('server-provided ai_signal is preferred over local extraction', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: {
+      ai_signal: { schema: 'windbg_crash_signal_v1', bugcheck: { code: '0xDEAD' } },
+      sections: { STEP_04_analyze_v: ANALYZE_V }   // would yield 0xA locally
+    }
+  });
+  assert.equal(signal.bugcheck.code, '0xDEAD');
+});
+
+test('malformed ai_signal falls back to local extraction', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: {
+      ai_signal: { schema: 'something_else', junk: true },
+      sections: { STEP_04_analyze_v: ANALYZE_V }
+    }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+});
+
+test('analysis package passes through a valid server signal', () => {
+  const pkg = extractWinDbgAnalysisPackage({
+    result: {
+      stdout: 'raw',
+      ai_signal: { schema: 'windbg_crash_signal_v1', bugcheck: { code: '0xBEEF' } }
+    }
+  });
+  assert.equal(pkg.structured.bugcheck.code, '0xBEEF');
+  assert.match(pkg.analysisSignalText, /0xBEEF/);
+  assert.equal(pkg.analysisText, 'raw');
+});
+
+// ── Robust JSON handling: status + error surfacing ────────────────────────────
+
+test('unknown upstream status maps to pending but exposes raw_status', () => {
+  assert.equal(mapWinDbgJobStatus('some_new_state'), 'pending');
+  const res = toLegacyWinDbgStatusResponse({ status: 'some_new_state' }, 'abc12345');
+  assert.equal(res.data.status, 'pending');
+  assert.equal(res.data.raw_status, 'some_new_state');
+});
+
+test('cancelled status maps to failed and surfaces error + category', () => {
+  assert.equal(mapWinDbgJobStatus('cancelled'), 'failed');
+  const res = toLegacyWinDbgStatusResponse(
+    { status: 'failed', error: 'cdb.exe exited with code 1', error_category: 'cdb' },
+    'abc12345'
+  );
+  assert.equal(res.data.status, 'failed');
+  assert.equal(res.data.error_message, 'cdb.exe exited with code 1');
+  assert.equal(res.data.error_category, 'cdb');
 });

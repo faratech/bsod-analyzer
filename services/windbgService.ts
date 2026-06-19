@@ -57,6 +57,8 @@ export interface WinDBGStatusResponse {
         output_file_size?: number;
         processing_time_seconds?: number;
         error_message?: string;
+        error_category?: string;
+        raw_status?: string;
         queue_position?: number;
     };
     error?: string;
@@ -81,6 +83,7 @@ export interface WinDBGAnalysisResult {
     fileHash?: string; // The xxhash64 of the file, used for cache key consistency
     cached?: boolean; // True if WinDBG result was served from cache
     errorCode?: string;
+    errorCategory?: string; // Upstream failure category (cdb|timeout|upload|watchdog|...)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -237,81 +240,16 @@ export async function uploadToWinDBG(
         throw error;
     }
 
-    // Handle cached response - include uid for cache key consistency
+    // Handle cached response - always preserve the locally computed uid as the
+    // fileHash, even when the server omitted a data object, so the downstream
+    // Gemini cache key is never undefined.
     if (result.cached && result.cachedAnalysis) {
         console.log(`[WinDBG] Cache HIT - using cached analysis for ${file.name}`);
-        return { ...result, data: { ...result.data, uid } as WinDBGUploadResponse['data'] };
+        return { ...result, data: { ...(result.data || {}), uid } as WinDBGUploadResponse['data'] };
     }
 
     console.log(`[WinDBG] Upload successful. Queue position: ${result.data?.queue_position}`);
-    return { ...result, data: { ...result.data!, uid } };
-}
-
-/**
- * Poll the status endpoint until the analysis is complete
- */
-export async function pollStatus(uid: string): Promise<WinDBGStatusResponse> {
-    let attempts = 0;
-    let authRefreshRetries = 0;
-
-    while (attempts < MAX_POLL_ATTEMPTS) {
-        attempts++;
-
-        try {
-            console.log(`[WinDBG] Polling status (attempt ${attempts}/${MAX_POLL_ATTEMPTS})...`);
-
-            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}`, {
-                credentials: 'include'
-            });
-
-            if (!response.ok) {
-                if (response.status === 401 && authRefreshRetries < 1) {
-                    let errorData: any = {};
-                    try { errorData = await response.json(); } catch {}
-                    if (handleSessionError(errorData)) {
-                        console.log('[WinDBG] Session expired during poll, re-initializing...');
-                        const refreshed = await initializeSession(true);
-                        if (refreshed) {
-                            authRefreshRetries++;
-                            continue; // Retry this poll attempt
-                        }
-                    }
-                }
-                throw new Error(`Status check failed with HTTP ${response.status}`);
-            }
-
-            const result: WinDBGStatusResponse = await response.json();
-            authRefreshRetries = 0;
-
-            if (!result.success) {
-                throw new Error(result.error || 'Status check failed');
-            }
-
-            console.log(`[WinDBG] Status: ${result.data?.status}`);
-
-            if (result.data?.status === 'completed') {
-                console.log(`[WinDBG] Analysis completed in ${result.data.processing_time_seconds}s`);
-                return result;
-            }
-
-            if (result.data?.status === 'failed') {
-                throw new Error(result.data.error_message || 'Analysis failed on server');
-            }
-
-            // Still pending or processing, wait and poll again
-            await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-
-        } catch (error) {
-            // On network errors, continue polling unless we've exhausted attempts
-            console.error(`[WinDBG] Poll error:`, error);
-            if (attempts >= MAX_POLL_ATTEMPTS) {
-                throw error;
-            }
-            await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-        }
-    }
-
-    throw new Error('Analysis timed out - max polling attempts reached');
+    return { ...result, data: { ...(result.data || {}), uid } as WinDBGUploadResponse['data'] };
 }
 
 /**
@@ -499,7 +437,11 @@ export async function analyzeWithWinDBG(
             }
 
             if (result.data?.status === 'failed') {
-                throw new Error(result.data.error_message || 'Analysis failed on server');
+                const failure = new Error(
+                    result.data.error_message || 'Analysis failed on server'
+                ) as Error & { errorCategory?: string };
+                failure.errorCategory = result.data.error_category;
+                throw failure;
             }
 
             await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -526,12 +468,13 @@ export async function analyzeWithWinDBG(
 
 	    } catch (error) {
 	        console.error('[WinDBG] Analysis failed:', error);
-	        const err = error as Error & { code?: string };
+	        const err = error as Error & { code?: string; errorCategory?: string };
 	        return {
 	            success: false,
 	            analysisText: '',
 	            error: err.message,
-	            errorCode: err.code
+	            errorCode: err.code,
+	            errorCategory: err.errorCategory
 	        };
 	    }
     })();
@@ -541,12 +484,13 @@ export async function analyzeWithWinDBG(
         return await Promise.race([analysisPromise, timeoutPromise]);
 	    } catch (error) {
 	        console.error('[WinDBG] Analysis timed out or failed:', error);
-	        const err = error as Error & { code?: string };
+	        const err = error as Error & { code?: string; errorCategory?: string };
 	        return {
 	            success: false,
 	            analysisText: '',
 	            error: err.message,
-	            errorCode: err.code
+	            errorCode: err.code,
+	            errorCategory: err.errorCategory
 	        };
 	    }
 }
