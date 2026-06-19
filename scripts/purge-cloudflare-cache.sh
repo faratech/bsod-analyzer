@@ -35,7 +35,7 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
-    SUCCESS=$(echo "$BODY" | grep -o '"success":true' || true)
+    SUCCESS=$(echo "$BODY" | grep -Eo '"success"[[:space:]]*:[[:space:]]*true' || true)
     if [ -n "$SUCCESS" ]; then
         echo "✅ Cloudflare cache purged successfully for ${HOSTNAME}"
     else
