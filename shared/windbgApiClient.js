@@ -22,14 +22,23 @@ async function readJsonResponse(response, context) {
       body = JSON.parse(text);
     } catch {
       if (response.ok) {
-        throw new Error(`${context} returned invalid JSON: ${text.slice(0, 200)}`);
+        // A 2xx with a non-JSON / HTML body (e.g. a proxy error page). Surface a
+        // coded soft-error so the Express proxy can map it to a clean 502 instead
+        // of leaking a raw parse failure as a 500.
+        const err = new Error(`${context} returned invalid JSON: ${text.slice(0, 200)}`);
+        err.code = 'WINDBG_UPSTREAM_INVALID_JSON';
+        err.upstreamStatus = response.status;
+        throw err;
       }
     }
   }
 
   if (!response.ok) {
     const message = body?.message || body?.error || text || response.statusText || 'request failed';
-    throw new Error(`${context} failed with status ${response.status}: ${message}`);
+    const err = new Error(`${context} failed with status ${response.status}: ${message}`);
+    err.code = 'WINDBG_UPSTREAM_ERROR';
+    err.upstreamStatus = response.status;
+    throw err;
   }
 
   return body || {};
@@ -132,6 +141,48 @@ function processingSeconds(job) {
   return Math.round((completed - started) / 1000);
 }
 
+// ── Defensive coercion (robust JSON handling for all possibilities) ───────────
+// The upstream is strongly typed today, but a proxy, a config change, or an older
+// server build can hand us strings where we expect bools/ints, or vice-versa.
+function coerceBool(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'true' || v === '1' || v === 'yes') return true;
+    if (v === 'false' || v === '0' || v === 'no' || v === '') return false;
+  }
+  return undefined;
+}
+
+function coerceInt(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') {
+    const n = parseInt(value.trim(), 10);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+// Resolve a cdb section by the *sanitized command suffix* instead of a hardcoded
+// STEP_NN_ index. Section keys are generated server-side as
+// `STEP_{i+1:D2}_{sanitize(cmd)}` from the configured command chain, so the index
+// of e.g. `!analyze -v` differs between the kernel (STEP_04), user (STEP_02), and
+// dotnet (STEP_03) chains. Matching on the suffix keeps extraction correct across
+// every chain and survives any reordering of config.json.
+function findSection(sections, suffixRe) {
+  if (!sections || typeof sections !== 'object') return undefined;
+  for (const key of Object.keys(sections)) {
+    const match = /^STEP_\d+_(.+)$/.exec(key);
+    if (match && suffixRe.test(match[1])) {
+      const value = sections[key];
+      if (typeof value === 'string') return value;
+      if (Array.isArray(value)) return value.join('\n');
+    }
+  }
+  return undefined;
+}
+
 function toLegacyWinDbgStatusResponse(job, uid) {
   const status = mapWinDbgJobStatus(job?.status);
   return {
@@ -146,6 +197,10 @@ function toLegacyWinDbgStatusResponse(job, uid) {
       output_file_size: undefined,
       processing_time_seconds: processingSeconds(job),
       error_message: job?.error || undefined,
+      error_category: job?.error_category || undefined,
+      // Pass the raw upstream status through so the proxy/UI can see an unmapped
+      // value rather than silently treating an unknown status as 'pending'.
+      raw_status: typeof job?.status === 'string' ? job.status : undefined,
       queue_position: job?.queue_position ?? (status === 'pending' ? 1 : 0)
     }
   };
@@ -382,11 +437,28 @@ function selectDebuggerWarnings(result, parsed, sections) {
   return warnings.size > 0 ? [...warnings] : undefined;
 }
 
-function getResultObject(job) {
-  const result = job?.result;
-  if (result && typeof result === 'object') return result;
-  if (typeof result === 'string' && result.trim()) return { stdout: result };
+// Coerce the job `result` into a plain object regardless of how it arrives:
+// object · JSON-encoded string (double-encoded blobs) · plain cdb text · array · null.
+function coerceResultObject(result) {
+  if (result == null) return {};
+  if (typeof result === 'string') {
+    const trimmed = result.trim();
+    if (!trimmed) return {};
+    if (trimmed[0] === '{' || trimmed[0] === '[') {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      } catch { /* not JSON — treat as raw stdout text below */ }
+    }
+    return { stdout: result };
+  }
+  if (Array.isArray(result)) return {};
+  if (typeof result === 'object') return result;
   return {};
+}
+
+function getResultObject(job) {
+  return coerceResultObject(job?.result);
 }
 
 function removeEmpty(value) {
@@ -408,11 +480,32 @@ function removeEmpty(value) {
 
 function extractRelevantWinDbgSignal(job) {
   const result = getResultObject(job);
+
+  // Prefer the authoritative signal computed server-side (Phase 3) when it is
+  // present and well-formed; otherwise fall back to local extraction below. This
+  // keeps older/partial server builds working and tolerates malformed payloads.
+  const serverSignal = result.ai_signal;
+  if (serverSignal && typeof serverSignal === 'object' && !Array.isArray(serverSignal)
+      && serverSignal.schema === 'windbg_crash_signal_v1') {
+    const cleanedServer = removeEmpty(serverSignal) || {};
+    if (Object.keys(cleanedServer).length > 1) return cleanedServer;
+  }
+
   const parsed = result.parsed && typeof result.parsed === 'object' ? result.parsed : {};
   const sections = result.sections && typeof result.sections === 'object' ? result.sections : {};
-  const analyzeText = sections.STEP_04_analyze_v || result.stdout || '';
+
+  // Resolve sections by command suffix, not hardcoded index — works for the
+  // kernel, user, and dotnet command chains alike (see findSection).
+  const analyzeSection = findSection(sections, /^analyze_v$/);
+  const bugcheckSectionText = findSection(sections, /^bugcheck$/);
+  const vertargetSection = findSection(sections, /^vertarget$/);
+  const threadSection = findSection(sections, /^thread$/);
+  const irqlSection = findSection(sections, /^irql$/);
+  const lmvSection = findSection(sections, /^lmv$/);
+
+  const analyzeText = analyzeSection || (typeof result.stdout === 'string' ? result.stdout : '') || '';
   const analyzeFields = parseAnalyzeFields(analyzeText);
-  const bugcheckSection = parseBugCheckSection(sections.STEP_02_bugcheck);
+  const bugcheckSection = parseBugCheckSection(bugcheckSectionText);
   const stackFrames = Array.isArray(parsed.stack_frames)
     ? parsed.stack_frames.map(cleanParsedStackFrame).filter(Boolean).slice(0, 16)
     : undefined;
@@ -420,8 +513,8 @@ function extractRelevantWinDbgSignal(job) {
   const signal = {
     schema: 'windbg_crash_signal_v1',
     execution: {
-      timedOut: result.timed_out,
-      exitCode: result.exit_code
+      timedOut: coerceBool(result.timed_out),
+      exitCode: coerceInt(result.exit_code)
     },
     target: parsed.target_info || undefined,
     bugcheck: {
@@ -435,13 +528,13 @@ function extractRelevantWinDbgSignal(job) {
     stackFrames,
     registers: compactObject(parsed.registers, ['rip', 'rsp', 'rbp', 'rcx', 'rdx', 'r8', 'r9', 'r10']),
     threads: Array.isArray(parsed.threads) ? parsed.threads.slice(0, 8) : undefined,
-    notableModules: selectRelevantModules(parsed.modules, analyzeFields.crash, stackFrames, sections.STEP_09_lmv),
+    notableModules: selectRelevantModules(parsed.modules, analyzeFields.crash, stackFrames, lmvSection),
     debuggerWarnings: selectDebuggerWarnings(result, parsed, sections),
     sectionExcerpts: {
-      target: compactText(sections.STEP_01_vertarget, 900),
-      bugcheck: compactText(sections.STEP_02_bugcheck, 700),
-      thread: compactText(sections.STEP_06_thread, 1200),
-      irql: compactText(sections.STEP_14_irql, 300)
+      target: compactText(vertargetSection, 900),
+      bugcheck: compactText(bugcheckSectionText, 700),
+      thread: compactText(threadSection, 1200),
+      irql: compactText(irqlSection, 300)
     },
     rawStdoutOmitted: typeof result.stdout === 'string' && result.stdout.length > 0 ? true : undefined
   };
@@ -466,25 +559,36 @@ function extractWinDbgAnalysisPackage(job) {
 }
 
 function extractWinDbgAnalysisText(job) {
-  const result = job?.result;
-  if (typeof result === 'string' && result.trim()) {
-    return result;
+  const raw = job?.result;
+
+  // A raw string that is not JSON is the cdb text itself — return it verbatim.
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+    if (trimmed[0] !== '{' && trimmed[0] !== '[') return raw;
   }
 
-  if (result && typeof result === 'object') {
-    if (typeof result.stdout === 'string' && result.stdout.trim()) {
-      return result.stdout;
-    }
+  const result = coerceResultObject(raw);
 
-    if (result.sections && typeof result.sections === 'object') {
-      const sections = Object.entries(result.sections)
-        .filter(([, value]) => typeof value === 'string' && value.trim())
-        .map(([name, value]) => `===== ${name} =====\n${value}`);
-      if (sections.length > 0) {
-        return sections.join('\n\n');
-      }
-    }
+  if (typeof result.stdout === 'string' && result.stdout.trim()) {
+    return result.stdout;
+  }
 
+  if (result.sections && typeof result.sections === 'object') {
+    const sections = Object.entries(result.sections)
+      .map(([name, value]) => {
+        const text = typeof value === 'string'
+          ? value
+          : Array.isArray(value) ? value.join('\n') : '';
+        return text.trim() ? `===== ${name} =====\n${text}` : null;
+      })
+      .filter(Boolean);
+    if (sections.length > 0) {
+      return sections.join('\n\n');
+    }
+  }
+
+  if (Object.keys(result).length > 0) {
     return JSON.stringify(result, null, 2);
   }
 
