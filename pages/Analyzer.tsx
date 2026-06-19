@@ -170,15 +170,6 @@ const Analyzer: React.FC = () => {
                         <p>Upload your Windows crash dump files for instant AI-powered analysis</p>
                     </div>
 
-                    <div
-                        className="card status-warning fade-in analyzer-maintenance-notice"
-                        style={{ padding: '1rem 1.5rem', color: 'var(--text-primary)', marginBottom: '1.5rem' }}
-                        role="status"
-                    >
-                        <strong>Maintenance notice: </strong>
-                        <span>The WinDBG analysis server is currently undergoing maintenance, so analysis is temporarily AI-only. Results may be less detailed than usual until WinDBG-backed analysis is restored.</span>
-                    </div>
-
                     <div className="analyzer-upload-section">
                         <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} />
                         
