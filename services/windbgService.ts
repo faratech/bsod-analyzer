@@ -86,6 +86,18 @@ export interface WinDBGAnalysisResult {
     errorCategory?: string; // Upstream failure category (cdb|timeout|upload|watchdog|...)
 }
 
+export interface CachedAnalysisResponse {
+    success: boolean;
+    cached?: boolean;
+    windbgAnalysis?: string | null;
+    analysisSignalText?: string | null;
+    structured?: Record<string, unknown> | null;
+    aiReport?: unknown | null;
+    fileHash?: string;
+    error?: string;
+    code?: string;
+}
+
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -184,6 +196,44 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
         // Return empty map on error - will just proceed without cache info
         return results;
     }
+}
+
+/**
+ * Fetch a previously cached analysis by file hash. This is intentionally
+ * hash-only after session validation so known cached files can load without a
+ * WinDBG upload.
+ */
+export async function getCachedAnalysisByHash(hash: string): Promise<CachedAnalysisResponse | null> {
+    let response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store'
+    });
+
+    if (response.status === 401) {
+        const errorData = await response.json().catch(() => ({}));
+        if (handleSessionError(errorData)) {
+            const refreshed = await initializeSession(true);
+            if (refreshed) {
+                response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    cache: 'no-store'
+                });
+            }
+        }
+    }
+
+    if (!response.ok) {
+        console.warn('[WinDBG] Cached analysis fetch failed:', response.status);
+        return null;
+    }
+
+    const data: CachedAnalysisResponse = await response.json();
+    if (data.success && data.cached) {
+        return data;
+    }
+    return null;
 }
 
 

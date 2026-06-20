@@ -92,8 +92,8 @@ User uploads dump/archive
         │
         ▼
   ┌─────────────┐     ┌──────────────┐
-  │ Compute file│────▶│ Check Redis  │──── Cache HIT ──▶ Return cached result
-  │ XXHash64    │     │ cache by hash│
+  │ Compute file│────▶│ Check Redis  │──── Cache HIT ──▶ Fetch cached result
+  │ XXHash64    │     │ cache by hash│     by hash-only GET
   └─────────────┘     └──────┬───────┘
                              │ Cache MISS
                              ▼
@@ -130,7 +130,7 @@ User uploads dump/archive
 ```
 
 **Key details:**
-- Files are identified by XXHash64 content hash — uploading the same dump twice hits cache instantly
+- Files are identified by XXHash64 content hash — previously analyzed dumps load from Upstash by hash after session validation
 - WinDBG server upload uses multipart form data proxied through the backend
 - Polling uses cache-busting timestamps to prevent browser/CDN caching of status responses
 - 5-minute hard timeout wraps the entire pipeline with `Promise.race`
@@ -326,9 +326,9 @@ These are used internally by the web UI:
 | `/api/windbg/upload` | POST | Upload dump file to WinDBG server |
 | `/api/windbg/status` | GET | Poll analysis status |
 | `/api/windbg/download` | GET | Download completed analysis |
-| `/api/cache/check` | POST | Check cache status for file hashes |
-| `/api/cache/get` | GET | Retrieve cached analysis |
-| `/api/cache/set` | POST | Store analysis in cache |
+| `/api/cache/check` | POST | Check cache status hints for file hashes |
+| `/api/cache/get` | GET | Retrieve cached analysis by hash for a valid session |
+| `/api/cache/set` | POST | Disabled; cache writes happen server-side |
 
 ## Troubleshooting
 
