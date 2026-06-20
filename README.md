@@ -275,7 +275,7 @@ gcloud builds triggers create github \
 | Cache | Upstash Redis (`@upstash/redis`) |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
 | File Processing | FileReader API, JSZip, `@fastify/multipart` |
-| Markdown | react-markdown with remark-gfm |
+| Markdown | Report export generated in-app |
 | Deployment | Docker, Google Cloud Run, Secret Manager |
 | Security | Cloudflare Turnstile, CSP, SRI |
 

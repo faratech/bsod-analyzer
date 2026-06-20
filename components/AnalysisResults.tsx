@@ -5,7 +5,6 @@ import AnalysisReportCard from './AnalysisReportCard';
 interface AnalysisResultsProps {
     title?: string;
     dumpFiles: DumpFile[];
-    onUpdateAdvancedAnalysis: (fileId: string, tool: string, result: string) => void;
     onRetry?: (fileId: string) => void;
     className?: string;
     showAds?: boolean;
@@ -15,7 +14,6 @@ interface AnalysisResultsProps {
 const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
     title = "Analysis Results",
     dumpFiles,
-    onUpdateAdvancedAnalysis,
     onRetry,
     className = '',
     showAds = false,
@@ -33,7 +31,6 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
                     <React.Fragment key={dumpFile.id}>
                         <AnalysisReportCard
                             dumpFile={dumpFile}
-                            onUpdateAdvancedAnalysis={onUpdateAdvancedAnalysis}
                             onRetry={onRetry ? () => onRetry(dumpFile.id) : undefined}
                             style={{ animationDelay: `${index * 100}ms` }}
                         />

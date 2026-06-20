@@ -272,40 +272,12 @@ export const useAnalysis = () => {
         }
     }, []);
 
-    const updateAdvancedAnalysis = useCallback((
-        fileId: string,
-        tool: string,
-        result: string,
-        _dumpFiles: DumpFile[],
-        onUpdate: (updater: (prevFiles: DumpFile[]) => DumpFile[]) => void
-    ) => {
-        onUpdate(prevFiles =>
-            prevFiles.map(df => {
-                if (df.id === fileId && df.report) {
-                    const newAdvancedAnalyses = [
-                        ...(df.report.advancedAnalyses || []),
-                        { tool, result }
-                    ];
-                    return {
-                        ...df,
-                        report: {
-                            ...df.report,
-                            advancedAnalyses: newAdvancedAnalyses
-                        }
-                    };
-                }
-                return df;
-            })
-        );
-    }, []);
-
     return {
         isAnalyzing,
         progress,
         error,
         setError,
         analyzeFiles,
-        retryFile,
-        updateAdvancedAnalysis
+        retryFile
     };
 };

@@ -10,7 +10,7 @@
 
 import { Redis } from '@upstash/redis';
 import xxhash from 'xxhash-wasm';
-import { HASH_HEX_RE, hashBytes, hashString, legacyHashBytes } from '../shared/hash.js';
+import { hashBytes, hashString } from '../shared/hash.js';
 
 // Cache TTL: 7 days maximum
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 604800 seconds
@@ -28,10 +28,7 @@ export async function initHashing() {
 
 // Cache key prefixes
 const CACHE_PREFIX = {
-  ANALYSIS: 'analysis',  // Combined WinDBG + AI report (new single-key approach)
-  AI_REPORT: 'ai-report', // Legacy - kept for backwards compatibility
-  WINDBG: 'windbg',       // Legacy - kept for backwards compatibility
-  FILE_HASH: 'file',
+  ANALYSIS: 'analysis',
   RUNTIME: 'runtime',
 };
 
@@ -76,6 +73,10 @@ export function isCacheEnabled() {
 
 function getRuntimeKey(key) {
   return `${CACHE_PREFIX.RUNTIME}:${key}`;
+}
+
+function parseCachedValue(value) {
+  return typeof value === 'string' ? JSON.parse(value) : value;
 }
 
 /**
@@ -177,159 +178,14 @@ export function hashContent(content) {
   return hashString(hasher, JSON.stringify(content));
 }
 
-function legacyHashContent(content) {
-  if (!hasher) {
-    throw new Error('XXHash not initialized');
-  }
-
-  if (Buffer.isBuffer(content)) {
-    return legacyHashBytes(hasher, content);
-  }
-  return hashContent(content);
-}
-
-function cacheHashCandidates(cacheKey) {
-  if (typeof cacheKey === 'string' && HASH_HEX_RE.test(cacheKey)) {
-    return [cacheKey];
-  }
-
-  const primary = hashContent(cacheKey);
-  if (!Buffer.isBuffer(cacheKey)) {
-    return [primary];
-  }
-
-  const legacy = legacyHashContent(cacheKey);
-  return legacy !== primary ? [primary, legacy] : [primary];
-}
-
-/**
- * Generate cache key for AI reports
- * Key is based on the WinDBG output hash since same analysis = same report
- */
-function getAIReportKey(windbgOutputHash) {
-  return `${CACHE_PREFIX.AI_REPORT}:${windbgOutputHash}`;
-}
-
-/**
- * Generate cache key for WinDBG analysis
- * Key is based on the dump file content hash
- */
-function getWinDBGKey(fileHash) {
-  return `${CACHE_PREFIX.WINDBG}:${fileHash}`;
-}
-
-/**
- * Get cached AI report by hash key
- * @param {string} cacheKey - The cache key (fileHash or content to hash)
- * @returns {Promise<object|null>} Cached report or null
- */
-export async function getCachedAIReport(cacheKey) {
-  if (!isCacheEnabled()) return null;
-
-  try {
-    const hashes = cacheHashCandidates(cacheKey);
-
-    for (const hash of hashes) {
-      const key = getAIReportKey(hash);
-      const cached = await redis.get(key);
-
-      if (cached) {
-        console.log(`[Cache] AI report cache HIT for hash ${hash.substring(0, 12)}...`);
-        // Handle both string and object responses from Redis
-        return typeof cached === 'string' ? JSON.parse(cached) : cached;
-      }
-    }
-
-    console.log(`[Cache] AI report cache MISS for hash ${hashes[0].substring(0, 12)}...`);
-    return null;
-  } catch (error) {
-    console.error('[Cache] Error getting AI report:', error.message);
-    return null;
-  }
-}
-
-/**
- * Cache an AI report
- * @param {string} cacheKey - The cache key (fileHash or content to hash)
- * @param {object} report - The AI-generated report to cache
- */
-export async function setCachedAIReport(cacheKey, report) {
-  if (!isCacheEnabled()) return false;
-
-  try {
-    // If cacheKey looks like a hash (16 hex chars), use it directly.
-    const hash = (typeof cacheKey === 'string' && HASH_HEX_RE.test(cacheKey))
-      ? cacheKey
-      : hashContent(cacheKey);
-    const key = getAIReportKey(hash);
-
-    await redis.set(key, JSON.stringify(report), { ex: CACHE_TTL_SECONDS });
-    console.log(`[Cache] AI report cached with hash ${hash.substring(0, 12)}... (TTL: 7d)`);
-    return true;
-  } catch (error) {
-    console.error('[Cache] Error caching AI report:', error.message);
-    return false;
-  }
-}
-
-/**
- * Get cached WinDBG analysis by file hash
- * @param {Buffer|string} fileBuffer - The dump file content or its hash
- * @returns {Promise<object|null>} Cached analysis data or null
- */
-export async function getCachedWinDBGAnalysis(fileBuffer) {
-  if (!isCacheEnabled()) return null;
-
-  try {
-    const hashes = cacheHashCandidates(fileBuffer);
-
-    for (const hash of hashes) {
-      const key = getWinDBGKey(hash);
-      const cached = await redis.get(key);
-
-      if (cached) {
-        const legacy = hash !== hashes[0] ? ' legacy' : '';
-        console.log(`[Cache] WinDBG analysis${legacy} cache HIT for hash ${hash.substring(0, 12)}...`);
-        return typeof cached === 'string' ? JSON.parse(cached) : cached;
-      }
-    }
-
-    console.log(`[Cache] WinDBG analysis cache MISS for hash ${hashes[0].substring(0, 12)}...`);
-    return null;
-  } catch (error) {
-    console.error('[Cache] Error getting WinDBG analysis:', error.message);
-    return null;
-  }
-}
-
-/**
- * Cache WinDBG analysis result
- * @param {Buffer|string} fileBuffer - The dump file content or its hash
- * @param {object} analysisData - The analysis data to cache
- */
-export async function setCachedWinDBGAnalysis(fileBuffer, analysisData) {
-  if (!isCacheEnabled()) return false;
-
-  try {
-    const hash = Buffer.isBuffer(fileBuffer) ? hashContent(fileBuffer) : fileBuffer;
-    const key = getWinDBGKey(hash);
-
-    await redis.set(key, JSON.stringify(analysisData), { ex: CACHE_TTL_SECONDS });
-    console.log(`[Cache] WinDBG analysis cached with hash ${hash.substring(0, 12)}... (TTL: 7d)`);
-    return true;
-  } catch (error) {
-    console.error('[Cache] Error caching WinDBG analysis:', error.message);
-    return false;
-  }
-}
-
 // ============================================================
-// Combined Analysis Cache (Single Key Approach)
+// Combined Analysis Cache
 // ============================================================
 
 /**
  * Generate cache key for combined analysis
- * Key is based on the dump file content hash
+ * Key is based on the current content hash. For dump-level analysis this is
+ * the file hash; for prompt-only AI calls it is the validated prompt hash.
  */
 function getAnalysisKey(fileHash) {
   return `${CACHE_PREFIX.ANALYSIS}:${fileHash}`;
@@ -349,26 +205,7 @@ export async function getCachedAnalysis(fileHash) {
 
     if (cached) {
       console.log(`[Cache] Analysis cache HIT for hash ${fileHash.substring(0, 12)}...`);
-      return typeof cached === 'string' ? JSON.parse(cached) : cached;
-    }
-
-    // Fallback: Check legacy keys for backwards compatibility
-    const [legacyWinDBG, legacyAI] = await Promise.all([
-      getCachedWinDBGAnalysis(fileHash),
-      getCachedAIReport(fileHash)
-    ]);
-
-    if (legacyWinDBG || legacyAI) {
-      console.log(`[Cache] Legacy cache HIT for hash ${fileHash.substring(0, 12)}... (windbg: ${!!legacyWinDBG}, ai: ${!!legacyAI})`);
-      return {
-        windbgOutput: legacyWinDBG?.windbgOutput || null,
-        windbgSignal: legacyWinDBG?.windbgSignal || legacyWinDBG?.analysisSignalText || null,
-        analysisSignalText: legacyWinDBG?.analysisSignalText || legacyWinDBG?.windbgSignal || null,
-        structured: legacyWinDBG?.structured || null,
-        aiReport: legacyAI || null,
-        timestamp: legacyWinDBG?.timestamp || Date.now(),
-        legacy: true
-      };
+      return parseCachedValue(cached);
     }
 
     console.log(`[Cache] Analysis cache MISS for hash ${fileHash.substring(0, 12)}...`);
@@ -380,18 +217,23 @@ export async function getCachedAnalysis(fileHash) {
 }
 
 /**
- * Cache complete analysis (WinDBG + AI report)
- * @param {string} fileHash - The file content hash
- * @param {object} data - { windbgOutput, aiReport }
+ * Merge and cache complete analysis (WinDBG + AI report)
+ * @param {string} fileHash - The file or prompt content hash
+ * @param {object} data - { windbgOutput, analysisSignalText, structured, aiReport }
  */
 export async function setCachedAnalysis(fileHash, data) {
   if (!isCacheEnabled()) return false;
 
   try {
     const key = getAnalysisKey(fileHash);
+    const existingValue = await redis.get(key);
+    const existing = existingValue ? parseCachedValue(existingValue) : {};
     const cacheData = {
-      windbgOutput: data.windbgOutput,
-      aiReport: data.aiReport,
+      ...existing,
+      ...(data.windbgOutput !== undefined ? { windbgOutput: data.windbgOutput } : {}),
+      ...(data.analysisSignalText !== undefined ? { analysisSignalText: data.analysisSignalText } : {}),
+      ...(data.structured !== undefined ? { structured: data.structured } : {}),
+      ...(data.aiReport !== undefined ? { aiReport: data.aiReport } : {}),
       timestamp: Date.now()
     };
 

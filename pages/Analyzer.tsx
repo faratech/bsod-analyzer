@@ -22,7 +22,7 @@ const Analyzer: React.FC = () => {
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
     const { processFiles, addFilesToState, error: fileError } = useFileProcessor();
-    const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile, updateAdvancedAnalysis } = useAnalysis();
+    const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile } = useAnalysis();
 
     const error = fileError || analysisError;
     const [, setSessionReady] = useState(false);
@@ -108,10 +108,6 @@ const Analyzer: React.FC = () => {
             trackAnalysisComplete
         });
     }, [dumpFiles, retryFile, trackAnalysisStart, trackAnalysisComplete]);
-
-    const handleUpdateAdvancedAnalysis = (fileId: string, tool: string, result: string) => {
-        updateAdvancedAnalysis(fileId, tool, result, dumpFiles, setDumpFiles);
-    };
 
     const pendingFilesCount = dumpFiles.filter(df => df.status === FileStatus.PENDING).length;
 
@@ -228,7 +224,6 @@ const Analyzer: React.FC = () => {
 
                 <AnalysisResults
                     dumpFiles={dumpFiles.filter(df => df.status !== FileStatus.PENDING)}
-                    onUpdateAdvancedAnalysis={handleUpdateAdvancedAnalysis}
                     onRetry={handleRetry}
                     showAds={true}
                     AdComponent={InFeedAd}

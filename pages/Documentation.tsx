@@ -163,7 +163,7 @@ const Documentation: React.FC = () => {
                                 <li><a href="#using-analyzer" className={activeSection === 'using-analyzer' ? 'active' : ''}>Using the Analyzer</a></li>
                                 <li><a href="#analysis-results" className={activeSection === 'analysis-results' ? 'active' : ''}>Analysis Results</a></li>
                                 <li><a href="#common-errors" className={activeSection === 'common-errors' ? 'active' : ''}>Common BSOD Errors</a></li>
-                                <li><a href="#advanced-analysis" className={activeSection === 'advanced-analysis' ? 'active' : ''}>Advanced Analysis</a></li>
+                                <li><a href="#advanced-analysis" className={activeSection === 'advanced-analysis' ? 'active' : ''}>WinDBG Details</a></li>
                                 <li><a href="#prevention-tips" className={activeSection === 'prevention-tips' ? 'active' : ''}>Prevention Tips</a></li>
                                 <li><a href="#troubleshooting" className={activeSection === 'troubleshooting' ? 'active' : ''}>Troubleshooting</a></li>
                                 <li><a href="#faq" className={activeSection === 'faq' ? 'active' : ''}>FAQ</a></li>
@@ -690,9 +690,9 @@ const Documentation: React.FC = () => {
                                 </div>
                             </section>
 
-                            {/* Advanced Analysis */}
+                            {/* WinDBG Analysis Details */}
                             <section id="advanced-analysis" className="docs-section">
-                                <h2>Advanced Analysis Tools</h2>
+                                <h2>WinDBG Analysis Details</h2>
 
                                 <p>
                                     The primary analysis path runs real WinDBG debugging commands on your crash dump
@@ -869,8 +869,8 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>What if the analyzer can't determine the cause?</h3>
                                     <p>
-                                        Try using the advanced analysis tools for more detailed information. If the issue 
-                                        persists, the crash might be caused by hardware failure or require professional diagnosis.
+                                    Review the raw WinDBG output included with the report for more detailed information. If the issue
+                                    persists, the crash might be caused by hardware failure or require professional diagnosis.
                                     </p>
                                 </div>
                                 

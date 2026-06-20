@@ -50,11 +50,8 @@ import {
   initCache,
   initHashing,
   hashContent,
-  getCachedAIReport,
-  setCachedAIReport,
-  getCachedWinDBGAnalysis,
-  setCachedWinDBGAnalysis,
   getCachedAnalysis,
+  setCachedAnalysis,
   isAnalysisCached,
   getRuntimeValue,
   setRuntimeValue,
@@ -1610,7 +1607,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
     }
     const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
-    const cachedResponse = await getCachedAIReport(cacheKey);
+    const cachedResponse = (await getCachedAnalysis(cacheKey))?.aiReport;
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
         ? cachedResponse.text
@@ -1720,7 +1717,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     };
 
     // Cache only a validated analysis response.
-    await setCachedAIReport(cacheKey, responseData);
+    await setCachedAnalysis(cacheKey, { aiReport: responseData });
 
     res.json(responseData);
   } catch (error) {
@@ -1771,7 +1768,7 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
       });
     }
 
-    // Use new combined cache (with legacy fallback built-in)
+    // Use the combined analysis cache.
     const cached = await getCachedAnalysis(hash);
 
     if (cached && (cached.windbgOutput || cached.aiReport)) {
@@ -1780,7 +1777,7 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
         success: true,
         cached: true,
         windbgAnalysis: cached.windbgOutput || null,
-        analysisSignalText: cached.analysisSignalText || cached.windbgSignal || null,
+        analysisSignalText: cached.analysisSignalText || null,
         structured: cached.structured || null,
         aiReport: cached.aiReport || null,
         fileHash: hash
@@ -1828,8 +1825,8 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
     const hashesToCheck = hashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the combined cache (with legacy fallback). The
-    // client uses this as a hint before fetching cached results by hash.
+    // Check each hash against the combined cache. The client uses this as a
+    // hint before fetching cached results by hash.
     const checkPromises = hashesToCheck
       .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
@@ -1903,18 +1900,17 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     const cachedAnalysis = cached?.windbgOutput
       ? {
           windbgOutput: cached.windbgOutput,
-          windbgSignal: cached.windbgSignal || cached.analysisSignalText,
           analysisSignalText: cached.analysisSignalText,
           structured: cached.structured
         }
-      : await getCachedWinDBGAnalysis(uid);
+      : null;
     if (cachedAnalysis?.windbgOutput) {
       console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
       return res.json({
         success: true,
         cached: true,
         cachedAnalysis: cachedAnalysis.windbgOutput,
-        cachedSignal: cachedAnalysis.windbgSignal || cachedAnalysis.analysisSignalText,
+        cachedSignal: cachedAnalysis.analysisSignalText,
         cachedStructured: cachedAnalysis.structured,
         data: { uid, queue_position: 0 }
       });
@@ -2069,11 +2065,10 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes', 'AI signal:', analysisSignalText.length, 'bytes');
 
     // Cache the WinDBG output (UID is the file hash)
-    await setCachedWinDBGAnalysis(uid, {
+    await setCachedAnalysis(uid, {
       windbgOutput: analysisText,
-      windbgSignal: analysisSignalText,
+      analysisSignalText,
       structured,
-      timestamp: Date.now()
     });
 
     res.json({
@@ -2354,7 +2349,7 @@ function persistCrashSignal(report, fileHash) {
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
   // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
   const cacheKey = fileHash || windbgAnalysis;
-  const cachedReport = await getCachedAIReport(cacheKey);
+  const cachedReport = (await getCachedAnalysis(cacheKey))?.aiReport;
   if (cachedReport) {
     const normalizedCachedReport = normalizeAnalysisReport(cachedReport);
     if (normalizedCachedReport) {
@@ -2392,7 +2387,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the legacy raw output.'}
+${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
 \`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
@@ -2418,7 +2413,7 @@ ${analysisForPrompt}
     const report = reportValidation.report;
 
     // Cache the successful AI report under the stable file hash (or analysis text as fallback)
-    await setCachedAIReport(cacheKey, report);
+    await setCachedAnalysis(cacheKey, { aiReport: report });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
     return report;
   } catch (error) {
@@ -2829,8 +2824,8 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
     const uid = generateWinDBGUID();
 
     // Check cache for previous WinDBG analysis of this exact file
-    const cachedAnalysis = await getCachedWinDBGAnalysis(fileHash);
-    if (cachedAnalysis) {
+    const cachedAnalysis = await getCachedAnalysis(fileHash);
+    if (cachedAnalysis?.windbgOutput) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
 
       // Generate AI report from cached WinDBG output
@@ -2841,7 +2836,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         cachedAnalysis.windbgOutput,
         fileHash,
         {
-          analysisSignalText: cachedAnalysis.windbgSignal || cachedAnalysis.analysisSignalText,
+          analysisSignalText: cachedAnalysis.analysisSignalText,
           structured: cachedAnalysis.structured
         }
       );
@@ -2938,14 +2933,10 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
           const windbgAnalysis = windbgPackage.analysisText;
 
           // Cache the WinDBG analysis for future requests with same file
-          await setCachedWinDBGAnalysis(fileHash, {
+          await setCachedAnalysis(fileHash, {
             windbgOutput: windbgAnalysis,
-            windbgSignal: windbgPackage.analysisSignalText,
+            analysisSignalText: windbgPackage.analysisSignalText,
             structured: windbgPackage.structured,
-            uid,
-            fileName,
-            dumpType,
-            timestamp: Date.now()
           });
 
           // Step 4: Generate AI report

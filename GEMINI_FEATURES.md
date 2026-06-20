@@ -69,7 +69,7 @@ and enforces the configured quota before forwarding requests.
 
 ## Future Enhancements
 
-1. **Grounded Text Tools**: Reintroduce grounding only for text-only advanced tools if the API configuration and tests support it
+1. **Grounded Evidence Checks**: Add source-backed validation for generated reports if the API configuration and tests support it
 2. **Thought Summaries**: Add support for exposing model reasoning summaries if the selected model and policy allow it
 3. **Dynamic Thinking Budget**: Allow server-controlled thinking budgets based on dump complexity if supported by the selected model
 
