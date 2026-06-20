@@ -38,6 +38,12 @@ import {
   jsonParser,
   staticMiddleware
 } from './server/fastifyCompat.js';
+import {
+  createRateLimiterFactory,
+  jsonRateLimitHandler,
+  normalizeRateLimitIp
+} from './server/rateLimit.js';
+import { createUploadHandler } from './server/uploadHandler.js';
 
 const execFileAsync = promisify(execFile);
 import {
@@ -92,7 +98,13 @@ const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '2', 10
 const TRUST_PROXY_VALUE = Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2;
 const app = createFastifyCompatApp({
   trustProxy: TRUST_PROXY_VALUE,
-  bodyLimit: SECURITY_CONFIG.api.maxUploadRequestSize
+  bodyLimit: SECURITY_CONFIG.api.maxUploadRequestSize,
+  compression: {
+    enabled: true,
+    threshold: 1024,
+    forceThreshold: 0,
+    forceEncoding: req => isFromCloudflare(req) ? 'zstd' : null
+  }
 });
 app.set('trust proxy', TRUST_PROXY_VALUE);
 
@@ -232,115 +244,16 @@ if (CLOUDFLARE_ONLY_INGRESS) {
 }
 
 function rateLimitKey(req) {
-  const ip = String(getClientIp(req) || 'unknown').split(',')[0].trim();
-  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
-  if (net.isIPv4(normalized)) return normalized;
-  if (net.isIPv6(normalized)) return normalized.toLowerCase();
-  return normalized || 'unknown';
+  return normalizeRateLimitIp(getClientIp(req));
 }
 
-function jsonRateLimitHandler(req, res) {
-  res.status(429).json({
-    success: false,
-    error: 'Too many requests. Please try again later.',
-    code: 'RATE_LIMITED'
-  });
-}
-
-function createRuntimeRateLimitStore(name, windowMs) {
-  if (!isCacheEnabled()) return undefined;
-  const ttlSeconds = Math.ceil(windowMs / 1000);
-  return {
-    async increment(key) {
-      const result = await incrementRuntimeCounter(`rate-limit:${name}:${key}`, ttlSeconds);
-      if (!result) {
-        throw new Error('Runtime store unavailable while updating rate limit');
-      }
-      return {
-        totalHits: result.count,
-        resetTime: result.resetTime
-      };
-    },
-    async decrement() {
-      // Limits in this service do not use skipSuccessfulRequests/skipFailedRequests.
-    },
-    async resetKey(key) {
-      await deleteRuntimeValue(`rate-limit:${name}:${key}`);
-    }
-  };
-}
-
-function createMemoryRateLimitStore(windowMs) {
-  const hits = new Map();
-  return {
-    async increment(key) {
-      const now = Date.now();
-      let entry = hits.get(key);
-      if (!entry || entry.resetTime.getTime() <= now) {
-        entry = { totalHits: 0, resetTime: new Date(now + windowMs) };
-      }
-      entry.totalHits += 1;
-      hits.set(key, entry);
-      return entry;
-    }
-  };
-}
-
-function secondsUntil(resetTime) {
-  const resetMs = resetTime instanceof Date
-    ? resetTime.getTime()
-    : new Date(resetTime).getTime();
-  if (!Number.isFinite(resetMs)) return 1;
-  return Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
-}
-
-function setRateLimitHeaders(res, { max, remaining, resetSeconds, windowMs }) {
-  res.setHeader('RateLimit-Policy', `${max};w=${Math.ceil(windowMs / 1000)}`);
-  res.setHeader('RateLimit-Limit', String(max));
-  res.setHeader('RateLimit-Remaining', String(Math.max(0, remaining)));
-  res.setHeader('RateLimit-Reset', String(resetSeconds));
-}
-
-function createRateLimiter({
-  windowMs,
-  max,
-  keyGenerator = rateLimitKey,
-  handler = jsonRateLimitHandler,
-  skip = () => false,
-  name = 'generic'
-}) {
-  const store = createRuntimeRateLimitStore(name, windowMs) || createMemoryRateLimitStore(windowMs);
-  return async (req, res, next) => {
-    try {
-      if (skip(req)) return next();
-      const key = await keyGenerator(req);
-      const result = await store.increment(key);
-      const totalHits = result.totalHits ?? result.count ?? 0;
-      const resetTime = result.resetTime ?? new Date(Date.now() + windowMs);
-      const resetSeconds = secondsUntil(resetTime);
-      setRateLimitHeaders(res, {
-        max,
-        remaining: max - totalHits,
-        resetSeconds,
-        windowMs
-      });
-      if (totalHits > max) return handler(req, res);
-      next();
-    } catch (error) {
-      next(error);
-    }
-  };
-}
-
-function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey, name = 'generic' }) {
-  return createRateLimiter({
-    windowMs,
-    max,
-    keyGenerator,
-    handler: jsonRateLimitHandler,
-    name
-  });
-}
+const makeLimiter = createRateLimiterFactory({
+  isCacheEnabled,
+  incrementRuntimeCounter,
+  deleteRuntimeValue,
+  defaultKeyGenerator: rateLimitKey,
+  defaultHandler: jsonRateLimitHandler
+});
 
 function createConcurrencyLimiter(max, code) {
   let active = 0;
@@ -606,79 +519,6 @@ if (!BSOD_API_KEY) {
   console.warn('WARNING: BSOD_API_KEY not configured - external API access disabled');
 }
 
-function normalizeMultipartField(field) {
-  if (Array.isArray(field)) return field.map(normalizeMultipartField);
-  if (field && typeof field === 'object' && 'value' in field) return field.value;
-  return field;
-}
-
-function createUploadHandler({ limits, fileFilter }) {
-  return {
-    single(fieldName) {
-      return async (req, _res, next) => {
-        try {
-          if (typeof req.fastifyRequest?.file !== 'function') {
-            req.file = undefined;
-            return next();
-          }
-
-          const part = await req.fastifyRequest.file({
-            throwFileSizeLimit: true,
-            limits: {
-              fileSize: limits.fileSize,
-              files: limits.files || 1,
-              fields: 20,
-              parts: 25
-            }
-          });
-
-          if (!part) {
-            req.file = undefined;
-            return next();
-          }
-          if (part.fieldname !== fieldName) {
-            const err = new Error(`Unexpected file field "${part.fieldname}"`);
-            err.code = 'LIMIT_UNEXPECTED_FILE';
-            err.status = 400;
-            throw err;
-          }
-
-          const buffer = await part.toBuffer();
-          const file = {
-            fieldname: part.fieldname,
-            originalname: part.filename,
-            encoding: part.encoding,
-            mimetype: part.mimetype,
-            buffer,
-            size: buffer.length
-          };
-
-          await new Promise((resolve, reject) => {
-            fileFilter(req, file, (err, accepted) => {
-              if (err) return reject(err);
-              if (accepted === false) return reject(new Error('File upload rejected'));
-              resolve();
-            });
-          });
-
-          const fields = {};
-          for (const [key, value] of Object.entries(part.fields || {})) {
-            if (key !== fieldName) fields[key] = normalizeMultipartField(value);
-          }
-          req.body = {
-            ...(req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) ? req.body : {}),
-            ...fields
-          };
-          req.file = file;
-          next();
-        } catch (error) {
-          next(error);
-        }
-      };
-    }
-  };
-}
-
 // Fastify multipart upload compatibility for existing handlers.
 const upload = createUploadHandler({
   limits: {
@@ -856,7 +696,7 @@ app.fastify.register(fastifyMultipart, {
 });
 
 // Rate limiting middleware
-const apiLimiter = createRateLimiter({
+const apiLimiter = makeLimiter({
   windowMs: SECURITY_CONFIG.api.rateLimiting.windowMs,
   max: SECURITY_CONFIG.api.rateLimiting.maxRequests,
   keyGenerator: rateLimitKey,
