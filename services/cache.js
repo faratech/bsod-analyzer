@@ -362,6 +362,9 @@ export async function getCachedAnalysis(fileHash) {
       console.log(`[Cache] Legacy cache HIT for hash ${fileHash.substring(0, 12)}... (windbg: ${!!legacyWinDBG}, ai: ${!!legacyAI})`);
       return {
         windbgOutput: legacyWinDBG?.windbgOutput || null,
+        windbgSignal: legacyWinDBG?.windbgSignal || legacyWinDBG?.analysisSignalText || null,
+        analysisSignalText: legacyWinDBG?.analysisSignalText || legacyWinDBG?.windbgSignal || null,
+        structured: legacyWinDBG?.structured || null,
         aiReport: legacyAI || null,
         timestamp: legacyWinDBG?.timestamp || Date.now(),
         legacy: true

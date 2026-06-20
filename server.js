@@ -1758,18 +1758,16 @@ function winDbgUpstreamHttpStatus(error) {
 app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
   try {
     const { hash } = req.query;
+    res.set({
+      'Cache-Control': 'no-store',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
 
     if (!hash || typeof hash !== 'string' || !HASH_RE.test(hash)) {
       return res.status(400).json({
         success: false,
         error: 'Invalid or missing hash parameter'
-      });
-    }
-    if (!(await sessionOwnsHash(req.sessionId, hash))) {
-      return res.status(403).json({
-        success: false,
-        error: 'Cache entry is not available for this session',
-        code: 'CACHE_FORBIDDEN'
       });
     }
 
@@ -1782,6 +1780,8 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
         success: true,
         cached: true,
         windbgAnalysis: cached.windbgOutput || null,
+        analysisSignalText: cached.analysisSignalText || cached.windbgSignal || null,
+        structured: cached.structured || null,
         aiReport: cached.aiReport || null,
         fileHash: hash
       });
@@ -1828,9 +1828,8 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
     const hashesToCheck = hashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the combined cache (with legacy fallback). This is
-    // only a UI hint; ownership is established when the server sees the file
-    // during WinDBG upload.
+    // Check each hash against the combined cache (with legacy fallback). The
+    // client uses this as a hint before fetching cached results by hash.
     const checkPromises = hashesToCheck
       .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
@@ -1859,13 +1858,6 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
-    if (!WINDBG_API_KEY) {
-      return res.status(503).json({
-        success: false,
-        error: 'WinDBG service not configured'
-      });
-    }
-
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -1907,8 +1899,16 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
 
     // Check cache for existing WinDBG analysis
-    const cachedAnalysis = await getCachedWinDBGAnalysis(uid);
-    if (cachedAnalysis) {
+    const cached = await getCachedAnalysis(uid);
+    const cachedAnalysis = cached?.windbgOutput
+      ? {
+          windbgOutput: cached.windbgOutput,
+          windbgSignal: cached.windbgSignal || cached.analysisSignalText,
+          analysisSignalText: cached.analysisSignalText,
+          structured: cached.structured
+        }
+      : await getCachedWinDBGAnalysis(uid);
+    if (cachedAnalysis?.windbgOutput) {
       console.log('[WinDBG] Cache HIT - returning cached analysis for:', fileName);
       return res.json({
         success: true,
@@ -1917,6 +1917,13 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
         cachedSignal: cachedAnalysis.windbgSignal || cachedAnalysis.analysisSignalText,
         cachedStructured: cachedAnalysis.structured,
         data: { uid, queue_position: 0 }
+      });
+    }
+
+    if (!WINDBG_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'WinDBG service not configured'
       });
     }
 

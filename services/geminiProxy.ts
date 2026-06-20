@@ -11,7 +11,7 @@ import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../ut
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
-import { analyzeWithWinDBG, WinDBGAnalysisResult } from './windbgService';
+import { analyzeWithWinDBG, getCachedAnalysisByHash, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
 import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
 import { extractWinDbgWindowsVersion } from '../shared/windowsVersion.js';
@@ -301,6 +301,47 @@ function normalizeAnalysisReportData(value: unknown): AnalysisReportData {
     }
 
     return report;
+}
+
+function looksLikeAnalysisReport(value: unknown): value is Record<string, unknown> {
+    return !!value
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && (
+            'summary' in value
+            || 'probableCause' in value
+            || 'culprit' in value
+            || 'recommendations' in value
+            || 'bugCheck' in value
+        );
+}
+
+function normalizeCachedAIReport(value: unknown): AnalysisReportData | null {
+    if (!value) return null;
+
+    if (typeof value === 'string') {
+        try {
+            return normalizeCachedAIReport(JSON.parse(value));
+        } catch {
+            return null;
+        }
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const input = value as Record<string, unknown>;
+        if (typeof input.text === 'string' && input.text.trim()) {
+            try {
+                return normalizeAnalysisReportData(JSON.parse(input.text));
+            } catch {
+                return null;
+            }
+        }
+        if (looksLikeAnalysisReport(input)) {
+            return normalizeAnalysisReportData(input);
+        }
+    }
+
+    return null;
 }
 
 // --- Binary Processing Helpers ---
@@ -1341,7 +1382,7 @@ export const analyzeDumpFiles = async (
             throwIfAborted();
             console.log('[Analyzer] Starting analysis for:', fileLabel);
             if (dumpFile.knownCached && dumpFile.fileHash) {
-                console.log(`[Analyzer] Cache hint found for ${fileLabel}; upload will prove file ownership before any cached result is returned`);
+                console.log(`[Analyzer] Cache hint found for ${fileLabel}; attempting hash-only cache retrieval`);
             }
 
             let cachedFileBuffer: ArrayBuffer | null = null;
@@ -1353,6 +1394,61 @@ export const analyzeDumpFiles = async (
                 }
                 return cachedFileBuffer;
             };
+
+            if (dumpFile.knownCached && dumpFile.fileHash) {
+                try {
+                    onProgress?.('downloading', 'Loading cached analysis...');
+                    const cached = await getCachedAnalysisByHash(dumpFile.fileHash);
+                    throwIfAborted();
+
+                    if (cached?.cached) {
+                        const cachedReport = normalizeCachedAIReport(cached.aiReport);
+                        if (cachedReport) {
+                            console.log(`[Analyzer] Cache HIT - using cached AI report for ${fileLabel}`);
+                            return {
+                                id: dumpFile.id,
+                                report: cachedReport,
+                                status: FileStatus.ANALYZED,
+                                cached: true,
+                                analysisMethod: cached.windbgAnalysis ? 'windbg' as const : 'local' as const
+                            };
+                        }
+
+                        const cachedWinDbg = typeof cached.windbgAnalysis === 'string'
+                            ? cached.windbgAnalysis.trim()
+                            : '';
+                        if (cachedWinDbg) {
+                            console.log(`[Analyzer] Cache HIT - generating report from cached WinDBG analysis for ${fileLabel}`);
+                            onProgress?.('analyzing', 'AI is interpreting cached crash analysis...');
+                            const report = await generateReportFromWinDBG(
+                                fileLabel,
+                                dumpFile.dumpType,
+                                dumpFile.file.size,
+                                cachedWinDbg,
+                                dumpFile.fileHash,
+                                {
+                                    analysisSignalText: cached.analysisSignalText || undefined,
+                                    structured: cached.structured || undefined
+                                }
+                            );
+                            return {
+                                id: dumpFile.id,
+                                report,
+                                status: FileStatus.ANALYZED,
+                                cached: true,
+                                analysisMethod: 'windbg' as const
+                            };
+                        }
+
+                        console.warn(`[Analyzer] Cache entry for ${fileLabel} did not contain a usable AI report or WinDBG analysis`);
+                    } else {
+                        console.log(`[Analyzer] Cache MISS for ${fileLabel}; falling back to WinDBG upload`);
+                    }
+                } catch (cacheError) {
+                    throwIfAborted();
+                    console.warn('[Analyzer] Cached analysis retrieval failed; falling back to WinDBG upload:', cacheError);
+                }
+            }
 
             // Try WinDBG server analysis first
             let windbgResult: WinDBGAnalysisResult | null = null;
