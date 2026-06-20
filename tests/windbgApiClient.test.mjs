@@ -76,13 +76,21 @@ test('WinDBG job status maps to the legacy browser contract', () => {
   assert.equal(response.data.processing_time_seconds, 10);
 });
 
-test('WinDBG analysis extraction prefers stdout and falls back to sections', () => {
+test('WinDBG analysis extraction preserves stdout and command sections', () => {
   assert.equal(extractWinDbgAnalysisText({
     result: {
       stdout: 'raw cdb output',
       sections: { analyze: 'section output' }
     }
-  }), 'raw cdb output');
+  }), 'raw cdb output\n\n===== analyze =====\nsection output');
+
+  assert.equal(extractWinDbgAnalysisText({
+    result: {
+      stdout: 'raw cdb output',
+      STEP_10_drivers: 'driver command output',
+      STEP_11_vm: ['vm line 1', 'vm line 2']
+    }
+  }), 'raw cdb output\n\n===== STEP_10_drivers =====\ndriver command output\n\n===== STEP_11_vm =====\nvm line 1\nvm line 2');
 
   assert.equal(extractWinDbgAnalysisText({
     result: {
@@ -199,6 +207,19 @@ test('signal extraction tolerates an array-valued section', () => {
     result: { sections: { STEP_04_analyze_v: ANALYZE_V.split('\n') } }
   });
   assert.equal(signal.bugcheck.code, '0xA');
+});
+
+test('signal extraction treats top-level STEP outputs as command sections', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: {
+      STEP_04_analyze_v: ANALYZE_V,
+      STEP_14_irql: 'Debugger saved IRQL for processor 0x0 -- 2 (DISPATCH_LEVEL)',
+      STEP_20_dpc: 'dpc is not extension gallery command\nNo export dpc found'
+    }
+  });
+  assert.equal(signal.bugcheck.code, '0xA');
+  assert.match(signal.sectionExcerpts.irql, /DISPATCH_LEVEL/);
+  assert.ok(signal.debuggerWarnings.some(warning => warning.includes('STEP_20_dpc')));
 });
 
 // ── Robust JSON handling: every `result` shape ────────────────────────────────

@@ -30,10 +30,6 @@ export const useAnalytics = () => {
         trackEvent('analysis_complete', 'engagement', `${dumpType}_${success ? 'success' : 'error'}`);
     }, [trackEvent]);
 
-    const trackAdvancedTool = useCallback((toolName: string) => {
-        trackEvent('advanced_tool_use', 'engagement', toolName);
-    }, [trackEvent]);
-
     const trackDonation = useCallback((amount: string, type: 'one-time' | 'monthly') => {
         trackEvent('donation_click', 'conversion', `${type}_${amount}`);
     }, [trackEvent]);
@@ -51,7 +47,6 @@ export const useAnalytics = () => {
         trackFileUpload,
         trackAnalysisStart,
         trackAnalysisComplete,
-        trackAdvancedTool,
         trackDonation,
         trackPageView
     };

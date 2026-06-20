@@ -1,13 +1,12 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
 import { DumpFile, AnalysisReportData, FileStatus, StackFrame, SystemInfo } from '../types';
-import { sanitizeExtractedContent, sanitizeHexDump, validateProcessingTimeout } from '../utils/contentSanitizer';
+import { sanitizeExtractedContent, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
 import { parseDumpFile as parseKernelDump, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
 import { getParameterExplanation } from '../utils/crashPatternDatabase';
 import { FILE_SIZE_THRESHOLDS, PROCESSING_LIMITS } from '../constants';
-import { executeAnalyzeV, executeLmKv, executeProcess00, executeVm } from '../utils/windbgCommands';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
@@ -757,7 +756,6 @@ function extractPrintableStrings(buffer: ArrayBuffer, minLength = 4): string {
     return [...asciiChunks, ...utf16Chunks].join('\n');
 }
 
-// Legacy function kept for compatibility - actual sanitization happens in sanitizeHexDump
 function generateHexDump(buffer: ArrayBuffer, length = PROCESSING_LIMITS.HEX_DUMP_LENGTH): string {
     const view = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, length));
     let result = '';
@@ -1042,7 +1040,7 @@ async function generateReportFromWinDBG(
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the legacy raw output.'}
+${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
 \`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
@@ -1248,72 +1246,6 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
     });
 
     return result;
-}
-
-/**
- * Extract module information from WinDBG !analyze -v output.
- * Looks for MODULE_NAME, IMAGE_NAME, and module list sections.
- */
-function extractModuleInfoFromWinDBG(output: string): string | null {
-    const lines: string[] = [];
-
-    // Extract MODULE_NAME and IMAGE_NAME
-    const moduleNameMatch = output.match(/MODULE_NAME:\s*(.+)/i);
-    const imageNameMatch = output.match(/IMAGE_NAME:\s*(.+)/i);
-    const faultingModuleMatch = output.match(/FAULTING_MODULE:\s*(.+)/i);
-
-    if (moduleNameMatch) lines.push(`MODULE_NAME: ${moduleNameMatch[1].trim()}`);
-    if (imageNameMatch) lines.push(`IMAGE_NAME:  ${imageNameMatch[1].trim()}`);
-    if (faultingModuleMatch) lines.push(`FAULTING_MODULE: ${faultingModuleMatch[1].trim()}`);
-
-    // Try to find loaded module list (various formats)
-    const moduleListMatch = output.match(/LOADED_IMAGE_NAME:\s*(.+)/gi);
-    if (moduleListMatch && moduleListMatch.length > 0) {
-        lines.push('');
-        lines.push('Loaded Modules:');
-        moduleListMatch.forEach(m => lines.push(`  ${m}`));
-    }
-
-    // Look for module addresses
-    const moduleAddrPattern = /([0-9a-fA-F`]+)\s+([0-9a-fA-F`]+)\s+(\S+\.sys|\S+\.dll|\S+\.exe)/gi;
-    const moduleAddrs = output.match(moduleAddrPattern);
-    if (moduleAddrs && moduleAddrs.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('Module Addresses:');
-        // Deduplicate and limit
-        const uniqueModules = [...new Set(moduleAddrs)].slice(0, 30);
-        uniqueModules.forEach(m => lines.push(`  ${m}`));
-    }
-
-    return lines.length > 0 ? lines.join('\n') : null;
-}
-
-/**
- * Extract process information from WinDBG !analyze -v output.
- */
-function extractProcessInfoFromWinDBG(output: string): string | null {
-    const lines: string[] = [];
-
-    // Extract process-related fields
-    const processNameMatch = output.match(/PROCESS_NAME:\s*(.+)/i);
-    const currentIrqlMatch = output.match(/CURRENT_IRQL:\s*(.+)/i);
-    const defaultBucketMatch = output.match(/DEFAULT_BUCKET_ID:\s*(.+)/i);
-    const bugcheckStrMatch = output.match(/BUGCHECK_STR:\s*(.+)/i);
-
-    if (processNameMatch) lines.push(`PROCESS_NAME:      ${processNameMatch[1].trim()}`);
-    if (currentIrqlMatch) lines.push(`CURRENT_IRQL:      ${currentIrqlMatch[1].trim()}`);
-    if (defaultBucketMatch) lines.push(`DEFAULT_BUCKET_ID: ${defaultBucketMatch[1].trim()}`);
-    if (bugcheckStrMatch) lines.push(`BUGCHECK_STR:      ${bugcheckStrMatch[1].trim()}`);
-
-    // Try to find CONTEXT section
-    const contextMatch = output.match(/CONTEXT:\s*([\s\S]*?)(?=\n\n[A-Z_]+:|\nSTACK_TEXT|\nFOLLOWUP)/i);
-    if (contextMatch) {
-        lines.push('');
-        lines.push('CONTEXT:');
-        lines.push(contextMatch[1].trim().split('\n').slice(0, 10).join('\n'));
-    }
-
-    return lines.length > 0 ? lines.join('\n') : null;
 }
 
 /**
@@ -2146,182 +2078,4 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
         error: 'Analysis was cancelled before this file started',
         status: FileStatus.ERROR
     });
-};
-
-const getAdvancedPrompt = (tool: string, dumpFile: DumpFile, extractedStrings: string, hexDump: string): string => {
-    const { report, file, dumpType } = dumpFile;
-    if (!report) return `Error: No report available for ${file.name}.`;
-
-    const baseIntro = `You are a world-class Windows kernel debugger (WinDbg). You are performing a deep analysis of a ${dumpType} dump file named "${file.name}".
-An initial analysis was performed, identifying "${report.culprit}" as the likely culprit with the summary: "${report.summary}".
-You now have access to the raw data extracted from the dump file to perform more specific commands. Do NOT simulate. Your output must be based on the provided data.
-**Important:** Do NOT include any debugger tool headers, loading messages, or command prompts (e.g., "kd>"). Your response must be ONLY the direct output of the command, formatted as requested.`;
-
-    const dataContext = `
---- DATA FROM ${file.name} ---
-HEX DUMP (first ${PROCESSING_LIMITS.HEX_DUMP_LENGTH} bytes):
-${hexDump}
-
-EXTRACTED STRINGS (first ${PROCESSING_LIMITS.MAX_STRINGS_LENGTH} chars):
-${extractedStrings}
---- END DATA ---
-`;
-
-    switch (tool) {
-        case '!analyze -v':
-            return `${baseIntro}
-Your task is to act as the '!analyze -v' command and provide a detailed analysis.
-**Format your entire response in Markdown.**
-- Start with the bug check analysis, using headings and code blocks for technical details like the bug check code, parameters, and the reconstructed stack trace.
-- Provide a detailed "Conclusion" or "Analysis Summary" section using bold text, paragraphs, and lists to explain the findings.
-- Finish with a bulleted list of actionable "Recommendations".
-- Your analysis must be derived from the provided HEX DUMP and EXTRACTED STRINGS. Do not invent details that cannot be inferred from the data.
-${dataContext}`;
-        case '!vm':
-            return `${baseIntro}
-Your task is to generate the output for the '!vm' command.
-Use the provided data to generate a plausible summary of virtual memory usage that is consistent with the initial crash analysis.
-**Your entire output must be raw text inside a single Markdown code block**, formatted like the WinDbg console output.
-${dataContext}`;
-        case '!process 0 0':
-            return `${baseIntro}
-Your task is to generate the output for the '!process 0 0' command.
-Scan the EXTRACTED STRINGS for any process names (.exe files). List these and other common system processes.
-**Your entire output must be raw text inside a single Markdown code block**, formatted like the WinDbg console output.
-${dataContext}`;
-        case 'lm kv':
-            return `${baseIntro}
-Your task is to generate the output for the 'lm kv' command.
-Scan the EXTRACTED STRINGS for module names (.sys, .dll files). Pay special attention to the culprit driver: ${report.culprit}.
-**Your entire output must be raw text inside a single Markdown code block**, formatted like the WinDbg console output.
-${dataContext}`;
-        default:
-            return `${baseIntro}\n\nAn unknown command was requested: ${tool}. Provide an error message indicating the command is not supported.`;
-    }
-};
-
-
-export const runAdvancedAnalysis = async (tool: string, dumpFile: DumpFile): Promise<string> => {
-    if (!dumpFile.report) {
-        throw new Error("Cannot run advanced analysis without an initial report.");
-    }
-
-    // Check if we have real WinDBG output from the server
-    const hasRealWinDbgOutput = !!dumpFile.report.rawWinDbgOutput;
-
-    // Re-process the file to get the data needed for the prompt.
-    const fileBuffer = await readFileAsArrayBuffer(dumpFile.file);
-
-    try {
-        // Use real WinDbg command implementations
-        let result: string;
-
-        switch (tool) {
-            case '!analyze -v': {
-                // Use real WinDBG server output if available
-                if (hasRealWinDbgOutput) {
-                    console.log('[Advanced] Using real WinDBG output for !analyze -v');
-                    result = `## !analyze -v (WinDBG Server)\n\n\`\`\`\n${dumpFile.report.rawWinDbgOutput}\n\`\`\``;
-                } else {
-                    // Fall back to local simulation
-                    console.log('[Advanced] Using local simulation for !analyze -v');
-                    const commandResult = executeAnalyzeV(fileBuffer);
-                    if (commandResult.success) {
-                        result = `## !analyze -v (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
-                    } else {
-                        result = `Error executing !analyze -v: ${commandResult.error}`;
-                    }
-                }
-                break;
-            }
-            
-            case 'lm kv': {
-                // Try to extract module info from real WinDBG output
-                if (hasRealWinDbgOutput) {
-                    const moduleSection = extractModuleInfoFromWinDBG(dumpFile.report.rawWinDbgOutput!);
-                    if (moduleSection) {
-                        console.log('[Advanced] Extracted module info from real WinDBG output');
-                        result = `## lm kv (from WinDBG Server)\n\n\`\`\`\n${moduleSection}\n\`\`\``;
-                        break;
-                    }
-                }
-                // Fall back to local simulation
-                console.log('[Advanced] Using local simulation for lm kv');
-                const commandResult = executeLmKv(fileBuffer);
-                if (commandResult.success) {
-                    result = `## lm kv (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
-                } else {
-                    result = `Error executing lm kv: ${commandResult.error}`;
-                }
-                break;
-            }
-
-            case '!process 0 0': {
-                // Try to extract process info from real WinDBG output
-                if (hasRealWinDbgOutput) {
-                    const processSection = extractProcessInfoFromWinDBG(dumpFile.report.rawWinDbgOutput!);
-                    if (processSection) {
-                        console.log('[Advanced] Extracted process info from real WinDBG output');
-                        result = `## !process 0 0 (from WinDBG Server)\n\n\`\`\`\n${processSection}\n\`\`\``;
-                        break;
-                    }
-                }
-                // Fall back to local simulation
-                console.log('[Advanced] Using local simulation for !process 0 0');
-                const commandResult = executeProcess00(fileBuffer);
-                if (commandResult.success) {
-                    result = `## !process 0 0 (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
-                } else {
-                    result = `Error executing !process 0 0: ${commandResult.error}`;
-                }
-                break;
-            }
-
-            case '!vm': {
-                // Local simulation only - !vm info not typically in !analyze -v output
-                console.log('[Advanced] Using local simulation for !vm');
-                const commandResult = executeVm(fileBuffer);
-                if (commandResult.success) {
-                    result = `## !vm (Local Analysis)\n\n\`\`\`\n${commandResult.output}\n\`\`\``;
-                } else {
-                    result = `Error executing !vm: ${commandResult.error}`;
-                }
-                break;
-            }
-            
-            default: {
-                // Fall back to AI analysis for unknown commands
-                const MAX_STRINGS_LENGTH = PROCESSING_LIMITS.MAX_STRINGS_LENGTH;
-                const rawExtractedStrings = extractPrintableStrings(fileBuffer);
-                const extractedStrings = sanitizeExtractedContent(rawExtractedStrings).substring(0, MAX_STRINGS_LENGTH);
-                const hexDump = sanitizeHexDump(fileBuffer);
-                
-                const prompt = getAdvancedPrompt(tool, dumpFile, extractedStrings, hexDump);
-                
-                const ai = createGeminiProxy();
-                const response = await ai.models.generateContent({
-                    contents: prompt,
-                    config: {
-                        temperature: 0.1,
-                    },
-                    tools: [{
-                        googleSearch: {
-                            // Enable dynamic retrieval for better grounding
-                            dynamicRetrievalConfig: {
-                                mode: "MODE_DYNAMIC",
-                                dynamicThreshold: 0.7  // Higher threshold for more relevant results
-                            }
-                        }
-                    }]
-                });
-                return response.text;
-            }
-        }
-        
-        return result;
-        
-    } catch (error) {
-        console.error(`Error running advanced analysis for ${dumpFile.file.name} with tool ${tool}:`, error);
-        throw new Error(`Failed to run advanced analysis tool ${tool}.`);
-    }
 };

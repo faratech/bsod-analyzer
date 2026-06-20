@@ -5,11 +5,6 @@ export enum FileStatus {
   ERROR = 'ERROR',
 }
 
-export interface AdvancedAnalysisResult {
-  tool: string;
-  result: string;
-}
-
 export interface BugCheckInfo {
   code: string;           // e.g., "0x0000001A"
   name: string;           // e.g., "MEMORY_MANAGEMENT"
@@ -102,7 +97,6 @@ export interface AnalysisReportData {
   parameterAnalysis?: ParameterAnalysis[];  // AI-decoded bug check parameters
   // Legacy field - module list fallback when loadedModules is empty
   stackTrace?: string[];
-  advancedAnalyses?: AdvancedAnalysisResult[];
   // Legacy field for bug check code (deprecated, use bugCheck instead)
   bugCheckCode?: string;
   // WinDBG-specific fields (parsed directly from raw output)
@@ -111,7 +105,7 @@ export interface AnalysisReportData {
   faultAddress?: string;      // Memory address that faulted
   systemInfo?: SystemInfo;
   callStack?: StackFrame[];   // Actual call stack (not just loaded modules)
-  rawWinDbgOutput?: string;   // Full !analyze -v output for advanced users
+  rawWinDbgOutput?: string;   // Full server-returned WinDBG output for advanced users
 }
 
 export interface DumpFile {

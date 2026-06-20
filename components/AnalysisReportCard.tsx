@@ -1,81 +1,24 @@
-import React, { useState, Suspense, lazy } from 'react';
+import React, { useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
-import { runAdvancedAnalysis } from '../services/geminiProxy';
 import Loader from './Loader';
-import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, TerminalIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
-
-// Lazy load ReactMarkdown and remarkGfm
-const ReactMarkdown = lazy(() => import('react-markdown'));
-const remarkGfmModule = import('remark-gfm');
-
-// Wrapper component for lazy-loaded markdown
-const LazyMarkdown: React.FC<{ children: string }> = ({ children }) => {
-    const [remarkGfm, setRemarkGfm] = useState<typeof import('remark-gfm').default | null>(null);
-    
-    React.useEffect(() => {
-        remarkGfmModule.then(module => setRemarkGfm(() => module.default));
-    }, []);
-    
-    return (
-        <Suspense fallback={<div style={{ padding: '1rem' }}>Loading...</div>}>
-            <ReactMarkdown
-                remarkPlugins={remarkGfm ? [remarkGfm] : []}
-                components={{
-                    pre: ({node, ...props}) => <pre className="code-block" style={{margin: 0}} {...props} />,
-                    code: ({ node, className, children, ...props }) => {
-                        const isInline = !className?.includes('language-');
-                        return <code style={{fontFamily: 'Jetbrains Mono, monospace', backgroundColor: isInline ? 'var(--bg-secondary)' : 'transparent', padding: isInline ? '0.2em 0.4em' : 0, borderRadius: '3px'}} className={className} {...props}>{children}</code>;
-                    },
-                    a: ({node, ...props}) => <a style={{color: 'var(--brand-primary)'}} target="_blank" rel="noopener noreferrer" {...props} />,
-                }}
-            >
-                {children}
-            </ReactMarkdown>
-        </Suspense>
-    );
-};
+import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
 
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
-    onUpdateAdvancedAnalysis: (fileId: string, tool: string, result: string) => void;
     onRetry?: () => void;
     style?: React.CSSProperties;
 }
 
-const ADVANCED_TOOLS = [
-    { id: '!analyze -v', name: 'In-Depth Crash Analysis (!analyze -v)' },
-    { id: 'lm kv', name: 'List Loaded Modules (lm kv)' },
-    { id: '!process 0 0', name: 'List Active Processes (!process 0 0)' },
-    { id: '!vm', name: 'Virtual Memory Usage (!vm)' },
-];
-
-const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpdateAdvancedAnalysis, onRetry, style }) => {
+const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRetry, style }) => {
     const [isExpanded, setIsExpanded] = useState(dumpFile.status !== FileStatus.PENDING);
-    const [runningTool, setRunningTool] = useState<string | null>(null);
-    const [toolError, setToolError] = useState<string | null>(null);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [showCallStack, setShowCallStack] = useState<boolean>(false);
     const [showRawOutput, setShowRawOutput] = useState<boolean>(false);
     const displayName = dumpFile.displayName || dumpFile.file.name;
 
-    const handleRunTool = async (tool: string) => {
-        if (!dumpFile.report || !tool || runningTool) return;
-        setRunningTool(tool);
-        setToolError(null);
-        try {
-            const result = await runAdvancedAnalysis(tool, dumpFile);
-            onUpdateAdvancedAnalysis(dumpFile.id, tool, result);
-        } catch (error) {
-            console.error(error);
-            setToolError(`Failed to run tool: ${tool}. Please try again.`);
-        } finally {
-            setRunningTool(null);
-        }
-    };
-
     const generateMarkdownReport = (): string => {
         if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, advancedAnalyses, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
+        const { summary, probableCause, culprit, recommendations, stackTrace, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
         let report = `# BSOD Analysis Report for ${displayName}\n\n`;
 
@@ -205,13 +148,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
             report += `\`\`\`\n\n`;
         }
 
-        if (advancedAnalyses && advancedAnalyses.length > 0) {
-            report += `## Advanced Analysis Results\n`;
-            advancedAnalyses.forEach(analysis => {
-                report += `### Output for \`${analysis.tool}\`\n\n\`\`\`markdown\n${analysis.result}\n\`\`\`\n\n`;
-            });
-        }
-
         // Raw WinDBG Output (optional, can be large)
         if (rawWinDbgOutput) {
             report += `## Raw WinDBG Output\n\n<details>\n<summary>Click to expand (${rawWinDbgOutput.length.toLocaleString()} characters)</summary>\n\n\`\`\`\n${rawWinDbgOutput}\n\`\`\`\n\n</details>\n\n`;
@@ -310,7 +246,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                 );
             case FileStatus.ANALYZED:
                 if (!dumpFile.report) return null;
-                const alreadyRunTools = new Set(dumpFile.report.advancedAnalyses?.map(a => a.tool) || []);
                 const { bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
 
 
@@ -1030,40 +965,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onUpd
                                 * You can verify this AI analysis with <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/getting-started-with-windbg" target="_blank" rel="noopener noreferrer" style={{color: 'var(--brand-primary)'}}>Microsoft WinDbg</a>
                             </p>
                         </div>
-                        
-                        <div style={{marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-primary)'}}>
-                            <h3 style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}><TerminalIcon className="w-5 h-5"/> Advanced Tools</h3>
-                            <div style={{display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '1rem', flexWrap: 'wrap'}}>
-                               <select
-                                    value=""
-                                    onChange={(e) => handleRunTool(e.target.value)}
-                                    disabled={!!runningTool}
-                                    aria-label="Select an advanced tool to run"
-                                >
-                                    <option value="" disabled>Select a tool to run...</option>
-                                    {ADVANCED_TOOLS.map(tool => (
-                                        <option key={tool.id} value={tool.id} disabled={alreadyRunTools.has(tool.id) || !!runningTool}>
-                                            {tool.name} {alreadyRunTools.has(tool.id) ? '(✓ Complete)' : ''}
-                                        </option>
-                                    ))}
-                                </select>
-                                {runningTool && <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem'}}><Loader /><span >Running...</span></div>}
-                            </div>
-                            {toolError && <p style={{color: 'var(--status-error)', fontSize: '0.875rem', marginTop: '0.5rem'}}>{toolError}</p>}
-                        </div>
-
-                        {dumpFile.report.advancedAnalyses && dumpFile.report.advancedAnalyses.length > 0 && (
-                            <div style={{marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem'}}>
-                                {dumpFile.report.advancedAnalyses.map((analysis, index) => (
-                                    <div key={index} style={{backgroundColor: 'var(--bg-primary)', borderRadius: '0.5rem', border: '1px solid var(--border-primary)'}}>
-                                        <p style={{ fontFamily: 'Jetbrains Mono, monospace', fontSize: '0.875rem', backgroundColor: 'var(--bg-secondary)', padding: '0.5rem 1rem', borderBottom: '1px solid var(--border-primary)', color: 'var(--text-primary)'}}>{`> ${analysis.tool}`}</p>
-                                        <div style={{padding: '0.5rem 1rem 1rem', overflowX: 'auto'}}>
-                                            <LazyMarkdown>{analysis.result}</LazyMarkdown>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
                     </div>
                 );
             default: // PENDING

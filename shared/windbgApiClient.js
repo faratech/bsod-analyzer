@@ -425,8 +425,11 @@ function selectDebuggerWarnings(result, parsed, sections) {
 
   const warningPattern = /(ERROR:|Unable to|unable to|could not|Cannot get|not supported|No export|failed|Invalid)/;
   for (const [name, value] of Object.entries(sections || {})) {
-    if (typeof value !== 'string') continue;
-    for (const line of value.split('\n')) {
+    const text = typeof value === 'string'
+      ? value
+      : Array.isArray(value) ? value.join('\n') : '';
+    if (!text) continue;
+    for (const line of text.split('\n')) {
       const trimmed = line.trim();
       if (trimmed && warningPattern.test(trimmed)) {
         warnings.add(`${name}: ${compactText(trimmed, 260)}`);
@@ -461,6 +464,18 @@ function getResultObject(job) {
   return coerceResultObject(job?.result);
 }
 
+function getSectionsObject(result) {
+  const sections = result?.sections && typeof result.sections === 'object' && !Array.isArray(result.sections)
+    ? { ...result.sections }
+    : {};
+  for (const [key, value] of Object.entries(result || {})) {
+    if (/^STEP_\d+_/.test(key) && sections[key] === undefined) {
+      sections[key] = value;
+    }
+  }
+  return sections;
+}
+
 function removeEmpty(value) {
   if (Array.isArray(value)) {
     const arr = value.map(removeEmpty).filter(item => item !== undefined);
@@ -492,7 +507,7 @@ function extractRelevantWinDbgSignal(job) {
   }
 
   const parsed = result.parsed && typeof result.parsed === 'object' ? result.parsed : {};
-  const sections = result.sections && typeof result.sections === 'object' ? result.sections : {};
+  const sections = getSectionsObject(result);
 
   // Resolve sections by command suffix, not hardcoded index — works for the
   // kernel, user, and dotnet command chains alike (see findSection).
@@ -558,6 +573,27 @@ function extractWinDbgAnalysisPackage(job) {
   };
 }
 
+function formattedOutputBlock(name, value) {
+  const text = typeof value === 'string'
+    ? value
+    : Array.isArray(value) ? value.join('\n') : '';
+  const trimmed = text.trim();
+  return trimmed ? `===== ${name} =====\n${trimmed}` : null;
+}
+
+function stepSortOrder(key) {
+  const match = /^STEP_(\d+)_/.exec(key);
+  return match ? Number.parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+}
+
+function collectSectionOutputBlocks(sections) {
+  if (!sections || typeof sections !== 'object') return [];
+  return Object.entries(sections)
+    .sort(([a], [b]) => stepSortOrder(a) - stepSortOrder(b) || a.localeCompare(b))
+    .map(([name, value]) => formattedOutputBlock(name, value))
+    .filter(Boolean);
+}
+
 function extractWinDbgAnalysisText(job) {
   const raw = job?.result;
 
@@ -569,24 +605,32 @@ function extractWinDbgAnalysisText(job) {
   }
 
   const result = coerceResultObject(raw);
+  const blocks = [];
 
   if (typeof result.stdout === 'string' && result.stdout.trim()) {
-    return result.stdout;
+    blocks.push(result.stdout);
   }
 
-  if (result.sections && typeof result.sections === 'object') {
-    const sections = Object.entries(result.sections)
-      .map(([name, value]) => {
-        const text = typeof value === 'string'
-          ? value
-          : Array.isArray(value) ? value.join('\n') : '';
-        return text.trim() ? `===== ${name} =====\n${text}` : null;
-      })
-      .filter(Boolean);
-    if (sections.length > 0) {
-      return sections.join('\n\n');
-    }
+  if (typeof result.stderr === 'string' && result.stderr.trim()) {
+    blocks.push(formattedOutputBlock('stderr', result.stderr));
   }
+
+  const sectionKeys = new Set(
+    result.sections && typeof result.sections === 'object' && !Array.isArray(result.sections)
+      ? Object.keys(result.sections)
+      : []
+  );
+  blocks.push(...collectSectionOutputBlocks(result.sections));
+
+  const topLevelStepBlocks = Object.entries(result)
+    .filter(([name]) => /^STEP_\d+_/.test(name) && !sectionKeys.has(name))
+    .sort(([a], [b]) => stepSortOrder(a) - stepSortOrder(b) || a.localeCompare(b))
+    .map(([name, value]) => formattedOutputBlock(name, value))
+    .filter(Boolean);
+  blocks.push(...topLevelStepBlocks);
+
+  const output = blocks.filter(Boolean).join('\n\n');
+  if (output) return output;
 
   if (Object.keys(result).length > 0) {
     return JSON.stringify(result, null, 2);
