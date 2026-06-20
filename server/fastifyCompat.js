@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import fs from 'fs';
 import path from 'path';
+import { maybeCompressPayload } from './rawCompression.js';
 
 const ASSET_EXT_RE = /\.(js|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico|json|xml|txt|webmanifest)$/i;
 
@@ -42,9 +43,19 @@ function appendSetCookie(res, cookieValue) {
   }
 }
 
-function patchResponse(res) {
+function patchResponse(res, req, options = {}) {
   if (res.__bsodCompatPatched) return res;
   Object.defineProperty(res, '__bsodCompatPatched', { value: true });
+
+  function endPayload(payload) {
+    const body = maybeCompressPayload({
+      req,
+      res,
+      payload,
+      options: options.compression
+    });
+    res.end(body);
+  }
 
   res.status = function status(code) {
     res.statusCode = code;
@@ -79,7 +90,7 @@ function patchResponse(res) {
 
   res.json = function json(payload) {
     if (!res.headersSent) res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify(payload));
+    endPayload(JSON.stringify(payload));
     return res;
   };
 
@@ -89,7 +100,7 @@ function patchResponse(res) {
       return res;
     }
     if (Buffer.isBuffer(payload) || payload instanceof Uint8Array) {
-      res.end(payload);
+      endPayload(payload);
       return res;
     }
     if (typeof payload === 'object') {
@@ -98,7 +109,7 @@ function patchResponse(res) {
     if (!res.headersSent && !res.getHeader('Content-Type')) {
       res.setHeader('Content-Type', ASSET_EXT_RE.test(String(payload)) ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8');
     }
-    res.end(String(payload));
+    endPayload(String(payload));
     return res;
   };
 
@@ -126,11 +137,11 @@ function isEnded(res) {
   return res.writableEnded || res.destroyed;
 }
 
-function createRunner({ middlewares, errorMiddlewares }) {
+function createRunner({ middlewares, errorMiddlewares, compression }) {
   return function runLegacyStack(stack, request, reply) {
     reply.hijack();
     const req = patchRequest(request.raw, request);
-    const res = patchResponse(reply.raw);
+    const res = patchResponse(reply.raw, req, { compression });
 
     const runErrorHandlers = async (err) => {
       if (isEnded(res)) return;
@@ -311,6 +322,9 @@ function normalizeUseArgs(args) {
 }
 
 export function createFastifyCompatApp(options = {}) {
+  const compression = options.compression?.enabled === false
+    ? { enabled: false }
+    : (options.compression || { enabled: false });
   const fastify = Fastify({
     bodyLimit: options.bodyLimit || 1024 * 1024,
     trustProxy: options.trustProxy || false,
@@ -325,9 +339,30 @@ export function createFastifyCompatApp(options = {}) {
     done(null, payload);
   });
 
+  if (compression.enabled !== false) {
+    fastify.addHook('onSend', async (request, reply, payload) => {
+      const res = {
+        statusCode: reply.statusCode,
+        headersSent: false,
+        getHeader: name => reply.getHeader(name),
+        setHeader: (name, value) => reply.header(name, value)
+      };
+      return maybeCompressPayload({
+        req: request.raw,
+        res,
+        payload,
+        options: compression
+      });
+    });
+  }
+
   const middlewares = [];
   const errorMiddlewares = [];
-  const runLegacyStack = createRunner({ middlewares, errorMiddlewares });
+  const runLegacyStack = createRunner({
+    middlewares,
+    errorMiddlewares,
+    compression
+  });
 
   fastify.setErrorHandler((error, request, reply) => {
     const status = error.statusCode || error.status || (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE' ? 413 : 500);

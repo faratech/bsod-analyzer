@@ -3,11 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import {
   createFastifyCompatApp,
   jsonParser,
   staticMiddleware
 } from '../server/fastifyCompat.js';
+
+function rawPayload(response) {
+  return Buffer.isBuffer(response.rawPayload)
+    ? response.rawPayload
+    : Buffer.from(response.payload, 'binary');
+}
+
+function zstdPayload(response) {
+  return zlib.zstdDecompressSync(rawPayload(response)).toString('utf8');
+}
 
 test('Fastify compat stack preserves route-level JSON parsing and errors', async () => {
   const app = createFastifyCompatApp({ bodyLimit: 1024 });
@@ -70,5 +81,68 @@ test('Fastify compat stack serves static files and rejects traversal', async () 
   } finally {
     await app.fastify.close();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Fastify compat stack negotiates zstd for legacy JSON responses', async (t) => {
+  if (typeof zlib.zstdDecompressSync !== 'function') {
+    t.skip('Node runtime does not support zstd');
+    return;
+  }
+
+  const app = createFastifyCompatApp({
+    compression: {
+      enabled: true,
+      threshold: 1
+    }
+  });
+  const payload = { message: 'zstd '.repeat(100) };
+  app.get('/api/payload', (_req, res) => res.json(payload));
+
+  try {
+    const response = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/payload',
+      headers: { 'accept-encoding': 'gzip;q=0.5, zstd;q=1' }
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['content-encoding'], 'zstd');
+    assert.match(response.headers.vary, /Accept-Encoding/);
+    assert.deepEqual(JSON.parse(zstdPayload(response)), payload);
+  } finally {
+    await app.fastify.close();
+  }
+});
+
+test('Fastify compat stack can force zstd regardless of Accept-Encoding', async (t) => {
+  if (typeof zlib.zstdDecompressSync !== 'function') {
+    t.skip('Node runtime does not support zstd');
+    return;
+  }
+
+  const app = createFastifyCompatApp({
+    compression: {
+      enabled: true,
+      threshold: 1024,
+      forceThreshold: 0,
+      forceEncoding: () => 'zstd'
+    }
+  });
+  const payload = { forced: true };
+  app.get('/api/forced', (_req, res) => res.json(payload));
+
+  try {
+    const response = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/forced',
+      headers: { 'accept-encoding': 'gzip;q=1, zstd;q=0' }
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['content-encoding'], 'zstd');
+    assert.deepEqual(JSON.parse(zstdPayload(response)), payload);
+  } finally {
+    await app.fastify.close();
   }
 });

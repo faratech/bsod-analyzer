@@ -270,6 +270,7 @@ gcloud builds triggers create github \
 |-------|-----------|
 | Frontend | React 19, TypeScript, Vite |
 | Backend | Fastify 5 (ES modules), Node.js 22+ |
+| Compression | Adapter-level zstd/br/gzip/deflate; Cloudflare-origin requests force zstd |
 | AI | Google Gemini via `@google/genai` SDK |
 | Cache | Upstash Redis (`@upstash/redis`) |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
