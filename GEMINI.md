@@ -1,6 +1,6 @@
 **Project Overview**
 
-The BSOD AI Analyzer is an enterprise-grade application designed to diagnose Windows crash dump errors using Google's Gemini AI. It features a secure client-server architecture, with a React frontend for user interaction and an Express.js backend that proxies sensitive Gemini API calls. The application supports various crash dump formats, provides detailed analysis reports, and integrates advanced debugging capabilities. A key aspect of its design is robust security, including server-side API key protection and in-memory processing of crash dumps to ensure no sensitive data is stored.
+The BSOD AI Analyzer is an enterprise-grade application designed to diagnose Windows crash dump errors using Google's Gemini AI. It features a secure client-server architecture, with a React frontend for user interaction and a Fastify backend that proxies sensitive Gemini API calls. The application supports various crash dump formats, provides detailed analysis reports, and integrates advanced debugging capabilities. A key aspect of its design is robust security, including server-side API key protection and in-memory processing of crash dumps to ensure no sensitive data is stored.
 
 **Building and Running**
 
@@ -8,6 +8,7 @@ This project uses Node.js and npm for dependency management and script execution
 
 **Prerequisites:**
 *   Node.js 22+
+*   npm 11
 *   Google Cloud account (for deployment)
 *   Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 
@@ -55,7 +56,7 @@ The application can be deployed to Google Cloud Run. The `README.md` provides de
 
 *   **Technology Stack:**
     *   **Frontend:** React 19, TypeScript, Vite
-    *   **Backend:** Express.js with ES modules
+    *   **Backend:** Fastify with ES modules
     *   **AI Service:** Google Gemini via `@google/genai` SDK with server-owned JSON response schemas
     *   **Styling:** Custom CSS
     *   **Deployment:** Docker, Google Cloud Run, Secret Manager

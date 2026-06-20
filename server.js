@@ -1,12 +1,10 @@
-import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GoogleGenAI } from '@google/genai';
-import compression from 'compression';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import cors from 'cors';
-import cookieParser from 'cookie-parser';
+import fastifyCookie from '@fastify/cookie';
+import fastifyCors from '@fastify/cors';
+import fastifyMultipart from '@fastify/multipart';
 import crypto from 'crypto';
 import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
@@ -15,7 +13,6 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
-import multer from 'multer';
 import JSZip from 'jszip';
 import net from 'net';
 import {
@@ -36,6 +33,11 @@ import {
   submitWinDbgJob,
   toLegacyWinDbgStatusResponse
 } from './shared/windbgApiClient.js';
+import {
+  createFastifyCompatApp,
+  jsonParser,
+  staticMiddleware
+} from './server/fastifyCompat.js';
 
 const execFileAsync = promisify(execFile);
 import {
@@ -80,7 +82,6 @@ const log = {
   error: (event, fields = {}) => emitJsonLog('ERROR',   event, fields),
 };
 
-const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Trust proxy headers (required for Cloud Run). With Cloudflare in front of
@@ -88,7 +89,12 @@ const PORT = process.env.PORT || 8080;
 // platform appends its view of the connecting peer. TRUST_PROXY_HOPS defaults
 // to 2 to walk past both hops.
 const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '2', 10);
-app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2);
+const TRUST_PROXY_VALUE = Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2;
+const app = createFastifyCompatApp({
+  trustProxy: TRUST_PROXY_VALUE,
+  bodyLimit: SECURITY_CONFIG.api.maxUploadRequestSize
+});
+app.set('trust proxy', TRUST_PROXY_VALUE);
 
 const MAX_RAW_FILE_SIZE = SECURITY_CONFIG.api.maxRawFileSize;
 const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
@@ -199,7 +205,7 @@ function isFromCloudflare(req) {
 
 // CF-Connecting-IP is set by Cloudflare and contains the original client IP.
 // Trust it only when the immediate peer is a Cloudflare edge; otherwise fall
-// back to Express' trusted-proxy IP calculation.
+// back to Fastify's trusted-proxy IP calculation.
 function getClientIp(req) {
   const cfIp = req.headers['cf-connecting-ip'];
   if (typeof cfIp === 'string' && cfIp.length > 0 && isFromCloudflare(req)) return cfIp;
@@ -226,7 +232,11 @@ if (CLOUDFLARE_ONLY_INGRESS) {
 }
 
 function rateLimitKey(req) {
-  return ipKeyGenerator(getClientIp(req));
+  const ip = String(getClientIp(req) || 'unknown').split(',')[0].trim();
+  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  if (net.isIPv4(normalized)) return normalized;
+  if (net.isIPv6(normalized)) return normalized.toLowerCase();
+  return normalized || 'unknown';
 }
 
 function jsonRateLimitHandler(req, res) {
@@ -260,21 +270,76 @@ function createRuntimeRateLimitStore(name, windowMs) {
   };
 }
 
-function withRuntimeRateLimitStore(options, name, windowMs) {
-  const store = createRuntimeRateLimitStore(name, windowMs);
-  return store ? { ...options, store } : options;
+function createMemoryRateLimitStore(windowMs) {
+  const hits = new Map();
+  return {
+    async increment(key) {
+      const now = Date.now();
+      let entry = hits.get(key);
+      if (!entry || entry.resetTime.getTime() <= now) {
+        entry = { totalHits: 0, resetTime: new Date(now + windowMs) };
+      }
+      entry.totalHits += 1;
+      hits.set(key, entry);
+      return entry;
+    }
+  };
+}
+
+function secondsUntil(resetTime) {
+  const resetMs = resetTime instanceof Date
+    ? resetTime.getTime()
+    : new Date(resetTime).getTime();
+  if (!Number.isFinite(resetMs)) return 1;
+  return Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
+}
+
+function setRateLimitHeaders(res, { max, remaining, resetSeconds, windowMs }) {
+  res.setHeader('RateLimit-Policy', `${max};w=${Math.ceil(windowMs / 1000)}`);
+  res.setHeader('RateLimit-Limit', String(max));
+  res.setHeader('RateLimit-Remaining', String(Math.max(0, remaining)));
+  res.setHeader('RateLimit-Reset', String(resetSeconds));
+}
+
+function createRateLimiter({
+  windowMs,
+  max,
+  keyGenerator = rateLimitKey,
+  handler = jsonRateLimitHandler,
+  skip = () => false,
+  name = 'generic'
+}) {
+  const store = createRuntimeRateLimitStore(name, windowMs) || createMemoryRateLimitStore(windowMs);
+  return async (req, res, next) => {
+    try {
+      if (skip(req)) return next();
+      const key = await keyGenerator(req);
+      const result = await store.increment(key);
+      const totalHits = result.totalHits ?? result.count ?? 0;
+      const resetTime = result.resetTime ?? new Date(Date.now() + windowMs);
+      const resetSeconds = secondsUntil(resetTime);
+      setRateLimitHeaders(res, {
+        max,
+        remaining: max - totalHits,
+        resetSeconds,
+        windowMs
+      });
+      if (totalHits > max) return handler(req, res);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 function makeLimiter({ windowMs, max, keyGenerator = rateLimitKey, name = 'generic' }) {
-  return rateLimit(withRuntimeRateLimitStore({
+  return createRateLimiter({
     windowMs,
     max,
     keyGenerator,
     handler: jsonRateLimitHandler,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skipSuccessfulRequests: false
-  }, name, windowMs));
+    name
+  });
 }
 
 function createConcurrencyLimiter(max, code) {
@@ -541,14 +606,86 @@ if (!BSOD_API_KEY) {
   console.warn('WARNING: BSOD_API_KEY not configured - external API access disabled');
 }
 
-// Multer configuration for file uploads (memory storage for API endpoint)
-const upload = multer({
-  storage: multer.memoryStorage(),
+function normalizeMultipartField(field) {
+  if (Array.isArray(field)) return field.map(normalizeMultipartField);
+  if (field && typeof field === 'object' && 'value' in field) return field.value;
+  return field;
+}
+
+function createUploadHandler({ limits, fileFilter }) {
+  return {
+    single(fieldName) {
+      return async (req, _res, next) => {
+        try {
+          if (typeof req.fastifyRequest?.file !== 'function') {
+            req.file = undefined;
+            return next();
+          }
+
+          const part = await req.fastifyRequest.file({
+            throwFileSizeLimit: true,
+            limits: {
+              fileSize: limits.fileSize,
+              files: limits.files || 1,
+              fields: 20,
+              parts: 25
+            }
+          });
+
+          if (!part) {
+            req.file = undefined;
+            return next();
+          }
+          if (part.fieldname !== fieldName) {
+            const err = new Error(`Unexpected file field "${part.fieldname}"`);
+            err.code = 'LIMIT_UNEXPECTED_FILE';
+            err.status = 400;
+            throw err;
+          }
+
+          const buffer = await part.toBuffer();
+          const file = {
+            fieldname: part.fieldname,
+            originalname: part.filename,
+            encoding: part.encoding,
+            mimetype: part.mimetype,
+            buffer,
+            size: buffer.length
+          };
+
+          await new Promise((resolve, reject) => {
+            fileFilter(req, file, (err, accepted) => {
+              if (err) return reject(err);
+              if (accepted === false) return reject(new Error('File upload rejected'));
+              resolve();
+            });
+          });
+
+          const fields = {};
+          for (const [key, value] of Object.entries(part.fields || {})) {
+            if (key !== fieldName) fields[key] = normalizeMultipartField(value);
+          }
+          req.body = {
+            ...(req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) ? req.body : {}),
+            ...fields
+          };
+          req.file = file;
+          next();
+        } catch (error) {
+          next(error);
+        }
+      };
+    }
+  };
+}
+
+// Fastify multipart upload compatibility for existing handlers.
+const upload = createUploadHandler({
   limits: {
     fileSize: MAX_RAW_FILE_SIZE,
-    files: 1 // Single file only
+    files: 1
   },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     // Accept dump files and archives
     const ext = getFileExtension(file.originalname);
     if (ALLOWED_EXTENSIONS.includes(ext)) {
@@ -602,7 +739,7 @@ let _modelCfgCache = { value: 'gemini-3.1-flash-lite', readAt: 0 };
 function getPrimaryModel() {
   const now = Date.now();
   if (now - _modelCfgCache.readAt >= MODEL_CFG_TTL_MS) {
-    // Trigger background read so we do not block the Express event loop
+    // Trigger background read so we do not block the Node event loop
     _modelCfgCache.readAt = now;
     fs.promises.readFile(MODEL_CFG_PATH, 'utf8')
       .then(modelConfig => {
@@ -706,30 +843,29 @@ const corsOptions = {
   optionsSuccessStatus: 204
 };
 
-// Middleware
-// Apply CORS globally (Cloud Run best practice)
-app.use(cors(corsOptions));
-
-// Cookie parser middleware
-app.use(cookieParser());
+// Fastify plugins
+app.fastify.register(fastifyCors, corsOptions);
+app.fastify.register(fastifyCookie);
+app.fastify.register(fastifyMultipart, {
+  limits: {
+    fileSize: MAX_RAW_FILE_SIZE,
+    files: 1,
+    fields: 20,
+    parts: 25
+  }
+});
 
 // Rate limiting middleware
-const apiLimiter = rateLimit({
+const apiLimiter = createRateLimiter({
   windowMs: SECURITY_CONFIG.api.rateLimiting.windowMs,
   max: SECURITY_CONFIG.api.rateLimiting.maxRequests,
   keyGenerator: rateLimitKey,
   handler: jsonRateLimitHandler,
-  message: SECURITY_CONFIG.api.rateLimiting.message,
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Skip successful requests to prevent false positives
-  skipSuccessfulRequests: false,
-  // Explicitly handle the trust proxy configuration
+  name: 'api',
   skip: (req) => {
     // Skip rate limiting for health check endpoint
     return req.path === '/health';
-  },
-  ...withRuntimeRateLimitStore({}, 'api', SECURITY_CONFIG.api.rateLimiting.windowMs)
+  }
 });
 
 const authLimiter = makeLimiter({ windowMs: 10 * 60 * 1000, max: 20, name: 'auth' });
@@ -753,24 +889,12 @@ const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY'
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 
-app.use(compression({
-  level: 6, // Compression level 1-9 (6 is good balance)
-  threshold: 1024, // Only compress responses above 1KB
-  filter: (req, res) => {
-    // Don't compress if client doesn't support it
-    if (req.headers['x-no-compression']) {
-      return false;
-    }
-    // Use compression filter
-    return compression.filter(req, res);
-  }
-}));
 // Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
-const largeJsonParser = express.json({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
+const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
 
 // Default JSON parser applied per-route, after rate limit and requireSession,
 // so unauthenticated requests are rejected before allocating a parse buffer.
-const defaultJsonParser = express.json({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
+const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
 // Precompute CSP header string once at startup (avoids rebuilding on every request)
 const CSP_HEADER = [
@@ -871,7 +995,7 @@ const TEXT_EXTS = new Set(['.js', '.mjs', '.css', '.html', '.json']);
 const NOSNIFF_EXTS = new Set(['.js', '.mjs', '.css', '.html']);
 const FONT_EXTS = new Set(['.woff2', '.woff', '.ttf', '.otf', '.eot']);
 
-app.use(express.static(path.join(__dirname, 'dist'), {
+app.use(staticMiddleware(path.join(__dirname, 'dist'), {
   maxAge: '1y',
   etag: true,
   lastModified: true,
@@ -3114,12 +3238,20 @@ app.use((error, req, res, next) => {
   let code = 'INTERNAL_ERROR';
   let message = 'An internal server error occurred';
 
-  if (error instanceof multer.MulterError) {
-    status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+  if (error.code === 'FST_REQ_FILE_TOO_LARGE' || error.code === 'LIMIT_FILE_SIZE') {
+    status = 413;
     code = error.code;
     message = error.code === 'LIMIT_FILE_SIZE'
       ? `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB`
-      : error.message;
+      : `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB`;
+  } else if (['FST_FILES_LIMIT', 'FST_FIELDS_LIMIT', 'FST_PARTS_LIMIT'].includes(error.code)) {
+    status = 413;
+    code = error.code;
+    message = 'Multipart upload contains too many parts';
+  } else if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+    status = 400;
+    code = error.code;
+    message = error.message;
   } else if (error.type === 'entity.too.large') {
     status = 413;
     code = 'REQUEST_TOO_LARGE';
@@ -3176,7 +3308,7 @@ app.use((req, res) => {
   const pathname = req.path;
 
   // CRITICAL: Don't handle asset files with the catch-all route
-  // Static files should be served by express.static middleware
+  // Static files should be served by the static middleware
   if (pathname.startsWith('/assets/') ||
       pathname.match(/\.(js|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico|json|xml|txt|webmanifest)$/)) {
     // Return 404 for asset files that weren't found by static middleware
