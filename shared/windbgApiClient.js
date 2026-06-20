@@ -23,7 +23,7 @@ async function readJsonResponse(response, context) {
     } catch {
       if (response.ok) {
         // A 2xx with a non-JSON / HTML body (e.g. a proxy error page). Surface a
-        // coded soft-error so the Express proxy can map it to a clean 502 instead
+        // coded soft-error so the API proxy can map it to a clean 502 instead
         // of leaking a raw parse failure as a 500.
         const err = new Error(`${context} returned invalid JSON: ${text.slice(0, 200)}`);
         err.code = 'WINDBG_UPSTREAM_INVALID_JSON';

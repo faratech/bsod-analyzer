@@ -1,7 +1,10 @@
 # Build stage
 FROM node:26-alpine AS builder
 
+ARG NPM_VERSION=11.17.0
 WORKDIR /app
+
+RUN npm install -g npm@${NPM_VERSION}
 
 # Copy package files
 COPY package*.json ./
@@ -21,10 +24,12 @@ RUN npm run build
 # Production stage
 FROM node:26-alpine
 
+ARG NPM_VERSION=11.17.0
 WORKDIR /app
 
 # Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init 7zip libarchive-tools
+RUN apk add --no-cache dumb-init 7zip libarchive-tools && \
+    npm install -g npm@${NPM_VERSION}
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
@@ -44,6 +49,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --chown=nodejs:nodejs server.js ./
 COPY --chown=nodejs:nodejs serverConfig.js ./
 COPY --chown=nodejs:nodejs model.cfg ./
+COPY --chown=nodejs:nodejs server ./server
 COPY --chown=nodejs:nodejs services ./services
 COPY --chown=nodejs:nodejs shared ./shared
 

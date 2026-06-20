@@ -3,7 +3,7 @@
 End-to-end timeout budget for the dump-analysis path:
 
 ```
-Browser ──poll──▶ Express (/api/windbg/*) ──▶ C# WinDbg-API ──▶ cdb.exe
+Browser ──poll──▶ Fastify (/api/windbg/*) ──▶ C# WinDbg-API ──▶ cdb.exe
 ```
 
 This doc is the single source of truth for the timeout values in **both** repos
@@ -17,9 +17,9 @@ up before the layer it depends on has reached a terminal decision.
 | Browser | `POLL_INTERVAL_MS` | `services/windbgService.ts` | 10s |
 | Browser | `MAX_POLL_ATTEMPTS` | `services/windbgService.ts` | 30 → **300s** poll budget |
 | Browser | `WINDBG_TOTAL_TIMEOUT_MS` | `services/windbgService.ts` | **300s** hard cap |
-| Express | `WINDBG_UPLOAD_TIMEOUT_MS` | `server.js` | 120s (per upload→C#) |
-| Express | `WINDBG_POLL_TIMEOUT_MS` | `server.js` | 20s (per status→C#) |
-| Express | `WINDBG_DOWNLOAD_TIMEOUT_MS` | `server.js` | 60s (per download→C#) |
+| Fastify | `WINDBG_UPLOAD_TIMEOUT_MS` | `server.js` | 120s (per upload→C#) |
+| Fastify | `WINDBG_POLL_TIMEOUT_MS` | `server.js` | 20s (per status→C#) |
+| Fastify | `WINDBG_DOWNLOAD_TIMEOUT_MS` | `server.js` | 60s (per download→C#) |
 | C# | `MAX_JOB_DURATION` | `WinDbgApiConfig` | 360s (cdb run cap) |
 | C# | `WatchdogGraceSeconds` | `WinDbgApiConfig.Queue` | 60s |
 | C# | watchdog kill | `MAX_JOB_DURATION + grace` | **420s** |

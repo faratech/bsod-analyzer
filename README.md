@@ -20,6 +20,7 @@ Enterprise-grade Windows crash dump analyzer powered by Google's Gemini AI and r
 ### Prerequisites
 
 - Node.js 22+
+- npm 11
 - Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 
 ### Local Development
@@ -41,7 +42,7 @@ npm run dev
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start backend + frontend concurrently |
-| `npm run dev:backend` | Start Express server only |
+| `npm run dev:backend` | Start Fastify-backed API server only |
 | `npm run dev:frontend` | Start Vite dev server only |
 | `npm run build` | Build production frontend + generate SRI hashes |
 | `npm run build:no-sri` | Build without SRI generation |
@@ -58,7 +59,7 @@ npm run dev
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Browser   │────▶│   Express   │────▶│  Gemini API  │     │ Upstash Redis│
+│   Browser   │────▶│   Fastify   │────▶│  Gemini API  │     │ Upstash Redis│
 │   (React)   │◀────│   Server    │◀────│   (Google)   │     │   (Cache)    │
 └─────────────┘     └──────┬──────┘     └──────────────┘     └──────────────┘
      Frontend              │                 AI Service           Cache Layer
@@ -75,7 +76,7 @@ npm run dev
 
 | File | Purpose |
 |------|---------|
-| `server.js` | Express backend — security middleware, session management, rate limiting, Gemini API proxy, WinDBG proxy, external API, caching |
+| `server.js` | Fastify-backed API server — security middleware, session management, rate limiting, Gemini API proxy, WinDBG proxy, external API, caching |
 | `services/cache.js` | Upstash Redis cache layer for WinDBG analysis and AI reports |
 | `services/geminiProxy.ts` | Client-side service routing API calls through backend with session cookies |
 | `services/windbgService.ts` | Client-side WinDBG integration (upload, poll, download via backend proxy) |
@@ -194,7 +195,7 @@ debugging.
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
 | `REQUIRE_REDIS_RUNTIME` | Require Redis for sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests | Defaults `true` in production |
-| `TRUST_PROXY_HOPS` | Express trust-proxy hop count | Defaults `2` |
+| `TRUST_PROXY_HOPS` | Fastify trust-proxy hop count | Defaults `2` |
 
 For local development, set in `.env.local` or export directly.
 When running `NODE_ENV=production` locally without Redis or Cloudflare ingress,
@@ -205,7 +206,7 @@ set `REQUIRE_REDIS_RUNTIME=false` and `CLOUDFLARE_ONLY_INGRESS=false`.
 Pushes to `main` automatically deploy to Cloud Run. Secrets are managed via Google Secret Manager.
 The supported manual deployment path is `deploy-with-secret.sh`; `deploy.sh`
 delegates to it. Static-only upload packages are not supported because the app
-requires the Node/Express backend for uploads, archive extraction, WinDBG
+requires the Node/Fastify backend for uploads, archive extraction, WinDBG
 proxying, AI proxying, sessions, and rate limits.
 
 ### Quick Deploy
@@ -241,7 +242,7 @@ gcloud run deploy bsod-analyzer \
 
 ### CI/CD
 
-GitHub Actions runs `npm run check` on pushes to `main` and pull requests.
+GitHub Actions installs npm 11 and runs `npm run check` on pushes to `main` and pull requests.
 Cloud Build can be used for deployment:
 
 ```bash
@@ -268,11 +269,11 @@ gcloud builds triggers create github \
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 19, TypeScript, Vite |
-| Backend | Express.js (ES modules), Node.js 22+ |
+| Backend | Fastify 5 (ES modules), Node.js 22+ |
 | AI | Google Gemini via `@google/genai` SDK |
 | Cache | Upstash Redis (`@upstash/redis`) |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
-| File Processing | FileReader API, JSZip, Multer |
+| File Processing | FileReader API, JSZip, `@fastify/multipart` |
 | Markdown | react-markdown with remark-gfm |
 | Deployment | Docker, Google Cloud Run, Secret Manager |
 | Security | Cloudflare Turnstile, CSP, SRI |

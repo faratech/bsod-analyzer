@@ -57,7 +57,7 @@ Security:
 
 Tech Stack:
 - Frontend: React 19, TypeScript, Vite
-- Backend: Node.js 22+, Express 5
+- Backend: Node.js 22+, Fastify 5
 - AI: Google Gemini API
 - Deployment: Google Cloud Run
 

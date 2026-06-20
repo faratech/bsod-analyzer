@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Development
 npm run dev              # Start backend (8080) + frontend concurrently
-npm run dev:backend      # Start Express server only
+npm run dev:backend      # Start Fastify server only
 npm run dev:frontend     # Start Vite dev server only
 
 # Build
@@ -31,7 +31,7 @@ npm run optimize-css     # Apply CSS purging
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌──────────────┐
-│   Browser   │────▶│   Express   │────▶│  Gemini API  │
+│   Browser   │────▶│   Fastify   │────▶│  Gemini API  │
 │   (React)   │◀────│   Server    │◀────│   (Google)   │
 └─────────────┘     └─────────────┘     └──────────────┘
      Frontend           Backend             AI Service
@@ -45,7 +45,7 @@ npm run optimize-css     # Apply CSS purging
 
 ### Key Files
 
-- **`server.js`** - Express backend with security middleware, session management, rate limiting, Gemini API proxy, and WinDBG proxy
+- **`server.js`** - Fastify backend with security middleware, session management, rate limiting, Gemini API proxy, and WinDBG proxy
 - **`services/geminiProxy.ts`** - Client-side service that routes API calls through backend with session cookies
 - **`services/windbgService.ts`** - Client-side WinDBG integration (upload, poll, download via backend proxy)
 - **`utils/sessionManager.ts`** - Client-side session initialization and error handling
@@ -89,7 +89,7 @@ npm run optimize-css     # Apply CSS purging
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
 | `REQUIRE_REDIS_RUNTIME` | Require Redis-backed sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
-| `TRUST_PROXY_HOPS` | Express `trust proxy` hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
+| `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 
 For local development, set in `.env.local` or export directly. To run with
 `NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` and
@@ -102,7 +102,7 @@ runtime store is required.
 Pushes to `main` automatically deploy to Cloud Run. Secrets managed via Google Secret Manager.
 Use `deploy-with-secret.sh`; `deploy.sh` is only a compatibility wrapper. Static-only
 deployment is unsupported because uploads, archive extraction, WinDBG proxying,
-AI proxying, sessions, and rate limits require the Node/Express backend.
+AI proxying, sessions, and rate limits require the Node/Fastify backend.
 
 ```bash
 # Manual deploy
