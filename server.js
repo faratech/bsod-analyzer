@@ -64,6 +64,18 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function readPackageManager() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8'));
+    return typeof pkg.packageManager === 'string' ? pkg.packageManager : null;
+  } catch {
+    return null;
+  }
+}
+
+const PACKAGE_MANAGER = readPackageManager();
+const NPM_VERSION = PACKAGE_MANAGER?.startsWith('npm@') ? PACKAGE_MANAGER.slice(4) : null;
+
 // ---------------------------------------------------------------------------
 // Structured logging
 // Cloud Run auto-parses any JSON line on stdout into Cloud Logging's jsonPayload
@@ -86,6 +98,8 @@ const log = {
 };
 
 const PORT = process.env.PORT || 8080;
+const ENABLE_H2C = String(process.env.ENABLE_H2C || 'false').toLowerCase() === 'true';
+const HTTP2_SESSION_TIMEOUT_MS = readPositiveInt(process.env.HTTP2_SESSION_TIMEOUT_MS, 72_000);
 
 // Trust proxy headers (required for Cloud Run). With Cloudflare in front of
 // Cloud Run, the X-Forwarded-For chain is [user-ip, cloudflare-edge-ip] as the
@@ -94,6 +108,8 @@ const PORT = process.env.PORT || 8080;
 const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '2', 10);
 const TRUST_PROXY_VALUE = Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2;
 const app = createFastifyCompatApp({
+  http2: ENABLE_H2C,
+  http2SessionTimeout: HTTP2_SESSION_TIMEOUT_MS,
   trustProxy: TRUST_PROXY_VALUE,
   bodyLimit: SECURITY_CONFIG.api.maxUploadRequestSize,
   compression: {
@@ -1155,9 +1171,17 @@ const requireApiKey = (req, res, next) => {
 
 // Health check endpoint for Cloud Run (not rate limited)
 app.get('/health', async (req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, max-age=0'
+  });
   res.status(200).json({
     status: 'ok',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    h2cEnabled: ENABLE_H2C,
+    httpVersion: req.httpVersion || null,
+    nodeVersion: process.version,
+    npmVersion: NPM_VERSION,
+    packageManager: PACKAGE_MANAGER
   });
 });
 
@@ -3229,6 +3253,7 @@ async function startServer() {
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`h2c enabled: ${ENABLE_H2C ? 'Yes' : 'No'}`);
     console.log(`Gemini API Key configured: ${process.env.GEMINI_API_KEY ? 'Yes' : 'No'}`);
     console.log(`Turnstile Secret Key configured: ${TURNSTILE_SECRET_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Key configured: ${WINDBG_API_KEY ? 'Yes' : 'No'}`);

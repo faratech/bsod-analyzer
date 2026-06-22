@@ -1,7 +1,7 @@
 steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/bsod-analyzer:latest', '.']
+    args: ['build', '--pull', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/bsod-analyzer:latest', '.']
   
   # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
@@ -26,6 +26,7 @@ steps:
       - 'bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com'
       - '--port'
       - '8080'
+      - '--use-http2'
       - '--max-instances'
       - '10'
       - '--concurrency'
@@ -37,7 +38,7 @@ steps:
       - '--cpu-throttling'
       - '--cpu-boost'
       - '--set-env-vars'
-      - 'NODE_ENV=production,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net'
+      - 'NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net'
       - '--update-secrets'
       - 'GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest'
 

@@ -18,6 +18,13 @@ function getPathname(request) {
   }
 }
 
+function getRemoteAddress(rawReq, request) {
+  return request.ip ||
+    rawReq.socket?.remoteAddress ||
+    rawReq.stream?.session?.socket?.remoteAddress ||
+    'unknown';
+}
+
 function serializeCookie(name, value, options = {}) {
   const parts = [`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`];
   if (Number.isFinite(options.maxAge)) parts.push(`Max-Age=${Math.floor(options.maxAge / 1000)}`);
@@ -125,7 +132,7 @@ function patchRequest(rawReq, request) {
   rawReq.body = bodyIsStream ? rawReq.body : (parsedBody ?? rawReq.body ?? {});
   rawReq.cookies = request.cookies || rawReq.cookies || {};
   rawReq.path = getPathname(rawReq);
-  rawReq.ip = request.ip || rawReq.ip || rawReq.socket?.remoteAddress || 'unknown';
+  rawReq.ip = getRemoteAddress(rawReq, request);
   rawReq.originalUrl = rawReq.url;
   rawReq.get = rawReq.header = function getHeader(name) {
     return rawReq.headers[String(name).toLowerCase()];
@@ -326,6 +333,8 @@ export function createFastifyCompatApp(options = {}) {
     ? { enabled: false }
     : (options.compression || { enabled: false });
   const fastify = Fastify({
+    http2: options.http2 === true,
+    http2SessionTimeout: options.http2SessionTimeout,
     bodyLimit: options.bodyLimit || 1024 * 1024,
     trustProxy: options.trustProxy || false,
     logger: false,
