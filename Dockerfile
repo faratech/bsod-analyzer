@@ -1,5 +1,6 @@
 # Build stage
-FROM node:26-alpine AS builder
+ARG NODE_IMAGE=node:26.3.1-alpine3.24
+FROM ${NODE_IMAGE} AS builder
 
 ARG NPM_VERSION=11.17.0
 WORKDIR /app
@@ -22,13 +23,13 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:26-alpine
+FROM ${NODE_IMAGE}
 
 ARG NPM_VERSION=11.17.0
 WORKDIR /app
 
 # Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init 7zip libarchive-tools && \
+RUN apk add --no-cache --upgrade dumb-init 7zip libarchive-tools && \
     npm install -g npm@${NPM_VERSION}
 
 # Create non-root user

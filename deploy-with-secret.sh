@@ -25,12 +25,13 @@ gcloud run deploy ${SERVICE_NAME} \
   --no-default-url \
   --service-account ${RUNTIME_SERVICE_ACCOUNT} \
   --port 8080 \
+  --use-http2 \
   --concurrency 2 \
   --max-instances 10 \
   --min-instances 0 \
   --memory 1Gi \
   --cpu 1 \
-  --set-env-vars NODE_ENV=production,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net \
+  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net \
   --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
   --project ${PROJECT_ID}
 
