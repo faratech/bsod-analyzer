@@ -1,8 +1,8 @@
 {
   "hashes": [
-    "'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I='",
-    "'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI='"
+    "'sha256-YLv1E1nsZ992Y3GRvhdIof63llIG/FdZumBLNszmyvM='",
+    "'sha256-so+anjbeREWVuGx6nFMn2juqX0lyTPwaLfbL0kzTtMk='"
   ],
-  "generated": "2025-11-12T02:24:47.458Z",
-  "cspDirective": "script-src 'self' 'sha256-YzeHzonmnkKURPTW4QiE5K7nvWCPqUBzZxkaDuUBO8I=' 'sha256-J7dJZeauTkVJROtO1izotOn8M7J24qNosz9+sFj+SSI='"
+  "generated": "2026-06-23T19:02:35.315Z",
+  "cspDirective": "script-src 'self' 'sha256-YLv1E1nsZ992Y3GRvhdIof63llIG/FdZumBLNszmyvM=' 'sha256-so+anjbeREWVuGx6nFMn2juqX0lyTPwaLfbL0kzTtMk='"
 }
