@@ -27,10 +27,7 @@ export default defineConfig(({ mode }) => {
         '__BUILD_VERSION__': JSON.stringify(buildVersion),
         // Baked at build time so the Footer year is identical in the prerendered
         // HTML and the client bundle (avoids a hydration mismatch).
-        '__BUILD_YEAR__': now.getUTCFullYear(),
-        // WindowsForum SSO + premium upgrade master switch (default OFF so the
-        // feature ships dormant and invisible until WF_SSO_ENABLED=true at build).
-        '__WF_SSO_ENABLED__': process.env.WF_SSO_ENABLED === 'true'
+        '__BUILD_YEAR__': now.getUTCFullYear()
       },
       resolve: {
         alias: {

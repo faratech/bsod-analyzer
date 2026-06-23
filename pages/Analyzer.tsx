@@ -17,10 +17,10 @@ import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
 import { initializeSession, onSessionInvalid, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 import { useAuth } from '../hooks/useAuth';
-import { SSO_ENABLED } from '../services/featureFlags';
+import { SSO_ENABLED, SSO_PREVIEW } from '../services/featureFlags';
 
 const Analyzer: React.FC = () => {
-    const { status: authStatus, isPremium, openPaygate } = useAuth();
+    const { status: authStatus, isPremium, loggedIn, openPaygate } = useAuth();
     const { trackFileUpload, trackAnalysisStart, trackAnalysisComplete } = useAnalytics();
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
@@ -169,7 +169,7 @@ const Analyzer: React.FC = () => {
                         <p>Upload your Windows crash dump files for instant AI-powered analysis</p>
                     </div>
 
-                    {SSO_ENABLED && authStatus === 'ready' && !isPremium && (
+                    {SSO_ENABLED && authStatus === 'ready' && !isPremium && (!SSO_PREVIEW || loggedIn) && (
                         <div
                             className="premium-upsell"
                             style={{
