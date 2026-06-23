@@ -11,23 +11,27 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {
-  const [theme, setTheme] = useState<Theme>(() => {
-    // Check localStorage first - but only if explicitly set by user toggle
-    const stored = localStorage.getItem('theme');
-    const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
+  // Deterministic initial value so the server-prerendered markup and the first
+  // client render match (no hydration mismatch) and so this works during SSG
+  // where localStorage/window do not exist. The real preference is resolved in
+  // an effect below; an inline <head> script in index.html sets the <html>
+  // class pre-paint to avoid a flash for light-mode users.
+  const [theme, setTheme] = useState<Theme>('dark');
 
-    if (hasUserPreference && (stored === 'light' || stored === 'dark')) {
-      return stored;
+  // Resolve the persisted/system preference after mount (client only).
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('theme');
+      const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
+      if (hasUserPreference && (stored === 'light' || stored === 'dark')) {
+        setTheme(stored);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        setTheme('light');
+      }
+    } catch {
+      /* localStorage unavailable (private mode / SSR) — keep default */
     }
-
-    // Check system preference
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-      return 'light';
-    }
-
-    // Default to dark
-    return 'dark';
-  });
+  }, []);
 
   useEffect(() => {
     // Update HTML class
@@ -36,9 +40,12 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     root.classList.add(theme);
 
     // Only save if different from system preference or manually set
-    const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
-    if (hasUserPreference) {
-      localStorage.setItem('theme', theme);
+    try {
+      if (localStorage.getItem('theme-manually-set') === 'true') {
+        localStorage.setItem('theme', theme);
+      }
+    } catch {
+      /* localStorage unavailable (private mode) — skip persistence */
     }
 
     // Update meta theme-color

@@ -24,7 +24,10 @@ export default defineConfig(({ mode }) => {
     return {
       define: {
         '__BUILD_TIMESTAMP__': buildTimestamp,
-        '__BUILD_VERSION__': JSON.stringify(buildVersion)
+        '__BUILD_VERSION__': JSON.stringify(buildVersion),
+        // Baked at build time so the Footer year is identical in the prerendered
+        // HTML and the client bundle (avoids a hydration mismatch).
+        '__BUILD_YEAR__': now.getUTCFullYear()
       },
       resolve: {
         alias: {
