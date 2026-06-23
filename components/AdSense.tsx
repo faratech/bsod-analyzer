@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { ADSENSE_CONFIG, getAdSlot } from '../config/adsense';
+import { useOptionalAuth } from '../hooks/useAuth';
 
 declare global {
   interface Window {
@@ -27,14 +28,21 @@ const Ad: React.FC<AdProps> = ({
   responsive = 'true',
 }) => {
   const adSlot = slot ?? (slotType ? getAdSlot(slotType) : '');
+  // Premium Supporters get an ad-free experience. The default (anon/loading)
+  // tier renders ads, matching the prerendered HTML; the ad is removed only
+  // after SSO resolves premium on the client (a post-hydration update).
+  const isPremium = useOptionalAuth()?.isPremium ?? false;
 
   useEffect(() => {
+    if (isPremium) return;
     try {
       (window.adsbygoogle = window.adsbygoogle || []).push({});
     } catch (_) {
       /* silently ignore */
     }
-  }, []);
+  }, [isPremium]);
+
+  if (isPremium) return null;
 
   return (
     <div className={`ad-container ${className}`}>

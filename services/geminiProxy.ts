@@ -14,6 +14,8 @@ import { analyzeWithWinDBG, getCachedAnalysisByHash, WinDBGAnalysisResult } from
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
 import { extractFullAnalyzeOutput } from '../shared/windbgApiClient.js';
 import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
+import { isPremiumTier } from './tierState';
+import { SSO_ENABLED } from './featureFlags';
 import { extractWinDbgWindowsVersion } from '../shared/windowsVersion.js';
 // Define types to match original imports
 enum Type {
@@ -1590,6 +1592,15 @@ export const analyzeDumpFiles = async (
             let useLightweightAiFailover = false;
             let windbgFailure: unknown = null;
             try {
+                // Deep WinDBG kernel-dump analysis is a WindowsForum Premium Supporters
+                // feature. Non-premium tiers skip the upload (the backend would 403
+                // anyway) and fall through to the local parser + Gemini path below,
+                // which remains fully functional — just less detailed. Only enforced
+                // when the SSO/premium feature is enabled; otherwise WinDBG is tried as
+                // before for everyone.
+                if (SSO_ENABLED && !isPremiumTier()) {
+                    throw Object.assign(new Error('Deep WinDBG analysis requires WindowsForum Premium'), { code: 'PREMIUM_REQUIRED' });
+                }
                 console.log('[Analyzer] Attempting WinDBG server analysis...');
                 windbgResult = await analyzeWithWinDBG(dumpFile.file, (stage, message) => {
                     console.log(`[WinDBG] ${stage}: ${message}`);

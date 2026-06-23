@@ -119,6 +119,27 @@ else
 fi
 echo ""
 
+# 5b. WindowsForum SSO Secret
+# IMPORTANT: this MUST exactly match $config['wfSsoSecret'] in the forum's
+# /web/public_html/src/config.php. Do NOT generate a fresh random value here — a
+# mismatch silently breaks SSO token verification. Provide the same value via the
+# WF_SSO_SECRET env var or the prompt below.
+echo "🔑 WindowsForum SSO Secret (must match forum config.php \$config['wfSsoSecret'])"
+if [ -z "$WF_SSO_SECRET" ]; then
+    echo -n "Enter the WF_SSO_SECRET (or press Enter to skip): "
+    read -r -s WF_SSO_KEY
+    echo ""
+else
+    WF_SSO_KEY="$WF_SSO_SECRET"
+    echo "  Using provided WF_SSO_SECRET from environment"
+fi
+if [ ! -z "$WF_SSO_KEY" ]; then
+    setup_secret "wf-sso-secret" "$WF_SSO_KEY" "WindowsForum SSO Secret"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
 # 6. Upstash Redis URL
 echo "6️⃣ Upstash Redis REST URL"
 echo -n "Enter your Upstash Redis REST URL (or press Enter to skip): "
@@ -182,7 +203,7 @@ echo "🔓 Granting runtime access only to application runtime secrets..."
 
 # Grant access to each runtime secret. Cloudflare purge secrets are intentionally
 # not granted to the runtime service account.
-for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "upstash-redis-url" "upstash-redis-token"; do
+for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
