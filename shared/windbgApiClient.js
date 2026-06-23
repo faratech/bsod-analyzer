@@ -14,6 +14,16 @@ function winDbgApiUrl(baseUrl, path) {
   return `${normalizeWinDbgApiBaseUrl(baseUrl)}/api/v1${path}`;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableSubmitError(error) {
+  const status = Number(error?.upstreamStatus);
+  return error?.code === 'WINDBG_UPSTREAM_ERROR'
+    && (status === 520 || status === 522 || status === 524 || status === 525);
+}
+
 async function readJsonResponse(response, context) {
   const text = await response.text();
   let body = null;
@@ -62,28 +72,43 @@ async function submitWinDbgJob({
     throw new Error('WINDBG_API_KEY is required');
   }
 
-  const formData = new FormData();
-  appendFile(formData, fileBuffer, fileName);
-  if (priority !== undefined && priority !== null) {
-    formData.append('priority', String(priority));
+  const maxAttempts = 2;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const formData = new FormData();
+    appendFile(formData, fileBuffer, fileName);
+    if (priority !== undefined && priority !== null) {
+      formData.append('priority', String(priority));
+    }
+
+    try {
+      const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs'), {
+        method: 'POST',
+        headers: {
+          'X-API-Key': apiKey
+        },
+        body: formData,
+        signal
+      });
+
+      const body = await readJsonResponse(response, 'WinDBG job submit');
+      const jobId = body.job_id || body.id;
+      if (!jobId || typeof jobId !== 'string') {
+        throw new Error('WinDBG job submit response did not include job_id');
+      }
+
+      return { ...body, job_id: jobId };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryableSubmitError(error)) {
+        throw error;
+      }
+      await sleep(750);
+    }
   }
 
-  const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs'), {
-    method: 'POST',
-    headers: {
-      'X-API-Key': apiKey
-    },
-    body: formData,
-    signal
-  });
-
-  const body = await readJsonResponse(response, 'WinDBG job submit');
-  const jobId = body.job_id || body.id;
-  if (!jobId || typeof jobId !== 'string') {
-    throw new Error('WinDBG job submit response did not include job_id');
-  }
-
-  return { ...body, job_id: jobId };
+  throw lastError;
 }
 
 async function getWinDbgJob({
