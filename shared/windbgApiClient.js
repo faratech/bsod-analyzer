@@ -14,6 +14,54 @@ function winDbgApiUrl(baseUrl, path) {
   return `${normalizeWinDbgApiBaseUrl(baseUrl)}/api/v1${path}`;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableSubmitError(error) {
+  const status = Number(error?.upstreamStatus);
+  return error?.code === 'WINDBG_UPSTREAM_ERROR'
+    && (status === 520 || status === 522 || status === 524 || status === 525);
+}
+
+function escapeMultipartValue(value) {
+  return String(value || '').replace(/["\r\n]/g, '_');
+}
+
+function buildMultipartSubmitBody({ fileBuffer, fileName, priority }) {
+  const boundary = `----windbg-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+  const filePartHeader = [
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="file"; filename="${escapeMultipartValue(fileName || 'upload.dmp')}"`,
+    'Content-Type: application/octet-stream',
+    '',
+    ''
+  ].join('\r\n');
+  const parts = [filePartHeader, fileBuffer, '\r\n'];
+
+  if (priority !== undefined && priority !== null) {
+    parts.push(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="priority"',
+        '',
+        String(priority),
+        ''
+      ].join('\r\n')
+    );
+  }
+
+  parts.push(`--${boundary}--\r\n`);
+  const body = new Blob(parts, { type: `multipart/form-data; boundary=${boundary}` });
+  return {
+    body,
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.size)
+    }
+  };
+}
+
 async function readJsonResponse(response, context) {
   const text = await response.text();
   let body = null;
@@ -44,11 +92,6 @@ async function readJsonResponse(response, context) {
   return body || {};
 }
 
-function appendFile(formData, fileBuffer, fileName) {
-  const blob = new Blob([fileBuffer], { type: 'application/octet-stream' });
-  formData.append('file', blob, fileName || 'upload.dmp');
-}
-
 async function submitWinDbgJob({
   baseUrl,
   apiKey,
@@ -62,28 +105,40 @@ async function submitWinDbgJob({
     throw new Error('WINDBG_API_KEY is required');
   }
 
-  const formData = new FormData();
-  appendFile(formData, fileBuffer, fileName);
-  if (priority !== undefined && priority !== null) {
-    formData.append('priority', String(priority));
+  const maxAttempts = 2;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const multipart = buildMultipartSubmitBody({ fileBuffer, fileName, priority });
+
+    try {
+      const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs'), {
+        method: 'POST',
+        headers: {
+          'X-API-Key': apiKey,
+          ...multipart.headers
+        },
+        body: multipart.body,
+        signal
+      });
+
+      const body = await readJsonResponse(response, 'WinDBG job submit');
+      const jobId = body.job_id || body.id;
+      if (!jobId || typeof jobId !== 'string') {
+        throw new Error('WinDBG job submit response did not include job_id');
+      }
+
+      return { ...body, job_id: jobId };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryableSubmitError(error)) {
+        throw error;
+      }
+      await sleep(750);
+    }
   }
 
-  const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs'), {
-    method: 'POST',
-    headers: {
-      'X-API-Key': apiKey
-    },
-    body: formData,
-    signal
-  });
-
-  const body = await readJsonResponse(response, 'WinDBG job submit');
-  const jobId = body.job_id || body.id;
-  if (!jobId || typeof jobId !== 'string') {
-    throw new Error('WinDBG job submit response did not include job_id');
-  }
-
-  return { ...body, job_id: jobId };
+  throw lastError;
 }
 
 async function getWinDbgJob({
@@ -219,6 +274,30 @@ function compactText(value, maxLength = 1600) {
   const head = Math.floor(maxLength * 0.75);
   const tail = maxLength - head - 40;
   return `${text.slice(0, head)}\n\n[... ${text.length - head - tail} bytes omitted ...]\n\n${text.slice(-tail)}`;
+}
+
+function extractFullAnalyzeOutput(output) {
+  if (typeof output !== 'string') return '';
+  const text = output.replace(/\r\n/g, '\n');
+  const sectionRe = /(?:^|\n)===== ([^\n]+) =====\n([\s\S]*?)(?=\n\n===== [^\n]+ =====\n|$)/g;
+
+  for (const match of text.matchAll(sectionRe)) {
+    const header = match[1]?.trim() || '';
+    if (!/(^|_)analyze(?:_v)?$/i.test(header)) continue;
+    const body = match[2]?.trim();
+    if (body) return body;
+  }
+
+  const bugcheckIdx = text.indexOf('Bugcheck Analysis');
+  if (bugcheckIdx < 0) return '';
+  const bannerStart = text.lastIndexOf('\n***', bugcheckIdx);
+  const start = bannerStart >= 0 ? bannerStart + 1 : bugcheckIdx;
+  const endCandidates = [
+    text.indexOf('\nquit:', bugcheckIdx),
+    text.indexOf('\n===== ', bugcheckIdx + 'Bugcheck Analysis'.length)
+  ].filter(index => index > start);
+  const end = endCandidates.length > 0 ? Math.min(...endCandidates) : text.length;
+  return text.slice(start, end).trim();
 }
 
 function compactObject(value, allowedKeys) {
@@ -641,6 +720,7 @@ function extractWinDbgAnalysisText(job) {
 
 export {
   DEFAULT_WINDBG_API_BASE_URL,
+  extractFullAnalyzeOutput,
   extractRelevantWinDbgSignal,
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisPackage,

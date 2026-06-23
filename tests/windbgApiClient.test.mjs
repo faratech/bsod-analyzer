@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  extractFullAnalyzeOutput,
   extractRelevantWinDbgSignal,
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisText,
@@ -52,7 +53,40 @@ test('WinDBG submit posts multipart upload to /api/v1/jobs with server-side key 
   assert.equal(calls[0].url, 'https://windbg-api.stack-tech.net/api/v1/jobs');
   assert.equal(calls[0].options.method, 'POST');
   assert.equal(calls[0].options.headers['X-API-Key'], 'test-token');
-  assert.ok(calls[0].options.body instanceof FormData);
+  assert.ok(calls[0].options.body instanceof Blob);
+  assert.match(calls[0].options.headers['Content-Type'], /^multipart\/form-data; boundary=----windbg-/);
+  assert.ok(Number(calls[0].options.headers['Content-Length']) > Buffer.byteLength('MDMP'));
+});
+
+test('WinDBG submit retries transient Cloudflare upstream failures', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (calls.length === 1) {
+      return new Response('<html>SSL handshake failed</html>', {
+        status: 525,
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+    return new Response(JSON.stringify({ job_id: 'WF-retry-123', status: 'queued' }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  };
+
+  const result = await submitWinDbgJob({
+    baseUrl: 'https://windbg-api.stack-tech.net/',
+    apiKey: 'test-token',
+    fileBuffer: Buffer.from('MDMP'),
+    fileName: 'mini.dmp',
+    fetchImpl
+  });
+
+  assert.equal(result.job_id, 'WF-retry-123');
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].options.body instanceof Blob);
+  assert.ok(calls[1].options.body instanceof Blob);
+  assert.notEqual(calls[0].options.headers['Content-Type'], calls[1].options.headers['Content-Type']);
 });
 
 test('WinDBG job status maps to the legacy browser contract', () => {
@@ -102,6 +136,49 @@ test('WinDBG analysis extraction preserves stdout and command sections', () => {
   }), '===== analyze =====\n!analyze output\n\n===== lm =====\nmodule output');
 });
 
+test('WinDBG full analyze output extracts complete !analyze -v section', () => {
+  const output = [
+    'banner text',
+    '',
+    '===== STEP_04_analyze_v =====',
+    'KMODE_EXCEPTION_NOT_HANDLED (1e)',
+    'Arguments:',
+    'Arg1: ffffffff`c0000005',
+    'STACK_TEXT:',
+    'fffff807`12345678 nt!KiDispatchException+0x123',
+    '',
+    '===== STEP_05_kv =====',
+    'stack command output'
+  ].join('\n');
+
+  assert.equal(extractFullAnalyzeOutput(output), [
+    'KMODE_EXCEPTION_NOT_HANDLED (1e)',
+    'Arguments:',
+    'Arg1: ffffffff`c0000005',
+    'STACK_TEXT:',
+    'fffff807`12345678 nt!KiDispatchException+0x123'
+  ].join('\n'));
+});
+
+test('WinDBG full analyze output falls back to raw Bugcheck Analysis block', () => {
+  const output = [
+    'setup noise',
+    '************* Bugcheck Analysis **************',
+    'IRQL_NOT_LESS_OR_EQUAL (a)',
+    'BUGCHECK_CODE: a',
+    'IMAGE_NAME: ntkrnlmp.exe',
+    'quit:',
+    'teardown noise'
+  ].join('\n');
+
+  assert.equal(extractFullAnalyzeOutput(output), [
+    '************* Bugcheck Analysis **************',
+    'IRQL_NOT_LESS_OR_EQUAL (a)',
+    'BUGCHECK_CODE: a',
+    'IMAGE_NAME: ntkrnlmp.exe'
+  ].join('\n'));
+});
+
 test('WinDBG signal extraction keeps crash facts and omits full stdout noise', () => {
   const noisyStdout = [
     '************* Preparing the environment for Debugger Extensions Gallery repositories **************',
@@ -134,6 +211,14 @@ test('WinDBG signal extraction keeps crash facts and omits full stdout noise', (
           'IMAGE_NAME:  ntkrnlmp.exe',
           'IMAGE_VERSION:  10.0.26100.4061',
           'FAILURE_BUCKET_ID:  AV_nt!KiExecuteAllDpcs'
+        ].join('\n'),
+        STEP_09_lmv: [
+          'fffff800`9f800000 fffff800`a0800000   nt       (pdb symbols)          c:\\symbols\\ntkrnlmp.pdb',
+          '    Loaded symbol image file: ntkrnlmp.exe',
+          '    Image path: ntkrnlmp.exe',
+          '    Image name: ntkrnlmp.exe',
+          '    File version:     10.0.26100.8246',
+          '    Product version:  10.0.26100.8246'
         ].join('\n'),
         STEP_14_irql: 'Debugger saved IRQL for processor 0x0 -- 2 (DISPATCH_LEVEL)'
       },
@@ -174,7 +259,9 @@ test('WinDBG signal extraction keeps crash facts and omits full stdout noise', (
   assert.equal(signal.bugcheck.name, 'IRQL_NOT_LESS_OR_EQUAL');
   assert.equal(signal.crash.failureBucketId, 'AV_nt!KiExecuteAllDpcs');
   assert.equal(signal.crash.imageName, 'ntkrnlmp.exe');
+  assert.equal(signal.crash.imageVersion, '10.0.26100.4061');
   assert.equal(signal.stackFrames.length, 1);
+  assert.equal(signal.notableModules.find(module => module.name === 'nt')?.details.fileVersion, '10.0.26100.8246');
   assert.ok(signal.notableModules.some(module => module.name === 'nvlddmkm'));
 
   const signalText = extractRelevantWinDbgSignalText(job);
