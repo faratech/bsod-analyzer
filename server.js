@@ -752,13 +752,15 @@ const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.m
 // Precompute CSP header string once at startup (avoids rebuilding on every request)
 const CSP_HEADER = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://adnxs.com https://www.paypalobjects.com",
+  // *.doubleclick.net + www.googleadservices.com cover Google Ads conversion
+  // tracking scripts (gtag loads viewthroughconversion/conversion_async from these).
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://adnxs.com https://www.paypalobjects.com",
   // AdSense's adsbygoogle.js runtime injects a small container-sizing stylesheet
   // as a data:text/css URL, so 'data:' is required here for ad slots to render.
   "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://generativelanguage.googleapis.com https://www.paypal.com",
+  "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://generativelanguage.googleapis.com https://www.paypal.com",
   "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
   "object-src 'none'",
   "base-uri 'self'",
@@ -3237,13 +3239,31 @@ async function startServer() {
     // Build Link header from built assets for Early Hints (Cloudflare)
     const distAssets = path.join(__dirname, 'dist', 'assets');
     if (fs.existsSync(distAssets)) {
+      // Load SRI hashes so preload directives carry the same integrity as the
+      // <link>/<script> tags in index.html. If the preload's integrity metadata
+      // differs from the actual request (e.g. preload has none, tag has a hash),
+      // the browser refuses to reuse the preloaded response ("integrity
+      // mismatch") and refetches — producing console warnings and wasting the
+      // preload. Matching integrity lets the preload be reused.
+      let sriMapping = {};
+      try {
+        const sriPath = path.join(__dirname, 'dist', 'sri-mapping.json');
+        if (fs.existsSync(sriPath)) {
+          sriMapping = JSON.parse(fs.readFileSync(sriPath, 'utf-8'));
+        }
+      } catch (e) {
+        console.warn('Failed to read sri-mapping.json for Early Hints integrity:', e.message);
+      }
+
       const files = fs.readdirSync(distAssets);
       const links = [];
       // Preload the main JS entry and CSS — these are render-critical
       const mainJs = files.find(f => f.match(/^index-.*\.js$/));
       const mainCss = files.find(f => f.match(/^index-.*\.css$/));
-      if (mainCss) links.push(`</assets/${mainCss}>; rel=preload; as=style; crossorigin`);
-      if (mainJs) links.push(`</assets/${mainJs}>; rel=modulepreload; crossorigin`);
+      // SRI hashes contain +, /, = so the integrity parameter must be quoted.
+      const integrityParam = (file) => sriMapping[file] ? `; integrity="${sriMapping[file]}"` : '';
+      if (mainCss) links.push(`</assets/${mainCss}>; rel=preload; as=style; crossorigin${integrityParam(mainCss)}`);
+      if (mainJs) links.push(`</assets/${mainJs}>; rel=modulepreload; crossorigin${integrityParam(mainJs)}`);
       if (links.length) {
         earlyHintsLinkHeader = links.join(', ');
         console.log(`Early Hints Link header: ${earlyHintsLinkHeader}`);
