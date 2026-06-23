@@ -12,6 +12,7 @@ import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParse
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, getCachedAnalysisByHash, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
+import { extractFullAnalyzeOutput } from '../shared/windbgApiClient.js';
 import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
 import { extractWinDbgWindowsVersion } from '../shared/windowsVersion.js';
 // Define types to match original imports
@@ -1433,8 +1434,10 @@ function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
         result.callStack = parseStackText(stackMatch[1]);
     }
 
-    // Include full raw output for UI display
-    result.rawWinDbgOutput = output;
+    // Expose the complete !analyze -v output for advanced users. Fall back to
+    // the aggregated WinDBG text only for older server responses that do not
+    // preserve command sections.
+    result.rawWinDbgOutput = extractFullAnalyzeOutput(output) || output;
 
     console.log('[WinDBG Parser] Parse result summary:', {
         hasFailureBucketId: !!result.failureBucketId,

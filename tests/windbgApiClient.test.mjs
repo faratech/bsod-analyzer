@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  extractFullAnalyzeOutput,
   extractRelevantWinDbgSignal,
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisText,
@@ -133,6 +134,49 @@ test('WinDBG analysis extraction preserves stdout and command sections', () => {
       }
     }
   }), '===== analyze =====\n!analyze output\n\n===== lm =====\nmodule output');
+});
+
+test('WinDBG full analyze output extracts complete !analyze -v section', () => {
+  const output = [
+    'banner text',
+    '',
+    '===== STEP_04_analyze_v =====',
+    'KMODE_EXCEPTION_NOT_HANDLED (1e)',
+    'Arguments:',
+    'Arg1: ffffffff`c0000005',
+    'STACK_TEXT:',
+    'fffff807`12345678 nt!KiDispatchException+0x123',
+    '',
+    '===== STEP_05_kv =====',
+    'stack command output'
+  ].join('\n');
+
+  assert.equal(extractFullAnalyzeOutput(output), [
+    'KMODE_EXCEPTION_NOT_HANDLED (1e)',
+    'Arguments:',
+    'Arg1: ffffffff`c0000005',
+    'STACK_TEXT:',
+    'fffff807`12345678 nt!KiDispatchException+0x123'
+  ].join('\n'));
+});
+
+test('WinDBG full analyze output falls back to raw Bugcheck Analysis block', () => {
+  const output = [
+    'setup noise',
+    '************* Bugcheck Analysis **************',
+    'IRQL_NOT_LESS_OR_EQUAL (a)',
+    'BUGCHECK_CODE: a',
+    'IMAGE_NAME: ntkrnlmp.exe',
+    'quit:',
+    'teardown noise'
+  ].join('\n');
+
+  assert.equal(extractFullAnalyzeOutput(output), [
+    '************* Bugcheck Analysis **************',
+    'IRQL_NOT_LESS_OR_EQUAL (a)',
+    'BUGCHECK_CODE: a',
+    'IMAGE_NAME: ntkrnlmp.exe'
+  ].join('\n'));
 });
 
 test('WinDBG signal extraction keeps crash facts and omits full stdout noise', () => {
