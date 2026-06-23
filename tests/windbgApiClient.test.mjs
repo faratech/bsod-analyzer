@@ -55,6 +55,36 @@ test('WinDBG submit posts multipart upload to /api/v1/jobs with server-side key 
   assert.ok(calls[0].options.body instanceof FormData);
 });
 
+test('WinDBG submit retries transient Cloudflare upstream failures', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (calls.length === 1) {
+      return new Response('<html>SSL handshake failed</html>', {
+        status: 525,
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+    return new Response(JSON.stringify({ job_id: 'WF-retry-123', status: 'queued' }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  };
+
+  const result = await submitWinDbgJob({
+    baseUrl: 'https://windbg-api.stack-tech.net/',
+    apiKey: 'test-token',
+    fileBuffer: Buffer.from('MDMP'),
+    fileName: 'mini.dmp',
+    fetchImpl
+  });
+
+  assert.equal(result.job_id, 'WF-retry-123');
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].options.body instanceof FormData);
+  assert.ok(calls[1].options.body instanceof FormData);
+});
+
 test('WinDBG job status maps to the legacy browser contract', () => {
   assert.equal(mapWinDbgJobStatus('queued'), 'pending');
   assert.equal(mapWinDbgJobStatus('validating'), 'processing');
