@@ -276,6 +276,30 @@ function compactText(value, maxLength = 1600) {
   return `${text.slice(0, head)}\n\n[... ${text.length - head - tail} bytes omitted ...]\n\n${text.slice(-tail)}`;
 }
 
+function extractFullAnalyzeOutput(output) {
+  if (typeof output !== 'string') return '';
+  const text = output.replace(/\r\n/g, '\n');
+  const sectionRe = /(?:^|\n)===== ([^\n]+) =====\n([\s\S]*?)(?=\n\n===== [^\n]+ =====\n|$)/g;
+
+  for (const match of text.matchAll(sectionRe)) {
+    const header = match[1]?.trim() || '';
+    if (!/(^|_)analyze(?:_v)?$/i.test(header)) continue;
+    const body = match[2]?.trim();
+    if (body) return body;
+  }
+
+  const bugcheckIdx = text.indexOf('Bugcheck Analysis');
+  if (bugcheckIdx < 0) return '';
+  const bannerStart = text.lastIndexOf('\n***', bugcheckIdx);
+  const start = bannerStart >= 0 ? bannerStart + 1 : bugcheckIdx;
+  const endCandidates = [
+    text.indexOf('\nquit:', bugcheckIdx),
+    text.indexOf('\n===== ', bugcheckIdx + 'Bugcheck Analysis'.length)
+  ].filter(index => index > start);
+  const end = endCandidates.length > 0 ? Math.min(...endCandidates) : text.length;
+  return text.slice(start, end).trim();
+}
+
 function compactObject(value, allowedKeys) {
   if (!value || typeof value !== 'object') return undefined;
   const result = {};
@@ -696,6 +720,7 @@ function extractWinDbgAnalysisText(job) {
 
 export {
   DEFAULT_WINDBG_API_BASE_URL,
+  extractFullAnalyzeOutput,
   extractRelevantWinDbgSignal,
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisPackage,

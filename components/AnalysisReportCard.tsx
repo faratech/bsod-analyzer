@@ -740,7 +740,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                     aria-expanded={showRawOutput}
                                 >
                                     <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
-                                    Raw WinDBG Output
+                                    Raw WinDBG Output (!analyze -v)
                                 </h3>
                                 {showRawOutput && (
                                     <div style={{
