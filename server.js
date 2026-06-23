@@ -131,7 +131,7 @@ const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 const TURNSTILE_TIMEOUT_MS = readPositiveInt(process.env.TURNSTILE_TIMEOUT_MS, 10_000);
-const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_UPLOAD_TIMEOUT_MS, 120_000);
+const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_UPLOAD_TIMEOUT_MS, 240_000);
 const WINDBG_POLL_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_POLL_TIMEOUT_MS, 20_000);
 const WINDBG_DOWNLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_DOWNLOAD_TIMEOUT_MS, 60_000);
 // The JSON output contract is now part of the cache-stable prefixes in
@@ -1768,6 +1768,9 @@ if (!WINDBG_API_KEY) {
 // browser can retry the poll instead of treating it as a hard local failure.
 function winDbgUpstreamHttpStatus(error) {
   const code = error?.code;
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError' || /aborted due to timeout|timed out/i.test(error?.message || '')) {
+    return 504;
+  }
   if (code === 'WINDBG_UPSTREAM_INVALID_JSON' || code === 'WINDBG_UPSTREAM_ERROR') {
     return 502;
   }
@@ -1973,7 +1976,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
     });
   } catch (error) {
     log.error('windbg.upload.fail', { message: error.message });
-    res.status(500).json({
+    res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to upload file to the debugging server. Please try again later.'
     });

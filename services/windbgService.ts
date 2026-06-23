@@ -22,7 +22,7 @@ const hasherReady = xxhash().then(h => {
 // Polling configuration - increased intervals to reduce server load
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
 const MAX_POLL_ATTEMPTS = 30; // Max 5 minutes of polling (30 * 10s = 300s), then fallback to local analysis
-const UPLOAD_TIMEOUT_MS = 120000; // 2 minute upload timeout (files can be large)
+const UPLOAD_TIMEOUT_MS = 240000; // 4 minute upload timeout for slow proxy/origin submits
 const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout for entire WinDBG process
 
 export interface WinDBGUploadResponse {
