@@ -52,6 +52,8 @@ export interface StackFrame {
 
 export interface SystemInfo {
   windowsVersion?: string;    // Raw WinDBG OS version evidence, e.g., "10.0.22631.4460"
+  kernelBuild?: string;       // Precise kernel build, e.g., "26100.8246"
+  kernelImageVersion?: string; // Full kernel image version, e.g., "10.0.26100.8246"
   systemUptime?: string;      // e.g., "0 days 4:23:45"
   processName?: string;       // e.g., "System", "chrome.exe"
 }
@@ -102,6 +104,10 @@ export interface AnalysisReportData {
   // WinDBG-specific fields (parsed directly from raw output)
   failureBucketId?: string;   // Searchable crash signature
   symbolName?: string;        // e.g., "nt!MmAccessFault+0x93ea0"
+  imageName?: string;         // e.g., "ntkrnlmp.exe", "nvlddmkm.sys"
+  imageVersion?: string;      // Full image version from WinDBG, e.g., "10.0.26100.8246"
+  imageBuild?: string;        // Compact image build, e.g., "26100.8246"
+  moduleName?: string;        // e.g., "nt", "dxgmms2"
   faultAddress?: string;      // Memory address that faulted
   systemInfo?: SystemInfo;
   callStack?: StackFrame[];   // Actual call stack (not just loaded modules)

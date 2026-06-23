@@ -135,6 +135,14 @@ test('WinDBG signal extraction keeps crash facts and omits full stdout noise', (
           'IMAGE_VERSION:  10.0.26100.4061',
           'FAILURE_BUCKET_ID:  AV_nt!KiExecuteAllDpcs'
         ].join('\n'),
+        STEP_09_lmv: [
+          'fffff800`9f800000 fffff800`a0800000   nt       (pdb symbols)          c:\\symbols\\ntkrnlmp.pdb',
+          '    Loaded symbol image file: ntkrnlmp.exe',
+          '    Image path: ntkrnlmp.exe',
+          '    Image name: ntkrnlmp.exe',
+          '    File version:     10.0.26100.8246',
+          '    Product version:  10.0.26100.8246'
+        ].join('\n'),
         STEP_14_irql: 'Debugger saved IRQL for processor 0x0 -- 2 (DISPATCH_LEVEL)'
       },
       parsed: {
@@ -174,7 +182,9 @@ test('WinDBG signal extraction keeps crash facts and omits full stdout noise', (
   assert.equal(signal.bugcheck.name, 'IRQL_NOT_LESS_OR_EQUAL');
   assert.equal(signal.crash.failureBucketId, 'AV_nt!KiExecuteAllDpcs');
   assert.equal(signal.crash.imageName, 'ntkrnlmp.exe');
+  assert.equal(signal.crash.imageVersion, '10.0.26100.4061');
   assert.equal(signal.stackFrames.length, 1);
+  assert.equal(signal.notableModules.find(module => module.name === 'nt')?.details.fileVersion, '10.0.26100.8246');
   assert.ok(signal.notableModules.some(module => module.name === 'nvlddmkm'));
 
   const signalText = extractRelevantWinDbgSignalText(job);
