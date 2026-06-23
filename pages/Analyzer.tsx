@@ -16,8 +16,11 @@ import { useAnalysis } from '../hooks/useAnalysis';
 import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
 import { initializeSession, onSessionInvalid, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
+import { useAuth } from '../hooks/useAuth';
+import { SSO_ENABLED } from '../services/featureFlags';
 
 const Analyzer: React.FC = () => {
+    const { status: authStatus, isPremium, openPaygate } = useAuth();
     const { trackFileUpload, trackAnalysisStart, trackAnalysisComplete } = useAnalytics();
     const [dumpFiles, setDumpFiles] = useState<DumpFile[]>([]);
     const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
@@ -165,6 +168,39 @@ const Analyzer: React.FC = () => {
                         <h1>BSOD Dump Analyzer</h1>
                         <p>Upload your Windows crash dump files for instant AI-powered analysis</p>
                     </div>
+
+                    {SSO_ENABLED && authStatus === 'ready' && !isPremium && (
+                        <div
+                            className="premium-upsell"
+                            style={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.75rem',
+                                margin: '0 auto 1.5rem',
+                                maxWidth: 760,
+                                padding: '0.75rem 1rem',
+                                borderRadius: 12,
+                                border: '1px solid var(--border-color, rgba(255,179,0,0.35))',
+                                background: 'linear-gradient(135deg, rgba(255,211,77,0.10), rgba(255,179,0,0.06))',
+                                fontSize: '0.9rem',
+                            }}
+                        >
+                            <span style={{ color: 'var(--text-secondary)' }}>
+                                <strong style={{ color: 'var(--text-primary)' }}>★ Premium</strong> unlocks deep WinDBG kernel-dump
+                                analysis, 100 analyses/hour and an ad-free experience.
+                            </span>
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => openPaygate('analyzer')}
+                                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+                            >
+                                Join Now — $20/yr
+                            </button>
+                        </div>
+                    )}
 
                     <div className="analyzer-upload-section">
                         <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} />

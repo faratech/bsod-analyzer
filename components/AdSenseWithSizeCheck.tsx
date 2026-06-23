@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ADSENSE_CONFIG, getAdSlot } from '../config/adsense';
+import { useOptionalAuth } from '../hooks/useAuth';
 
 interface AdProps {
   className?: string;
@@ -41,8 +42,12 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const hasWidth = useElementWidth(containerRef, minWidth);
   const [adPushed, setAdPushed] = useState(false);
-  
+  // Premium Supporters are ad-free. Default (anon/loading) renders ads, matching
+  // the prerendered markup; the ad is removed only after SSO resolves premium.
+  const isPremium = useOptionalAuth()?.isPremium ?? false;
+
   useEffect(() => {
+    if (isPremium) return;
     if (hasWidth && !adPushed) {
       try {
         (window.adsbygoogle = window.adsbygoogle || []).push({});
@@ -61,8 +66,10 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
         }
       }
     }
-  }, [hasWidth, adPushed]);
-  
+  }, [hasWidth, adPushed, isPremium]);
+
+  if (isPremium) return null;
+
   return (
     <div ref={containerRef} className={`ad-container ${className}`} style={{ minHeight: '90px', ...style }}>
       {hasWidth && (
@@ -90,7 +97,9 @@ export const SafeAd: React.FC<{
   const hasWidth = useElementWidth(containerRef, minWidth);
   const [isVisible, setIsVisible] = useState(false);
   const [adPushed, setAdPushed] = useState(false);
-  
+  // Premium Supporters are ad-free (see DisplayAdSafe for the hydration rationale).
+  const isPremium = useOptionalAuth()?.isPremium ?? false;
+
   // Check if element is visible in viewport
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -99,16 +108,17 @@ export const SafeAd: React.FC<{
       },
       { threshold: 0.1 }
     );
-    
+
     if (containerRef.current) {
       observer.observe(containerRef.current);
     }
-    
+
     return () => observer.disconnect();
   }, []);
-  
+
   // Only push ad when visible and has width
   useEffect(() => {
+    if (isPremium) return;
     if (hasWidth && isVisible && !adPushed) {
       try {
         (window.adsbygoogle = window.adsbygoogle || []).push({});
@@ -117,7 +127,7 @@ export const SafeAd: React.FC<{
         // Ad failed to load, silently ignore
       }
     }
-  }, [hasWidth, isVisible, adPushed, type]);
+  }, [hasWidth, isVisible, adPushed, type, isPremium]);
   
   const getAdProps = () => {
     switch (type) {
@@ -154,7 +164,9 @@ export const SafeAd: React.FC<{
   };
   
   const adProps = getAdProps();
-  
+
+  if (isPremium) return null;
+
   return (
     <div ref={containerRef} className={`ad-container ${className}`}>
       {hasWidth && isVisible ? (
