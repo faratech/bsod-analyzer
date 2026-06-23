@@ -52,7 +52,9 @@ test('WinDBG submit posts multipart upload to /api/v1/jobs with server-side key 
   assert.equal(calls[0].url, 'https://windbg-api.stack-tech.net/api/v1/jobs');
   assert.equal(calls[0].options.method, 'POST');
   assert.equal(calls[0].options.headers['X-API-Key'], 'test-token');
-  assert.ok(calls[0].options.body instanceof FormData);
+  assert.ok(calls[0].options.body instanceof Blob);
+  assert.match(calls[0].options.headers['Content-Type'], /^multipart\/form-data; boundary=----windbg-/);
+  assert.ok(Number(calls[0].options.headers['Content-Length']) > Buffer.byteLength('MDMP'));
 });
 
 test('WinDBG submit retries transient Cloudflare upstream failures', async () => {
@@ -81,8 +83,9 @@ test('WinDBG submit retries transient Cloudflare upstream failures', async () =>
 
   assert.equal(result.job_id, 'WF-retry-123');
   assert.equal(calls.length, 2);
-  assert.ok(calls[0].options.body instanceof FormData);
-  assert.ok(calls[1].options.body instanceof FormData);
+  assert.ok(calls[0].options.body instanceof Blob);
+  assert.ok(calls[1].options.body instanceof Blob);
+  assert.notEqual(calls[0].options.headers['Content-Type'], calls[1].options.headers['Content-Type']);
 });
 
 test('WinDBG job status maps to the legacy browser contract', () => {

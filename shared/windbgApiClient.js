@@ -24,6 +24,44 @@ function isRetryableSubmitError(error) {
     && (status === 520 || status === 522 || status === 524 || status === 525);
 }
 
+function escapeMultipartValue(value) {
+  return String(value || '').replace(/["\r\n]/g, '_');
+}
+
+function buildMultipartSubmitBody({ fileBuffer, fileName, priority }) {
+  const boundary = `----windbg-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+  const filePartHeader = [
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="file"; filename="${escapeMultipartValue(fileName || 'upload.dmp')}"`,
+    'Content-Type: application/octet-stream',
+    '',
+    ''
+  ].join('\r\n');
+  const parts = [filePartHeader, fileBuffer, '\r\n'];
+
+  if (priority !== undefined && priority !== null) {
+    parts.push(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="priority"',
+        '',
+        String(priority),
+        ''
+      ].join('\r\n')
+    );
+  }
+
+  parts.push(`--${boundary}--\r\n`);
+  const body = new Blob(parts, { type: `multipart/form-data; boundary=${boundary}` });
+  return {
+    body,
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.size)
+    }
+  };
+}
+
 async function readJsonResponse(response, context) {
   const text = await response.text();
   let body = null;
@@ -54,11 +92,6 @@ async function readJsonResponse(response, context) {
   return body || {};
 }
 
-function appendFile(formData, fileBuffer, fileName) {
-  const blob = new Blob([fileBuffer], { type: 'application/octet-stream' });
-  formData.append('file', blob, fileName || 'upload.dmp');
-}
-
 async function submitWinDbgJob({
   baseUrl,
   apiKey,
@@ -76,19 +109,16 @@ async function submitWinDbgJob({
   let lastError;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const formData = new FormData();
-    appendFile(formData, fileBuffer, fileName);
-    if (priority !== undefined && priority !== null) {
-      formData.append('priority', String(priority));
-    }
+    const multipart = buildMultipartSubmitBody({ fileBuffer, fileName, priority });
 
     try {
       const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs'), {
         method: 'POST',
         headers: {
-          'X-API-Key': apiKey
+          'X-API-Key': apiKey,
+          ...multipart.headers
         },
-        body: formData,
+        body: multipart.body,
         signal
       });
 
