@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
+import { generateForumReport, generateMarkdownReport, getReportFacts } from '../utils/reportFacts';
 
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
@@ -12,153 +13,15 @@ interface AnalysisReportCardProps {
 const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRetry, style }) => {
     const [isExpanded, setIsExpanded] = useState(dumpFile.status !== FileStatus.PENDING);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [forumCopySuccess, setForumCopySuccess] = useState<boolean>(false);
     const [showCallStack, setShowCallStack] = useState<boolean>(false);
     const [showRawOutput, setShowRawOutput] = useState<boolean>(false);
     const displayName = dumpFile.displayName || dumpFile.file.name;
-
-    const generateMarkdownReport = (): string => {
-        if (!dumpFile.report) return '';
-        const { summary, probableCause, culprit, recommendations, stackTrace, bugCheck, crashLocation, registers, loadedModules, driverWarnings, hardwareError, parameterAnalysis, failureBucketId, symbolName, systemInfo, callStack, rawWinDbgOutput } = dumpFile.report;
-
-        let report = `# BSOD Analysis Report for ${displayName}\n\n`;
-
-        // Bug Check Info
-        if (bugCheck) {
-            report += `## Bug Check\n`;
-            report += `**${bugCheck.code}** - ${bugCheck.name}\n\n`;
-            if (bugCheck.parameters && bugCheck.parameters.length > 0) {
-                report += `| Parameter | Value | Meaning |\n|-----------|-------|--------|\n`;
-                bugCheck.parameters.forEach((p, i) => {
-                    report += `| Param ${i + 1} | \`${p.value}\` | ${p.meaning} |\n`;
-                });
-                report += `\n`;
-            }
-        }
-
-        // Failure Bucket ID
-        if (failureBucketId) {
-            report += `**Failure Bucket:** \`${failureBucketId}\`\n\n`;
-        }
-
-        // Symbol and Process Info
-        if (symbolName || systemInfo?.processName || systemInfo?.windowsVersion) {
-            report += `## System Info\n`;
-            if (systemInfo?.processName) report += `- **Process:** ${systemInfo.processName}\n`;
-            if (symbolName) report += `- **Symbol:** \`${symbolName}\`\n`;
-            if (systemInfo?.windowsVersion) report += `- **Windows Version:** ${systemInfo.windowsVersion}\n`;
-            if (systemInfo?.systemUptime) report += `- **System Uptime:** ${systemInfo.systemUptime}\n`;
-            report += `\n`;
-        }
-
-        // Parameter Analysis
-        if (parameterAnalysis && parameterAnalysis.length > 0) {
-            report += `## Parameter Analysis\n\n`;
-            report += `| Parameter | Value | Decoded | Significance |\n|-----------|-------|---------|---------------|\n`;
-            parameterAnalysis.forEach(param => {
-                report += `| ${param.parameter} | \`${param.rawValue}\` | ${param.decoded} | ${param.significance} |\n`;
-            });
-            report += `\n`;
-        }
-
-        // Hardware Error Info
-        if (hardwareError && hardwareError.isHardwareError) {
-            report += `## 🔥 Hardware Error Detected\n\n`;
-            report += `**Severity:** ${hardwareError.severity.toUpperCase()}\n`;
-            report += `**Error Type:** ${hardwareError.errorType}\n`;
-            report += `**Component:** ${hardwareError.component}\n\n`;
-            if (hardwareError.details.length > 0) {
-                report += `### Technical Details\n\`\`\`\n`;
-                hardwareError.details.forEach(detail => {
-                    report += `${detail}\n`;
-                });
-                report += `\`\`\`\n\n`;
-            }
-            if (hardwareError.recommendations.length > 0) {
-                report += `### Hardware-Specific Recommendations\n`;
-                hardwareError.recommendations.forEach(rec => {
-                    report += `- ${rec}\n`;
-                });
-                report += `\n`;
-            }
-        }
-
-        // Crash Location
-        if (crashLocation) {
-            report += `## Crash Location\n`;
-            report += `**Module:** \`${crashLocation.module}\`\n`;
-            report += `**Address:** \`${crashLocation.address}\`${crashLocation.offset ? ` (${crashLocation.offset})` : ''}\n\n`;
-        }
-
-        // Driver Warnings
-        if (driverWarnings && driverWarnings.length > 0) {
-            report += `## Known Problematic Drivers\n\n`;
-            driverWarnings.forEach(warning => {
-                report += `### ${warning.driverName}${warning.isAssociatedWithBugCheck ? ' ⚠️ RELATED TO CRASH' : ''}\n`;
-                report += `- **Display Name:** ${warning.displayName}\n`;
-                report += `- **Manufacturer:** ${warning.manufacturer}\n`;
-                report += `- **Category:** ${warning.category}\n`;
-                report += `- **Known Issues:**\n`;
-                warning.issues.forEach(issue => {
-                    report += `  - ${issue}\n`;
-                });
-                if (warning.recommendations.length > 0) {
-                    report += `- **Recommendations:**\n`;
-                    warning.recommendations.forEach(rec => {
-                        report += `  - ${rec}\n`;
-                    });
-                }
-                report += `\n`;
-            });
-        }
-
-        report += `## Summary\n> ${summary}\n\n`;
-        report += `## Probable Cause\n**Culprit:** \`${culprit}\`\n\n${probableCause}\n\n`;
-        report += `## Recommendations\n${recommendations.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`;
-
-        // CPU Registers
-        if (registers && Object.keys(registers).length > 0) {
-            report += `## CPU Registers at Crash\n\`\`\`\n`;
-            Object.entries(registers).forEach(([reg, val]) => {
-                if (val) report += `${reg.toUpperCase()}: ${val}\n`;
-            });
-            report += `\`\`\`\n\n`;
-        }
-
-        // Loaded Modules
-        if (loadedModules && loadedModules.length > 0) {
-            report += `## Loaded Modules (${loadedModules.length})\n`;
-            loadedModules.forEach(mod => {
-                const marker = mod.isCulprit ? '**[CRASH]** ' : '';
-                report += `- ${marker}\`${mod.name}\`${mod.base ? ` @ ${mod.base}` : ''}\n`;
-            });
-            report += `\n`;
-        } else if (stackTrace && stackTrace.length > 0) {
-            report += `## Loaded Modules\n\`\`\`\n${stackTrace.join('\n')}\n\`\`\`\n\n`;
-        }
-
-        // Call Stack
-        if (callStack && callStack.length > 0) {
-            report += `## Call Stack (${callStack.length} frames)\n\`\`\`\n`;
-            callStack.forEach((frame, i) => {
-                let frameLine = `${i.toString().padStart(2, ' ')} ${frame.address} ${frame.module}`;
-                if (frame.function) frameLine += `!${frame.function}`;
-                if (frame.offset) frameLine += `+${frame.offset}`;
-                report += `${frameLine}\n`;
-            });
-            report += `\`\`\`\n\n`;
-        }
-
-        // Raw WinDBG Output (optional, can be large)
-        if (rawWinDbgOutput) {
-            report += `## Raw WinDBG Output\n\n<details>\n<summary>Click to expand (${rawWinDbgOutput.length.toLocaleString()} characters)</summary>\n\n\`\`\`\n${rawWinDbgOutput}\n\`\`\`\n\n</details>\n\n`;
-        }
-
-        return report;
-    };
+    const reportFacts = getReportFacts(dumpFile);
 
     const handleCopy = () => {
         if (copySuccess || !dumpFile.report) return;
-        const markdownContent = generateMarkdownReport();
+        const markdownContent = generateMarkdownReport(dumpFile);
         navigator.clipboard.writeText(markdownContent).then(() => {
             setCopySuccess(true);
             setTimeout(() => setCopySuccess(false), 2000);
@@ -167,10 +30,22 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
             alert('Failed to copy report to clipboard.');
         });
     };
+
+    const handleCopyForum = () => {
+        if (forumCopySuccess || !dumpFile.report) return;
+        const forumContent = generateForumReport(dumpFile);
+        navigator.clipboard.writeText(forumContent).then(() => {
+            setForumCopySuccess(true);
+            setTimeout(() => setForumCopySuccess(false), 2000);
+        }).catch(err => {
+            console.error('Failed to copy forum summary: ', err);
+            alert('Failed to copy forum summary to clipboard.');
+        });
+    };
     
     const handleExport = () => {
         if (!dumpFile.report) return;
-        const markdownContent = generateMarkdownReport();
+        const markdownContent = generateMarkdownReport(dumpFile);
         const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -190,7 +65,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
     const handleShare = async () => {
         if (navigator.share && dumpFile.report) {
             const shareUrl = getShareUrl();
-            const shareText = `BSOD Analysis for ${displayName}:\n\nSummary: ${dumpFile.report.summary}\n\nProbable Cause: ${dumpFile.report.probableCause}\n\nCheck out the BSOD AI Analyzer.`;
+            const shareText = `BSOD Analysis for ${displayName}:\n\nSummary: ${reportFacts?.title || dumpFile.report.summary}\n\nProbable Cause: ${reportFacts?.primaryCause || dumpFile.report.probableCause}\n\nCheck out the BSOD AI Analyzer.`;
             try {
                 await navigator.share({
                     title: `BSOD Analysis: ${displayName}`,
@@ -206,7 +81,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
     const handleShareToX = () => {
         if (!dumpFile.report) return;
         const shareUrl = getShareUrl();
-        const text = `My PC crashed, but the BSOD AI Analyzer gave me this diagnosis: "${dumpFile.report.summary}" Check out the tool:`;
+        const text = `My PC crashed, but the BSOD AI Analyzer gave me this diagnosis: "${reportFacts?.title || dumpFile.report.summary}" Check out the tool:`;
         const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl)}`;
         window.open(url, '_blank', 'noopener,noreferrer');
     };
@@ -280,6 +155,14 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                             >
                                 {copySuccess ? <CheckIcon /> : <ClipboardIcon />}
                             </button>
+                            <button
+                                className={`action-btn ${forumCopySuccess ? 'copied' : ''}`}
+                                onClick={handleCopyForum}
+                                title={forumCopySuccess ? "Copied!" : "Copy forum-safe summary"}
+                                aria-label={forumCopySuccess ? "Copied forum-safe summary to clipboard" : "Copy forum-safe summary to clipboard"}
+                            >
+                                {forumCopySuccess ? <CheckIcon /> : <ClipboardIcon />}
+                            </button>
                             <button className="action-btn" onClick={handleExport} title="Export as Markdown (.md)" aria-label="Export report as markdown file">
                                 <DownloadIcon />
                             </button>
@@ -292,6 +175,57 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 <TwitterIcon />
                             </button>
                         </div>
+
+                        {reportFacts && (
+                            <section className="report-overview" aria-label="Crash summary">
+                                <div className="report-overview-header">
+                                    <div className="report-overview-title-group">
+                                        <div className="report-meta-row">
+                                            <span className={`report-confidence confidence-${reportFacts.evidenceSource}`}>
+                                                {reportFacts.confidenceLabel}
+                                            </span>
+                                            <span className="analysis-method-chip">{reportFacts.analysisMethodLabel}</span>
+                                        </div>
+                                        <h2 className="report-title">{reportFacts.title}</h2>
+                                    </div>
+                                </div>
+
+                                <div className="report-overview-grid">
+                                    <div className="report-cause-panel">
+                                        <div className="report-section-label">Likely cause</div>
+                                        <p>{reportFacts.primaryCause}</p>
+                                        <div className="culprit-line">
+                                            <span>Culprit</span>
+                                            <code>{reportFacts.culprit}</code>
+                                        </div>
+                                    </div>
+
+                                    {reportFacts.topActions.length > 0 && (
+                                        <div className="report-actions-panel">
+                                            <div className="report-section-label">Next steps</div>
+                                            <ol>
+                                                {reportFacts.topActions.map((action, index) => (
+                                                    <li key={`${index}-${action}`}>{action}</li>
+                                                ))}
+                                            </ol>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {reportFacts.facts.length > 0 && (
+                                    <div className="crash-facts-grid">
+                                        {reportFacts.facts.map(fact => (
+                                            <div className="crash-fact" key={`${fact.label}-${fact.value}`}>
+                                                <span className="crash-fact-label">{fact.label}</span>
+                                                <span className={`crash-fact-value ${fact.mono ? 'mono' : ''}`}>{fact.value}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <p className="report-caveat">{reportFacts.caveat}</p>
+                            </section>
+                        )}
 
                         {/* Bug Check Header */}
                         {bugCheck && (
@@ -662,102 +596,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                             </div>
                             );
                         })()}
-
-                        {/* Summary */}
-                        {dumpFile.report.summary && (
-                            <div style={{
-                                backgroundColor: 'var(--bg-secondary)',
-                                borderLeft: '3px solid var(--brand-primary)',
-                                borderRadius: '0 0.5rem 0.5rem 0',
-                                padding: '1rem 1.25rem',
-                                marginBottom: '1.5rem',
-                                fontSize: '0.95rem',
-                                lineHeight: '1.6',
-                                color: 'var(--text-secondary)',
-                                fontStyle: 'italic'
-                            }}>
-                                {dumpFile.report.summary}
-                            </div>
-                        )}
-
-                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem'}}>
-                            <div style={{
-                                backgroundColor: 'var(--bg-secondary)',
-                                borderRadius: '0.5rem',
-                                padding: '1.25rem',
-                                border: '1px solid var(--border-primary)'
-                            }}>
-                                <h3 style={{
-                                    margin: '0 0 0.75rem 0',
-                                    fontSize: '0.95rem',
-                                    color: 'var(--text-primary)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.5rem'
-                                }}>
-                                    <span style={{fontSize: '1rem'}}>🔍</span>
-                                    Probable Cause
-                                </h3>
-                                <p style={{
-                                    margin: 0,
-                                    lineHeight: '1.65',
-                                    fontSize: '0.9rem',
-                                    color: 'var(--text-secondary)'
-                                }}>{dumpFile.report.probableCause}</p>
-                                <div style={{
-                                    marginTop: '1rem',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.5rem'
-                                }}>
-                                    <span style={{
-                                        fontSize: '0.75rem',
-                                        color: 'var(--text-tertiary)',
-                                        flexShrink: 0
-                                    }}>Culprit:</span>
-                                    <span className="code-block" style={{
-                                        display: 'inline-block',
-                                        padding: '0.2rem 0.6rem',
-                                        fontSize: '0.8rem',
-                                        fontFamily: 'Jetbrains Mono, monospace',
-                                        fontWeight: '600',
-                                        color: crashLocation ? 'var(--status-error)' : 'var(--text-primary)'
-                                    }}>{dumpFile.report.culprit}</span>
-                                </div>
-                            </div>
-                            {dumpFile.report.recommendations && dumpFile.report.recommendations.length > 0 && (
-                            <div style={{
-                                backgroundColor: 'var(--bg-secondary)',
-                                borderRadius: '0.5rem',
-                                padding: '1.25rem',
-                                border: '1px solid var(--border-primary)'
-                            }}>
-                                <h3 style={{
-                                    margin: '0 0 0.75rem 0',
-                                    fontSize: '0.95rem',
-                                    color: 'var(--text-primary)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.5rem'
-                                }}>
-                                    <span style={{fontSize: '1rem'}}>✅</span>
-                                    Recommendations
-                                </h3>
-                                <ol style={{
-                                    margin: 0,
-                                    paddingLeft: '1.25rem',
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    gap: '0.5rem',
-                                    fontSize: '0.9rem',
-                                    color: 'var(--text-secondary)',
-                                    lineHeight: '1.5'
-                                }}>
-                                    {dumpFile.report.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
-                                </ol>
-                            </div>
-                            )}
-                        </div>
 
                         {/* Register Context */}
                         {registers && Object.keys(registers).length > 0 && (
