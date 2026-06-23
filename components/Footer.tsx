@@ -1,6 +1,10 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 
+// Injected at build time (vite define) so the year is identical in the
+// server-prerendered HTML and the client bundle — avoids a hydration mismatch.
+declare const __BUILD_YEAR__: number;
+
 const Footer: React.FC = () => {
     return (
         <footer className="footer">
@@ -46,7 +50,7 @@ const Footer: React.FC = () => {
                 </div>
                 
                 <div className="footer-bottom">
-                    <p>&copy; {new Date().getFullYear()} Fara Technologies LLC. All rights reserved.</p>
+                    <p>&copy; {__BUILD_YEAR__} Fara Technologies LLC. All rights reserved.</p>
                 </div>
             </div>
         </footer>

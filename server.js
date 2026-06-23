@@ -3184,31 +3184,38 @@ app.use((req, res) => {
 
   // Serve React app for all other routes (non-asset routes only)
   // CDN caches 24h (purged on deploy), browser always revalidates
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  const isHome = normalized === '/';
   res.status(getSpaStatus(pathname));
   res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
 
-  // In development/local testing, read from disk to avoid stale memory caching
+  // The homepage is prerendered into #root (hydrated on the client) for fast
+  // LCP; every other route is served with an empty #root and rendered fully on
+  // the client. Other routes must NOT get the homepage markup or hydration
+  // would mismatch. In development, read from disk to avoid stale caching.
   if (process.env.NODE_ENV !== 'production') {
     try {
-      const indexPath = path.join(__dirname, 'dist', 'index.html');
-      if (fs.existsSync(indexPath)) {
-        const html = fs.readFileSync(indexPath, 'utf-8');
-        res.send(html);
+      let diskPath = path.join(__dirname, 'dist', isHome ? 'index.prerendered.html' : 'index.html');
+      if (isHome && !fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
+      if (fs.existsSync(diskPath)) {
+        res.send(fs.readFileSync(diskPath, 'utf-8'));
         return;
       }
     } catch (e) {
-      console.error('Failed to read index.html dynamically in development:', e);
+      console.error('Failed to read index html dynamically in development:', e);
     }
   }
 
-  res.send(cachedIndexHtml);
+  res.send(isHome ? cachedHomeHtml : cachedIndexHtml);
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
 let cachedIndexHtml;
+// Prerendered homepage HTML served for the "/" route (falls back to index.html)
+let cachedHomeHtml;
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
 
@@ -3235,6 +3242,16 @@ async function startServer() {
   if (fs.existsSync(indexPath)) {
     cachedIndexHtml = fs.readFileSync(indexPath, 'utf-8');
     console.log(`Cached index.html in memory (${Buffer.byteLength(cachedIndexHtml)} bytes)`);
+
+    // Prerendered homepage (served for "/"); fall back to index.html if absent.
+    const prerenderedPath = path.join(__dirname, 'dist', 'index.prerendered.html');
+    if (fs.existsSync(prerenderedPath)) {
+      cachedHomeHtml = fs.readFileSync(prerenderedPath, 'utf-8');
+      console.log(`Cached prerendered homepage in memory (${Buffer.byteLength(cachedHomeHtml)} bytes)`);
+    } else {
+      cachedHomeHtml = cachedIndexHtml;
+      console.warn('dist/index.prerendered.html not found - serving client-rendered homepage for "/"');
+    }
 
     // Build Link header from built assets for Early Hints (Cloudflare)
     const distAssets = path.join(__dirname, 'dist', 'assets');
@@ -3272,6 +3289,7 @@ async function startServer() {
   } else {
     console.warn('dist/index.html not found - run npm run build first');
     cachedIndexHtml = '<html><body>Build not found. Run npm run build.</body></html>';
+    cachedHomeHtml = cachedIndexHtml;
   }
 
   app.listen(PORT, () => {

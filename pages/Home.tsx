@@ -8,6 +8,7 @@ import FeaturesSection from '../components/FeaturesSection';
 import ComparisonSection from '../components/ComparisonSection';
 import { HorizontalAd, SquareAd, VerticalMultiplexAd } from '../components/AdSense';
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
+import ClientOnly from '../components/ClientOnly';
 import { SITE_URL, IMAGES, IDS, ORGANIZATION_ENTITY, PROVIDER_ENTITY } from '../constants/structuredData';
 
 const Home: React.FC = () => {
@@ -62,10 +63,15 @@ const Home: React.FC = () => {
 
     return (
         <>
-            <SEO
-                canonicalUrl="https://bsod.windowsforum.com/"
-            />
-            <StructuredData data={homeStructuredData} />
+            {/* Document metadata is injected after mount so the prerendered HTML
+                and first client render match exactly; the static <head> in
+                index.html already carries the homepage's canonical SEO. */}
+            <ClientOnly>
+                <SEO
+                    canonicalUrl="https://bsod.windowsforum.com/"
+                />
+                <StructuredData data={homeStructuredData} />
+            </ClientOnly>
 
             <main>
             <HeroSection

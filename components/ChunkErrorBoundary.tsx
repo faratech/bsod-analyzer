@@ -33,7 +33,7 @@ class ChunkErrorBoundary extends React.Component<React.PropsWithChildren, State>
       error.message?.includes('Loading chunk') ||
       error.message?.includes('Loading CSS chunk');
 
-    if (isChunkError) {
+    if (isChunkError && typeof window !== 'undefined') {
       // Prevent infinite reload loops: only reload once per session
       const reloadKey = 'chunk-error-reload';
       if (!sessionStorage.getItem(reloadKey)) {

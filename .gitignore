@@ -76,3 +76,6 @@ claude-flow.bat
 claude-flow.ps1
 hive-mind-prompt-*.txt
 .git.backup.*
+
+# SSR build output (build-time only, not deployed)
+dist-ssr/
