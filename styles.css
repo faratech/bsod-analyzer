@@ -956,7 +956,21 @@ body.mobile-menu-open {
 .glow-button {
   position: relative;
   box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
-  animation: buttonGlow 2s ease-in-out infinite;
+}
+
+/* Composited glow pulse: animate the opacity of a glow layer (runs on the GPU
+   compositor) instead of animating box-shadow on the button itself, which forces
+   a main-thread repaint every frame and shows up as long tasks / TBT. */
+.glow-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 40px rgba(59, 130, 246, 0.8);
+  opacity: 0;
+  animation: glowPulse 2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
 }
 
 .btn-sparkle {
@@ -1246,6 +1260,9 @@ body.mobile-menu-open {
   top: 0; left: 0; right: 0; bottom: 0;
   overflow: hidden;
   z-index: 0;
+  /* Isolate the decorative background's layout/paint from the rest of the page
+     so its continuous animations don't trigger main-thread style/layout work. */
+  contain: layout paint;
 }
 
 .animated-bg-layer {
@@ -1269,6 +1286,9 @@ body.mobile-menu-open {
   animation: floatDrift 20s ease-in-out infinite;
   pointer-events: none;
   user-select: none;
+  /* Promote to its own compositor layer so the transform animation runs off the
+     main thread (the keyframes only animate transform/opacity). */
+  will-change: transform, opacity;
 }
 
 /* Different styles for element types */
@@ -2146,9 +2166,9 @@ body.mobile-menu-open {
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes buttonGlow {
-  0%, 100% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
-  50% { box-shadow: 0 0 40px rgba(59, 130, 246, 0.8); }
+@keyframes glowPulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
 }
 
 @keyframes sparkle {
