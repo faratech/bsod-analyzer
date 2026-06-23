@@ -1,12 +1,25 @@
-// Build-time feature flags.
+// Runtime feature flags.
 //
-// __WF_SSO_ENABLED__ is injected by Vite from the WF_SSO_ENABLED env var at build
-// time (default false). While false the WindowsForum SSO + premium-tier upgrade is
-// completely dormant: no forum identity fetch, no account/paygate UI, and the
-// backend keeps its original (pre-upgrade) rate limits and WinDBG behavior — so the
-// running site is byte-for-byte unchanged. Flip WF_SSO_ENABLED=true (and rebuild)
-// to launch it.
-declare const __WF_SSO_ENABLED__: boolean;
+// The server injects `window.__WF_SSO_ENABLED__` / `window.__WF_SSO_PREVIEW__`
+// into the served HTML from env (see server.js startup), so the bundle is
+// flag-agnostic and the feature toggles with a Cloud Run env var + redeploy — no
+// rebuild, no Docker build-args. Defaults are false; during SSR/prerender there is
+// no `window`, so both are false and the prerendered homepage carries no SSO UI.
+declare global {
+  interface Window {
+    __WF_SSO_ENABLED__?: boolean;
+    __WF_SSO_PREVIEW__?: boolean;
+  }
+}
 
-export const SSO_ENABLED: boolean =
-  typeof __WF_SSO_ENABLED__ !== 'undefined' ? __WF_SSO_ENABLED__ : false;
+const w: Window | undefined = typeof window !== 'undefined' ? window : undefined;
+
+// Master switch for the whole feature (forum identity fetch + UI + tiering).
+export const SSO_ENABLED: boolean = w?.__WF_SSO_ENABLED__ === true;
+
+// Gated-preview mode: only recognized (allow-listed) users see any UI. The
+// anonymous "Sign in / Join Now" affordances stay hidden from the public, so a
+// deployed-but-gated rollout reveals nothing to anyone who isn't allow-listed.
+export const SSO_PREVIEW: boolean = w?.__WF_SSO_PREVIEW__ === true;
+
+export {};

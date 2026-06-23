@@ -266,6 +266,10 @@
     window.__ANALYTICS_ENABLED__ = true;
     window.__GA_ID__ = 'G-0HVHB49RDP';
     window.__ADS_ENABLED__ = true;
+    // WindowsForum SSO/premium flags — defaults here; the server rewrites these
+    // two lines at startup from WF_SSO_ENABLED / WF_SSO_PREVIEW env (runtime toggle).
+    window.__WF_SSO_ENABLED__ = false;
+    window.__WF_SSO_PREVIEW__ = false;
 
     (function () {
         var enableGa = window.__ANALYTICS_ENABLED__ && window.__GA_ID__;

@@ -368,6 +368,28 @@ function tierLimits(tier) {
 // so nothing about the running site reveals it. Flip WF_SSO_ENABLED=true to launch.
 const WF_SSO_ENABLED = process.env.WF_SSO_ENABLED === 'true';
 
+// Gated-preview mode: only allow-listed forum users are recognized, and the
+// client hides all anonymous UI — so a deployed-but-gated rollout reveals nothing
+// to the public. Injected into the served HTML for the client to read.
+const WF_SSO_PREVIEW = process.env.WF_SSO_PREVIEW === 'true';
+
+// Optional allow-list of forum user IDs permitted to establish an SSO session
+// (defense-in-depth; the forum /sso/whoami also gates token minting). Empty =
+// no restriction. e.g. WF_SSO_ALLOWED_UIDS=1 limits SSO to user id 1.
+const WF_SSO_ALLOWED_UIDS = (process.env.WF_SSO_ALLOWED_UIDS || '')
+  .split(',')
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n > 0);
+
+// Rewrite the runtime SSO flag defaults in the served HTML so the client reads
+// the current env values (window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__). Applied
+// to both the cached production HTML and the dev dynamic-disk path.
+function injectSsoFlags(html) {
+  return html
+    .replace('window.__WF_SSO_ENABLED__ = false;', `window.__WF_SSO_ENABLED__ = ${WF_SSO_ENABLED};`)
+    .replace('window.__WF_SSO_PREVIEW__ = false;', `window.__WF_SSO_PREVIEW__ = ${WF_SSO_PREVIEW};`);
+}
+
 // Shared HMAC secret with the WindowsForum /sso/whoami bridge (XenForo
 // $config['wfSsoSecret']). Optional: when unset, SSO is disabled and the app
 // behaves exactly as before (anonymous Turnstile sessions only).
@@ -1488,6 +1510,13 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
     const identity = await verifyWfSsoToken(token);
     if (!identity) {
       return res.status(401).json({ success: false, error: 'Invalid or expired SSO token', code: 'SSO_INVALID' });
+    }
+
+    // Gated rollout: when an allow-list is configured, only those forum user IDs
+    // may establish a session (defense-in-depth alongside the forum-side gate).
+    if (WF_SSO_ALLOWED_UIDS.length && !WF_SSO_ALLOWED_UIDS.includes(identity.uid)) {
+      log.warn('sso.exchange.not_allowlisted', { uid: identity.uid });
+      return res.status(403).json({ success: false, error: 'Not available', code: 'SSO_NOT_ALLOWED' });
     }
 
     const { sessionId, sessionHash, sessionData } = generateSessionCookie(true);
@@ -3414,7 +3443,7 @@ app.use((req, res) => {
       let diskPath = path.join(__dirname, 'dist', isHome ? 'index.prerendered.html' : 'index.html');
       if (isHome && !fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
       if (fs.existsSync(diskPath)) {
-        res.send(fs.readFileSync(diskPath, 'utf-8'));
+        res.send(injectSsoFlags(fs.readFileSync(diskPath, 'utf-8')));
         return;
       }
     } catch (e) {
@@ -3464,6 +3493,15 @@ async function startServer() {
     } else {
       cachedHomeHtml = cachedIndexHtml;
       console.warn('dist/index.prerendered.html not found - serving client-rendered homepage for "/"');
+    }
+
+    // Inject the runtime SSO feature flags into the cached HTML (the client reads
+    // window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__) so the feature toggles by env
+    // without a rebuild.
+    cachedIndexHtml = injectSsoFlags(cachedIndexHtml);
+    cachedHomeHtml = injectSsoFlags(cachedHomeHtml);
+    if (WF_SSO_ENABLED) {
+      console.log(`[SSO] Feature ENABLED (preview=${WF_SSO_PREVIEW}, allowedUids=[${WF_SSO_ALLOWED_UIDS.join(',')}])`);
     }
 
     // Build Link header from built assets for Early Hints (Cloudflare)
