@@ -33,6 +33,7 @@ import {
   submitWinDbgJob,
   toLegacyWinDbgStatusResponse
 } from './shared/windbgApiClient.js';
+import { isForumIdentityEnabled, resolveForumIdentityFromCookies } from './services/forumIdentity.js';
 import {
   createFastifyCompatApp,
   jsonParser,
@@ -1448,6 +1449,31 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
     if (!validation.valid || !validation.sessionData?.turnstileVerified) {
       clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+    }
+
+    // Cookie-based forum identity (server-to-server validator). DORMANT until the
+    // forum shares its xf_* cookies to `.windowsforum.com` — this only fires when
+    // an xf_session/xf_user cookie actually reaches this subdomain, so until the
+    // cookie-domain migration it is a no-op and the legacy token path is untouched.
+    // When present it is the source of truth: it stamps (or clears) the forum tier,
+    // so a forum logout/expiry propagates here within the validator's ~45s cache.
+    if (WF_SSO_ENABLED && isForumIdentityEnabled() && (req.cookies.xf_session || req.cookies.xf_user)) {
+      const ident = await resolveForumIdentityFromCookies(req.cookies, clientIp);
+      const allowed = ident && (!WF_SSO_ALLOWED_UIDS.length || WF_SSO_ALLOWED_UIDS.includes(ident.userId));
+      if (allowed) {
+        validation.sessionData.tier = ident.tier;
+        validation.sessionData.wfUserId = ident.userId;
+        validation.sessionData.wfUsername = ident.username;
+        validation.sessionData.wfAvatar = ident.avatar;
+        validation.sessionData.wfVerifiedAt = Date.now();
+        validation.sessionData.tierExpiresAt = Date.now() + PREMIUM_REVERIFY_MS;
+      } else {
+        delete validation.sessionData.tier;
+        delete validation.sessionData.wfUserId;
+        delete validation.sessionData.wfUsername;
+        delete validation.sessionData.wfAvatar;
+        delete validation.sessionData.tierExpiresAt;
+      }
     }
 
     validation.sessionData.timestamp = Date.now();
