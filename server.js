@@ -1538,6 +1538,15 @@ function sessionIdentity(sessionData) {
   return { tier, user };
 }
 
+function clearForumIdentity(sessionData) {
+  delete sessionData.tier;
+  delete sessionData.wfUserId;
+  delete sessionData.wfUsername;
+  delete sessionData.wfAvatar;
+  delete sessionData.wfVerifiedAt;
+  delete sessionData.tierExpiresAt;
+}
+
 // Exchange a WindowsForum SSO identity token (from /sso/whoami) for a tiered
 // BSOD session. The forum established identity from its own session cookie and
 // signed it; here we verify signature + freshness + single-use, then mint our
@@ -1584,6 +1593,20 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
   } catch (error) {
     console.error('SSO exchange error:', error);
     res.status(500).json({ success: false, error: 'SSO exchange failed' });
+  }
+});
+
+app.post('/api/auth/wf/clear', authLimiter, requireSession, async (req, res) => {
+  try {
+    if (req.sessionData) {
+      clearForumIdentity(req.sessionData);
+      req.sessionData.timestamp = Date.now();
+      await storeSession(req.sessionId, req.sessionData);
+    }
+    res.json({ success: true, ...sessionIdentity(req.sessionData || {}) });
+  } catch (error) {
+    console.error('SSO clear error:', error);
+    res.status(500).json({ success: false, error: 'SSO clear failed' });
   }
 });
 
