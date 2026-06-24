@@ -344,10 +344,69 @@ const SESSION_EXPIRY_SECONDS = Math.ceil(SESSION_EXPIRY / 1000);
 
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
-const REQUEST_LIMIT_PER_SESSION = 50; // Max 50 requests per hour per session
-// totalTokens now accumulates input + output (prior code added only output). Per-request input
-// dropped ~5x with the prompt/size-cap changes, so 50 × typical ~6K = ~300K, well under this cap.
-const TOKEN_LIMIT_PER_SESSION = 500000; // Max ~500K tokens per hour per session
+const REQUEST_LIMIT_PER_SESSION = 50; // Legacy flat cap; superseded by TIER_LIMITS below.
+const TOKEN_LIMIT_PER_SESSION = 500000;
+
+// Tier-based hourly quotas. Anonymous (Turnstile only) gets a functional but
+// limited allowance; a logged-in WindowsForum member gets more; a Premium
+// Supporter (forum user group 312, established via the SSO bridge) gets the
+// most. Enforced at the AI chokepoint. For logged-in users the quota is keyed
+// on the stable forum userId (not the ephemeral sessionId) so it cannot be
+// reset by re-doing Turnstile or minting a new session.
+const TIER_LIMITS = {
+  anon: { requests: 10, tokens: 100_000 },
+  forum: { requests: 25, tokens: 250_000 },
+  premium: { requests: 100, tokens: 1_000_000 },
+};
+function tierLimits(tier) {
+  return TIER_LIMITS[tier] || TIER_LIMITS.anon;
+}
+
+// Master switch for the WindowsForum SSO + premium-tier upgrade. Default OFF: the
+// whole feature stays dormant and the server behaves exactly as before the upgrade
+// (flat 50/500K limits, no premium WinDBG gate, no tier in the session response),
+// so nothing about the running site reveals it. Flip WF_SSO_ENABLED=true to launch.
+const WF_SSO_ENABLED = process.env.WF_SSO_ENABLED === 'true';
+
+// Gated-preview mode: only allow-listed forum users are recognized, and the
+// client hides all anonymous UI — so a deployed-but-gated rollout reveals nothing
+// to the public. Injected into the served HTML for the client to read.
+const WF_SSO_PREVIEW = process.env.WF_SSO_PREVIEW === 'true';
+
+// Optional allow-list of forum user IDs permitted to establish an SSO session
+// (defense-in-depth; the forum /sso/whoami also gates token minting). Empty =
+// no restriction. e.g. WF_SSO_ALLOWED_UIDS=1 limits SSO to user id 1.
+const WF_SSO_ALLOWED_UIDS = (process.env.WF_SSO_ALLOWED_UIDS || '')
+  .split(',')
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n > 0);
+
+// Rewrite the runtime SSO flag defaults in the served HTML so the client reads
+// the current env values (window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__). Applied
+// to both the cached production HTML and the dev dynamic-disk path.
+function injectSsoFlags(html) {
+  return html
+    .replace('window.__WF_SSO_ENABLED__ = false;', `window.__WF_SSO_ENABLED__ = ${WF_SSO_ENABLED};`)
+    .replace('window.__WF_SSO_PREVIEW__ = false;', `window.__WF_SSO_PREVIEW__ = ${WF_SSO_PREVIEW};`);
+}
+
+// Shared HMAC secret with the WindowsForum /sso/whoami bridge (XenForo
+// $config['wfSsoSecret']). Optional: when unset, SSO is disabled and the app
+// behaves exactly as before (anonymous Turnstile sessions only).
+const WF_SSO_SECRET = process.env.WF_SSO_SECRET || '';
+const WF_SSO_ISSUER = 'windowsforum.com';
+const WF_SSO_AUDIENCE = 'bsod';
+const WF_SSO_MAX_AGE_MS = 5 * 60 * 1000; // reject tokens older than this regardless of exp
+const WF_SSO_NONCE_TTL_SECONDS = 10 * 60; // single-use window for a token's jti
+// An elevated tier (forum/premium) is only honored for this long after the SSO
+// exchange that established it. The session itself may live up to SESSION_EXPIRY,
+// but premium privileges expire independently so a cancelled/refunded/expired
+// forum membership cannot retain premium indefinitely on a long-open tab. The
+// client silently re-verifies (whoami+exchange) on an interval below this.
+const PREMIUM_REVERIFY_MS = 30 * 60 * 1000; // 30 minutes
+if (process.env.NODE_ENV === 'production' && !WF_SSO_SECRET) {
+  console.warn('[SSO] WF_SSO_SECRET not configured — WindowsForum single sign-on is disabled.');
+}
 
 // Track which hashes/jobs were proven by a session uploading the corresponding file.
 const sessionHashOwnership = new Map(); // sessionId -> Map(hash -> timestamp)
@@ -760,7 +819,7 @@ const CSP_HEADER = [
   "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://generativelanguage.googleapis.com https://www.paypal.com",
+  "connect-src 'self' https://windowsforum.com https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://generativelanguage.googleapis.com https://www.paypal.com",
   "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
   "object-src 'none'",
   "base-uri 'self'",
@@ -1073,8 +1132,72 @@ async function validateSession(sessionId, sessionHash) {
   if (sessionData.hash !== sessionHash) {
     return { valid: false, reason: 'Invalid session hash' };
   }
-  
+
   return { valid: true, sessionData };
+}
+
+// Verify a WindowsForum SSO identity token: a compact HS256 JWS minted by the
+// /sso/whoami forum bridge from the signed-in forum session. Returns validated
+// identity or null. The browser is never trusted — the token is HMAC-signed
+// with the shared WF_SSO_SECRET, bound to a single forum user, time-limited,
+// and single-use (jti nonce) to prevent replay.
+async function verifyWfSsoToken(token) {
+  if (!WF_SSO_SECRET || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [h, p, sig] = parts;
+
+  // Constant-time compare over the exact received header.payload bytes.
+  let provided;
+  try {
+    provided = Buffer.from(sig, 'base64url');
+  } catch {
+    return null;
+  }
+  const expected = crypto.createHmac('sha256', WF_SSO_SECRET).update(`${h}.${p}`).digest();
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return null;
+  }
+
+  let claims;
+  try {
+    claims = JSON.parse(Buffer.from(p, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+
+  const now = Date.now();
+  if (claims.v !== 1) return null;
+  if (claims.iss !== WF_SSO_ISSUER || claims.aud !== WF_SSO_AUDIENCE) return null;
+  if (!Number.isInteger(claims.uid) || claims.uid <= 0) return null;
+  const iatMs = Number(claims.iat) * 1000;
+  const expMs = Number(claims.exp) * 1000;
+  if (!Number.isFinite(iatMs) || !Number.isFinite(expMs)) return null;
+  if (now >= expMs) return null;                    // expired
+  if (iatMs - 60_000 > now) return null;            // issued in the future (60s skew)
+  if (now - iatMs > WF_SSO_MAX_AGE_MS) return null; // too old regardless of exp
+  if (typeof claims.jti !== 'string' || !/^[a-f0-9]{16,64}$/i.test(claims.jti)) return null;
+
+  // Single-use: the first INCR wins; any later use of the same jti is a replay.
+  const nonce = await incrementRuntimeCounter(`sso-nonce:${claims.jti}`, WF_SSO_NONCE_TTL_SECONDS);
+  if (!nonce) {
+    // incrementRuntimeCounter returns null when the cache is disabled OR on any
+    // Redis error. If the runtime store is in use we cannot guarantee single-use,
+    // so FAIL CLOSED rather than silently allowing replay. Only when no cache is
+    // configured at all (local dev) is replay protection moot.
+    if (isCacheEnabled()) return null;
+  } else if (nonce.count > 1) {
+    return null; // replay
+  }
+
+  const isPremium = claims.pre === true;
+  return {
+    uid: claims.uid,
+    username: typeof claims.un === 'string' ? claims.un.slice(0, 80) : '',
+    avatar: typeof claims.av === 'string' && /^https:\/\//i.test(claims.av) ? claims.av.slice(0, 400) : '',
+    isPremium,
+    tier: isPremium ? 'premium' : 'forum',
+  };
 }
 
 // Middleware to validate session for analyzer API
@@ -1084,8 +1207,11 @@ const requireSession = async (req, res, next) => {
   const clientIp = getClientIp(req);
 
   try {
-    // In development mode, skip validation
+    // In development mode, skip validation. Seed a tier so the premium-gated
+    // paths (WinDBG, tiered quota) are exercisable locally; override with WF_DEV_TIER.
     if (process.env.NODE_ENV === 'development') {
+      req.tier = process.env.WF_DEV_TIER || 'premium';
+      req.wfUserId = req.wfUserId || 'dev';
       return next();
     }
 
@@ -1127,6 +1253,11 @@ const requireSession = async (req, res, next) => {
     req.sessionId = sessionId;
     req.sessionData = sessionData;
     req.clientIp = clientIp;
+    // Forum SSO identity (if this session was established via /api/auth/wf/exchange).
+    // effectiveTier() downgrades to 'anon' once the re-verification window elapses,
+    // even though the session itself is renewed on every request.
+    req.tier = effectiveTier(sessionData);
+    req.wfUserId = sessionData.wfUserId || null;
 
     next();
   } catch (error) {
@@ -1327,11 +1458,89 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
       httpOnly: false,
       maxAge: 2 * 60 * 60 * 1000
     });
-    
-    res.json({ success: true });
+
+    // When the feature is off, return the original bare shape so the response is
+    // indistinguishable from the pre-upgrade server.
+    res.json(WF_SSO_ENABLED ? { success: true, ...sessionIdentity(validation.sessionData) } : { success: true });
   } catch (error) {
     console.error('Session refresh error:', error);
     res.status(500).json({ error: 'Failed to refresh session' });
+  }
+});
+
+// The honored tier for a session: the stored tier, downgraded to 'anon' once the
+// re-verification window (tierExpiresAt) has elapsed. The session may outlive the
+// tier; premium privileges must not.
+function effectiveTier(sessionData) {
+  if (!sessionData) return 'anon';
+  if (sessionData.tierExpiresAt && Date.now() > sessionData.tierExpiresAt) return 'anon';
+  return sessionData.tier || 'anon';
+}
+
+// Shape the forum-user portion of a session for the client (used by the session
+// refresh and SSO exchange responses). Anonymous Turnstile sessions report the
+// 'anon' tier with no user. The tier reflects effectiveTier() so the client can
+// see a downgrade and silently re-verify.
+function sessionIdentity(sessionData) {
+  const tier = effectiveTier(sessionData);
+  const user = sessionData?.wfUserId
+    ? {
+        userId: sessionData.wfUserId,
+        username: sessionData.wfUsername || '',
+        avatar: sessionData.wfAvatar || '',
+        tier,
+        isPremium: tier === 'premium',
+      }
+    : null;
+  return { tier, user };
+}
+
+// Exchange a WindowsForum SSO identity token (from /sso/whoami) for a tiered
+// BSOD session. The forum established identity from its own session cookie and
+// signed it; here we verify signature + freshness + single-use, then mint our
+// own session. SSO is a stronger signal than Turnstile, so the session is also
+// marked turnstile-verified — logged-in members skip the bot check entirely.
+app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, res) => {
+  try {
+    if (!WF_SSO_ENABLED || !WF_SSO_SECRET) {
+      return res.status(503).json({ success: false, error: 'SSO not configured', code: 'SSO_DISABLED' });
+    }
+
+    const token = req.body?.token;
+    const identity = await verifyWfSsoToken(token);
+    if (!identity) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired SSO token', code: 'SSO_INVALID' });
+    }
+
+    // Gated rollout: when an allow-list is configured, only those forum user IDs
+    // may establish a session (defense-in-depth alongside the forum-side gate).
+    if (WF_SSO_ALLOWED_UIDS.length && !WF_SSO_ALLOWED_UIDS.includes(identity.uid)) {
+      log.warn('sso.exchange.not_allowlisted', { uid: identity.uid });
+      return res.status(403).json({ success: false, error: 'Not available', code: 'SSO_NOT_ALLOWED' });
+    }
+
+    const { sessionId, sessionHash, sessionData } = generateSessionCookie(true);
+    sessionData.tier = identity.tier; // 'premium' | 'forum'
+    sessionData.wfUserId = identity.uid;
+    sessionData.wfUsername = identity.username;
+    sessionData.wfAvatar = identity.avatar;
+    sessionData.wfVerifiedAt = Date.now();
+    // The elevated tier is only honored until this; the client re-verifies before it.
+    sessionData.tierExpiresAt = Date.now() + PREMIUM_REVERIFY_MS;
+    await storeSession(sessionId, sessionData);
+
+    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
+    res.cookie('bsod_turnstile_verified', 'true', {
+      ...cookieOptions,
+      httpOnly: false,
+      maxAge: 2 * 60 * 60 * 1000
+    });
+
+    log.info('sso.exchange', { uid: identity.uid, tier: identity.tier });
+    res.json({ success: true, ...sessionIdentity(sessionData) });
+  } catch (error) {
+    console.error('SSO exchange error:', error);
+    res.status(500).json({ success: false, error: 'SSO exchange failed' });
   }
 });
 
@@ -1560,9 +1769,24 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // Security: Session validation is handled by requireSession middleware
     // Additional security layers: rate limiting, prompt validation, system instruction
 
+    // Quota. With the feature ON: tier-based, keyed so it survives session churn
+    // (logged-in users on the stable forum userId, anonymous visitors on the client
+    // IP so re-doing Turnstile can't reset it). With the feature OFF: the original
+    // flat 50/500K cap keyed on the sessionId, identical to the pre-upgrade server.
+    let tier, limits, quotaKey;
+    if (WF_SSO_ENABLED) {
+      tier = req.tier || 'anon';
+      limits = tierLimits(tier);
+      quotaKey = req.wfUserId ? `wfuser:${req.wfUserId}` : `ip:${getClientIp(req)}`;
+    } else {
+      tier = 'anon';
+      limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
+      quotaKey = sessionId;
+    }
+
     // SECURITY: Check per-session rate limiting (prevent abuse even with valid prompts)
     const now = Date.now();
-    let sessionTracking = await loadSessionTracking(sessionId);
+    let sessionTracking = await loadSessionTracking(quotaKey);
 
     if (!sessionTracking || now > sessionTracking.resetTime) {
       // Initialize or reset tracking
@@ -1574,16 +1798,18 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     }
 
     // Check request limit
-    if (sessionTracking.count >= REQUEST_LIMIT_PER_SESSION) {
+    if (sessionTracking.count >= limits.requests) {
       log.warn('session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
+        tier,
         ip: getClientIp(req),
         requestCount: sessionTracking.count,
         resetTime: sessionTracking.resetTime
       });
       return res.status(429).json({
-        error: `Rate limit exceeded. Maximum ${REQUEST_LIMIT_PER_SESSION} analysis requests per hour.`,
+        error: `Rate limit exceeded. Maximum ${limits.requests} analysis requests per hour${WF_SSO_ENABLED ? ' for your tier' : ''}.`,
         code: 'SESSION_RATE_LIMIT',
+        ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
         resetTime: sessionTracking.resetTime
       });
     }
@@ -1612,16 +1838,20 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const estimatedInputTokens = Math.ceil(requestText.length / 4);
 
     // Check token limit
-    if (sessionTracking.totalTokens + estimatedInputTokens > TOKEN_LIMIT_PER_SESSION) {
+    if (sessionTracking.totalTokens + estimatedInputTokens > limits.tokens) {
       log.warn('session.token_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
+        tier,
         ip: getClientIp(req),
         totalTokens: sessionTracking.totalTokens,
         estimatedRequest: estimatedInputTokens
       });
       return res.status(429).json({
-        error: 'Token quota exceeded for this session. Please try again later.',
+        error: WF_SSO_ENABLED
+          ? 'Token quota exceeded for your tier. Please try again later.'
+          : 'Token quota exceeded for this session. Please try again later.',
         code: 'SESSION_TOKEN_LIMIT',
+        ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
         resetTime: sessionTracking.resetTime
       });
     }
@@ -1655,7 +1885,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
-    await storeSessionTracking(sessionId, sessionTracking);
+    await storeSessionTracking(quotaKey, sessionTracking);
     
     // Always use the model from config file (re-read with 30s TTL so model.cfg can be
     // swapped at runtime) — ignore any client-provided model for security.
@@ -1696,7 +1926,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
     sessionTracking.totalTokens += actualInputTokens + outputTokens - estimatedInputTokens;
-    await storeSessionTracking(sessionId, sessionTracking);
+    await storeSessionTracking(quotaKey, sessionTracking);
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -1884,6 +2114,18 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 // Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
+    // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
+    // tiers (anonymous + logged-in members) fall back client-side to the local
+    // parser + Gemini analysis path, so a 403 here is expected, not an error. Only
+    // enforced when the upgrade is live; otherwise WinDBG works for everyone as before.
+    if (WF_SSO_ENABLED && (req.tier || 'anon') !== 'premium') {
+      return res.status(403).json({
+        success: false,
+        error: 'Deep WinDBG analysis is a WindowsForum Premium Supporters feature.',
+        code: 'PREMIUM_REQUIRED'
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -3192,16 +3434,30 @@ app.use((req, res) => {
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
 
-  // The homepage is prerendered into #root (hydrated on the client) for fast
-  // LCP; every other route is served with an empty #root and rendered fully on
-  // the client. Other routes must NOT get the homepage markup or hydration
-  // would mismatch. In development, read from disk to avoid stale caching.
+  // The homepage and the static inner routes (/about, /documentation, /donate,
+  // /analyzer) are prerendered into #root and hydrated on the client; any other
+  // route is served with an empty #root and rendered fully on the client. Each
+  // route must get its OWN prerendered markup (or the empty shell) — never another
+  // route's — or hydration would mismatch. In development, read from disk to avoid
+  // stale caching.
   if (process.env.NODE_ENV !== 'production') {
     try {
-      let diskPath = path.join(__dirname, 'dist', isHome ? 'index.prerendered.html' : 'index.html');
-      if (isHome && !fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
+      let diskPath;
+      if (isHome) {
+        diskPath = path.join(__dirname, 'dist', 'index.prerendered.html');
+        if (!fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
+      } else {
+        // Single-segment route name only (guards the disk read against traversal).
+        const seg = normalized.slice(1);
+        const routeFile = /^[a-z0-9_-]+$/i.test(seg)
+          ? path.join(__dirname, 'dist', 'prerendered', seg + '.html')
+          : null;
+        diskPath = routeFile && fs.existsSync(routeFile)
+          ? routeFile
+          : path.join(__dirname, 'dist', 'index.html');
+      }
       if (fs.existsSync(diskPath)) {
-        res.send(fs.readFileSync(diskPath, 'utf-8'));
+        res.send(injectSsoFlags(fs.readFileSync(diskPath, 'utf-8')));
         return;
       }
     } catch (e) {
@@ -3209,13 +3465,22 @@ app.use((req, res) => {
     }
   }
 
-  res.send(isHome ? cachedHomeHtml : cachedIndexHtml);
+  // Production (in-memory): the route's prerendered HTML when present, else the
+  // client-rendered shell for dynamic/unknown routes.
+  if (isHome) {
+    res.send(cachedHomeHtml);
+  } else {
+    res.send(cachedRouteHtml[normalized] || cachedIndexHtml);
+  }
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
 let cachedIndexHtml;
 // Prerendered homepage HTML served for the "/" route (falls back to index.html)
 let cachedHomeHtml;
+// Prerendered per-route HTML keyed by route ("/about" -> markup); populated from
+// dist/prerendered/*.html at startup. Unknown routes fall back to cachedIndexHtml.
+let cachedRouteHtml = {};
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
 
@@ -3251,6 +3516,30 @@ async function startServer() {
     } else {
       cachedHomeHtml = cachedIndexHtml;
       console.warn('dist/index.prerendered.html not found - serving client-rendered homepage for "/"');
+    }
+
+    // Inject the runtime SSO feature flags into the cached HTML (the client reads
+    // window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__) so the feature toggles by env
+    // without a rebuild.
+    cachedIndexHtml = injectSsoFlags(cachedIndexHtml);
+    cachedHomeHtml = injectSsoFlags(cachedHomeHtml);
+
+    // Per-route prerendered HTML (scripts/prerender.mjs writes dist/prerendered/<route>.html).
+    // Served for each exact route so Auto-ads + crawlers see a fully laid-out page; an
+    // empty #root shell makes Auto-ads pin viewport-fixed rails over content. Unknown /
+    // dynamic routes still fall back to the client-rendered shell (cachedIndexHtml).
+    const prerenderedDir = path.join(__dirname, 'dist', 'prerendered');
+    if (fs.existsSync(prerenderedDir)) {
+      for (const file of fs.readdirSync(prerenderedDir)) {
+        if (!file.endsWith('.html')) continue;
+        const route = '/' + file.slice(0, -5);
+        cachedRouteHtml[route] = injectSsoFlags(fs.readFileSync(path.join(prerenderedDir, file), 'utf-8'));
+        console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(cachedRouteHtml[route])} bytes)`);
+      }
+    }
+
+    if (WF_SSO_ENABLED) {
+      console.log(`[SSO] Feature ENABLED (preview=${WF_SSO_PREVIEW}, allowedUids=[${WF_SSO_ALLOWED_UIDS.join(',')}])`);
     }
 
     // Build Link header from built assets for Early Hints (Cloudflare)

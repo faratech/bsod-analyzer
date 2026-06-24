@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
 import ThemeToggle from './ThemeToggle';
+import ClientOnly from './ClientOnly';
+import AccountWidget from './AccountWidget';
+import { SSO_ENABLED } from '../services/featureFlags';
 
 const Navigation: React.FC = () => {
     const location = useLocation();
@@ -61,6 +64,11 @@ const Navigation: React.FC = () => {
                                 Support Us
                             </Link>
                             <ThemeToggle />
+                            {SSO_ENABLED && (
+                                <ClientOnly>
+                                    <AccountWidget />
+                                </ClientOnly>
+                            )}
                         </nav>
 
                         {/* Mobile Menu Button */}
@@ -109,13 +117,18 @@ const Navigation: React.FC = () => {
                     >
                         Documentation
                     </Link>
-                    <Link 
-                        to="/donate" 
+                    <Link
+                        to="/donate"
                         className={`mobile-nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}
                         onClick={closeMobileMenu}
                     >
                         Support Us
                     </Link>
+                    {SSO_ENABLED && (
+                        <ClientOnly>
+                            <AccountWidget mobile />
+                        </ClientOnly>
+                    )}
                 </div>
             </nav>
         </>
