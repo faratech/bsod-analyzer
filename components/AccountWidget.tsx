@@ -8,7 +8,7 @@ import { SSO_PREVIEW, SSO_SIGNIN_PREVIEW } from '../services/featureFlags';
  * hydration exact), then revealed post-mount once SSO has resolved.
  */
 const AccountWidget: React.FC<{ mobile?: boolean }> = ({ mobile = false }) => {
-  const { status, loggedIn, user, signIn } = useAuth();
+  const { status, loggedIn, user, signedOut, signIn, signOut } = useAuth();
 
   // While SSO resolves, render nothing (brief; avoids a sign-in→signed-in flicker).
   if (status === 'loading') return null;
@@ -24,7 +24,7 @@ const AccountWidget: React.FC<{ mobile?: boolean }> = ({ mobile = false }) => {
     // Gated preview: show nothing to anyone who isn't a recognized (allow-listed)
     // user, so the public sees no sign of the feature — UNLESS a tester opted in
     // with ?signin=1 to exercise the login redirect.
-    if (SSO_PREVIEW && !SSO_SIGNIN_PREVIEW) return null;
+    if (SSO_PREVIEW && !SSO_SIGNIN_PREVIEW && !signedOut) return null;
     return (
       <div className="account-widget" style={wrapStyle}>
         <button type="button" className="btn btn-primary" onClick={signIn} style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
@@ -49,6 +49,14 @@ const AccountWidget: React.FC<{ mobile?: boolean }> = ({ mobile = false }) => {
       <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {user?.username}
       </span>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={signOut}
+        style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+      >
+        Log out
+      </button>
     </div>
   );
 };

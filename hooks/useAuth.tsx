@@ -4,11 +4,15 @@ import {
   fetchSessionIdentity,
   silentWhoami,
   exchangeToken,
+  clearForumIdentity,
+  isForumAutoSignInSuppressed,
+  suppressForumAutoSignIn,
+  allowForumAutoSignIn,
   consumeCallbackToken,
   signInRedirect,
 } from '../services/wfAuth';
 import { setClientTier, Tier } from '../services/tierState';
-import { markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
+import { markSessionInitialized, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 import { SSO_ENABLED } from '../services/featureFlags';
 
 type AuthStatus = 'loading' | 'ready';
@@ -22,7 +26,9 @@ interface AuthContextType {
   user: WfUser | null;
   loggedIn: boolean;
   isPremium: boolean;
+  signedOut: boolean;
   signIn: () => void;
+  signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -36,15 +42,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [status, setStatus] = useState<AuthStatus>(SSO_ENABLED ? 'loading' : 'ready');
   const [tier, setTier] = useState<Tier>('anon');
   const [user, setUser] = useState<WfUser | null>(null);
+  const [signedOut, setSignedOut] = useState(() => SSO_ENABLED && isForumAutoSignInSuppressed());
 
   const applyUser = useCallback((u: WfUser | null, t: Tier) => {
     setUser(u);
     setTier(t);
     setClientTier(t);
     if (u) {
+      allowForumAutoSignIn();
+      setSignedOut(false);
       // The exchange already established a verified BSOD session (cookies set).
       markSessionInitialized();
       startSessionRefresh();
+    } else {
+      stopSessionRefresh();
     }
   }, []);
 
@@ -60,26 +71,46 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
     }
 
-    // 1) Does our existing BSOD session already carry forum identity?
+    if (cb?.anon) {
+      await clearForumIdentity();
+      setSignedOut(false);
+      applyUser(null, 'anon');
+      setStatus('ready');
+      return;
+    }
+
+    if (isForumAutoSignInSuppressed()) {
+      setSignedOut(true);
+      await clearForumIdentity();
+      applyUser(null, 'anon');
+      setStatus('ready');
+      return;
+    }
+
+    // 1) Ask XenForo first. A concrete logged-out answer is authoritative; a
+    // timeout/CORS failure returns null and lets the existing BSOD session stand.
+    const who = await silentWhoami();
+    if (who?.logged_in && who.token) {
+      const u = await exchangeToken(who.token);
+      if (u) {
+        applyUser(u, u.tier);
+        setStatus('ready');
+        return;
+      }
+    }
+    if (who && !who.logged_in) {
+      await clearForumIdentity();
+      applyUser(null, 'anon');
+      setStatus('ready');
+      return;
+    }
+
+    // 2) If XenForo could not be reached, preserve an existing BSOD session.
     const existing = await fetchSessionIdentity();
     if (existing?.user) {
       applyUser(existing.user, existing.tier);
       setStatus('ready');
       return;
-    }
-
-    // 2) Silent same-site check against the forum (skip if the fallback already
-    //    told us the visitor is anonymous).
-    if (!cb?.anon) {
-      const who = await silentWhoami();
-      if (who?.logged_in && who.token) {
-        const u = await exchangeToken(who.token);
-        if (u) {
-          applyUser(u, u.tier);
-          setStatus('ready');
-          return;
-        }
-      }
     }
 
     // Anonymous.
@@ -95,6 +126,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // Status-quiet re-verification: updates tier/user without flipping back to
   // 'loading' (so the account widget doesn't flicker on background re-checks).
   const refresh = useCallback(async () => {
+    if (isForumAutoSignInSuppressed()) {
+      setSignedOut(true);
+      await clearForumIdentity();
+      applyUser(null, 'anon');
+      return;
+    }
+
     const who = await silentWhoami();
     if (who?.logged_in && who.token) {
       const u = await exchangeToken(who.token);
@@ -102,6 +140,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         applyUser(u, u.tier);
         return;
       }
+    }
+    if (who && !who.logged_in) {
+      await clearForumIdentity();
+      applyUser(null, 'anon');
+      return;
     }
     const existing = await fetchSessionIdentity();
     if (existing?.user) {
@@ -137,13 +180,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [refresh]);
 
+  const signOut = useCallback(async () => {
+    suppressForumAutoSignIn();
+    setSignedOut(true);
+    await clearForumIdentity();
+    applyUser(null, 'anon');
+    setStatus('ready');
+  }, [applyUser]);
+
   const value: AuthContextType = {
     status,
     tier,
     user,
     loggedIn: !!user,
     isPremium: tier === 'premium',
+    signedOut,
     signIn: signInRedirect,
+    signOut,
     refresh,
   };
 
