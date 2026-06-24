@@ -2314,12 +2314,19 @@ body.mobile-menu-open {
 /* Documentation Layout - OPTIMIZATION: Extract to docs.css for better code splitting */
 .docs-layout {
   display: grid;
-  grid-template-columns: 250px 1fr;
+  grid-template-columns: 250px minmax(0, 1fr);
   gap: 3rem;
   align-items: flex-start;
   margin-top: 2rem;
   width: 100%;
-  max-width: 100%;
+  /* Bound to a centered reading column so Google Auto-ads side rails get their own
+     gutter and never overlap the sticky TOC (.docs-nav). Edge-to-edge, the layout left
+     only ~104px gutter at 1440px, so a viewport-pinned side rail covered the TOC;
+     centering at 1024px yields ~170px (1366px) to ~450px (1920px) gutters across the
+     widths where rails appear — wide enough for them to sit beside the content. We make
+     room for the ads rather than hiding them (hiding served ads violates AdSense policy). */
+  max-width: 1024px;
+  margin-inline: auto;
   overflow-x: clip;
   position: relative;
 }
