@@ -382,6 +382,18 @@ const WF_SSO_ALLOWED_UIDS = (process.env.WF_SSO_ALLOWED_UIDS || '')
   .map((s) => Number(s.trim()))
   .filter((n) => Number.isInteger(n) && n > 0);
 
+// Deny-by-default gate. An unset/blank/typo'd allow-list parses to [] and must NOT
+// silently mean "allow everyone" while the feature is gated. With an allow-list
+// set, only those UIDs pass; with none set, forum members pass ONLY once preview
+// mode is off (i.e. an intentional public launch), never as a side effect of a typo.
+function isUidAllowed(uid) {
+  if (!Number.isInteger(uid) || uid <= 0) return false;
+  return WF_SSO_ALLOWED_UIDS.length ? WF_SSO_ALLOWED_UIDS.includes(uid) : !WF_SSO_PREVIEW;
+}
+if (WF_SSO_ENABLED && (process.env.WF_SSO_ALLOWED_UIDS || '').trim() !== '' && WF_SSO_ALLOWED_UIDS.length === 0) {
+  console.error('[SSO] WF_SSO_ALLOWED_UIDS is set but parsed to ZERO valid UIDs — likely a typo; SSO will deny everyone while preview is on.');
+}
+
 // Rewrite the runtime SSO flag defaults in the served HTML so the client reads
 // the current env values (window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__). Applied
 // to both the cached production HTML and the dev dynamic-disk path.
@@ -1455,11 +1467,14 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
     // forum shares its xf_* cookies to `.windowsforum.com` — this only fires when
     // an xf_session/xf_user cookie actually reaches this subdomain, so until the
     // cookie-domain migration it is a no-op and the legacy token path is untouched.
-    // When present it is the source of truth: it stamps (or clears) the forum tier,
-    // so a forum logout/expiry propagates here within the validator's ~45s cache.
+    // When present it is the source of truth and (re)stamps or clears the forum tier
+    // here. NOTE: this re-resolution runs on the /api/auth/session refresh, so a
+    // forum logout surfaces here within the validator's ~45s cache — but gated
+    // features behind requireSession honor the stamped tier until tierExpiresAt
+    // (PREMIUM_REVERIFY_MS), so premium revocation has up to that worst-case lag.
     if (WF_SSO_ENABLED && isForumIdentityEnabled() && (req.cookies.xf_session || req.cookies.xf_user)) {
       const ident = await resolveForumIdentityFromCookies(req.cookies, clientIp);
-      const allowed = ident && (!WF_SSO_ALLOWED_UIDS.length || WF_SSO_ALLOWED_UIDS.includes(ident.userId));
+      const allowed = ident && isUidAllowed(ident.userId);
       if (allowed) {
         validation.sessionData.tier = ident.tier;
         validation.sessionData.wfUserId = ident.userId;
@@ -1468,10 +1483,12 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
         validation.sessionData.wfVerifiedAt = Date.now();
         validation.sessionData.tierExpiresAt = Date.now() + PREMIUM_REVERIFY_MS;
       } else {
+        // Forum says logged-out / not allow-listed -> drop all forum identity.
         delete validation.sessionData.tier;
         delete validation.sessionData.wfUserId;
         delete validation.sessionData.wfUsername;
         delete validation.sessionData.wfAvatar;
+        delete validation.sessionData.wfVerifiedAt;
         delete validation.sessionData.tierExpiresAt;
       }
     }
@@ -1540,7 +1557,7 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
 
     // Gated rollout: when an allow-list is configured, only those forum user IDs
     // may establish a session (defense-in-depth alongside the forum-side gate).
-    if (WF_SSO_ALLOWED_UIDS.length && !WF_SSO_ALLOWED_UIDS.includes(identity.uid)) {
+    if (!isUidAllowed(identity.uid)) {
       log.warn('sso.exchange.not_allowlisted', { uid: identity.uid });
       return res.status(403).json({ success: false, error: 'Not available', code: 'SSO_NOT_ALLOWED' });
     }

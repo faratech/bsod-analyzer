@@ -17,22 +17,30 @@ import { getRuntimeValue, setRuntimeValue } from './cache.js';
 const ENDPOINT = process.env.FORUM_VALIDATE_URL || '';
 // Reuse the existing shared secret (also mounted for the legacy token path).
 const KEY = process.env.WF_SSO_SECRET || '';
-const TTL_SECONDS = 45;   // forum logout/expiry surfaces within ~45s
-const TIMEOUT_MS = 2000;  // never let a slow forum hang a bsod auth check
+const POS_TTL_SECONDS = 45;   // positive identity: forum logout/expiry surfaces within ~45s
+const NEG_TTL_SECONDS = 10;   // negatives expire fast so a transient blip can't pin a user to guest
+const TIMEOUT_MS = 2000;      // never let a slow forum hang a bsod auth check
+
+// Reject any cookie/IP value that could break out of a header (defense-in-depth:
+// undici already rejects these, but this keeps fail-closed independent of the
+// HTTP client and avoids a wasted round-trip).
+const HEADER_UNSAFE = /[\r\n\x00]/;
 
 export function isForumIdentityEnabled() {
   return ENDPOINT !== '' && KEY !== '';
 }
 
-function cacheKeyFor(token) {
-  return 'xfid:' + createHash('sha256').update(String(token)).digest('hex').slice(0, 32);
+// Key on the cookie AND the end-user IP, so the validator's per-user /24 session
+// IP-binding isn't eroded by a cached decision being reused for a different IP.
+function cacheKeyFor(token, clientIp) {
+  return 'xfid:' + createHash('sha256').update(String(token) + '|' + String(clientIp || '')).digest('hex').slice(0, 32);
 }
 
 /**
- * Resolve a forum identity from the shared cookies, or null for a guest/invalid/
- * banned visitor. Fails CLOSED to null on any error/timeout — never throws, never
- * 500s the caller. Result (including negatives) is cached ~45s, keyed on a hash of
- * the session cookie so it self-invalidates when XenForo rotates the cookie.
+ * Resolve {userId, username, avatar, tier, isPremium} from the shared forum
+ * cookies, or null for a guest/invalid/banned visitor. Fails CLOSED to null on any
+ * error/timeout — never throws, never 500s the caller. Caches positives ~45s and
+ * negatives ~10s, keyed on (cookie + ip) so it self-invalidates on cookie rotation.
  */
 export async function resolveForumIdentityFromCookies(cookies, clientIp) {
   if (!isForumIdentityEnabled()) return null;
@@ -40,7 +48,16 @@ export async function resolveForumIdentityFromCookies(cookies, clientIp) {
   const xfUser = cookies?.xf_user;
   if (!xfSession && !xfUser) return null;
 
-  const cacheKey = cacheKeyFor(xfSession || xfUser);
+  // Fail closed on any header-unsafe input rather than forwarding it.
+  if (
+    (xfSession && HEADER_UNSAFE.test(xfSession)) ||
+    (xfUser && HEADER_UNSAFE.test(xfUser)) ||
+    (clientIp && HEADER_UNSAFE.test(clientIp))
+  ) {
+    return null;
+  }
+
+  const cacheKey = cacheKeyFor(xfSession || xfUser, clientIp);
   try {
     const cached = await getRuntimeValue(cacheKey);
     if (cached != null) return cached.userId ? cached : null;
@@ -84,7 +101,7 @@ export async function resolveForumIdentityFromCookies(cookies, clientIp) {
   }
 
   try {
-    await setRuntimeValue(cacheKey, identity || { userId: 0 }, TTL_SECONDS);
+    await setRuntimeValue(cacheKey, identity || { userId: 0 }, identity ? POS_TTL_SECONDS : NEG_TTL_SECONDS);
   } catch { /* cache write is best-effort */ }
   return identity;
 }
