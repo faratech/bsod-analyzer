@@ -6,7 +6,6 @@ import {
   exchangeToken,
   consumeCallbackToken,
   signInRedirect,
-  goToPremiumUpgrade,
 } from '../services/wfAuth';
 import { setClientTier, Tier } from '../services/tierState';
 import { markSessionInitialized, startSessionRefresh } from '../utils/sessionManager';
@@ -14,11 +13,9 @@ import { SSO_ENABLED } from '../services/featureFlags';
 
 type AuthStatus = 'loading' | 'ready';
 
-interface PaygateState {
-  open: boolean;
-  reason: string;
-}
-
+// The premium tier (isPremium/quotas/ad-free) is retained; only the paywall — the
+// upgrade paygate UI and its trigger API — was removed, so AuthContext no longer
+// exposes upgrade()/openPaygate()/closePaygate()/paygate.
 interface AuthContextType {
   status: AuthStatus;
   tier: Tier;
@@ -26,11 +23,7 @@ interface AuthContextType {
   loggedIn: boolean;
   isPremium: boolean;
   signIn: () => void;
-  upgrade: () => void;
   refresh: () => Promise<void>;
-  paygate: PaygateState;
-  openPaygate: (reason?: string) => void;
-  closePaygate: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -43,7 +36,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [status, setStatus] = useState<AuthStatus>(SSO_ENABLED ? 'loading' : 'ready');
   const [tier, setTier] = useState<Tier>('anon');
   const [user, setUser] = useState<WfUser | null>(null);
-  const [paygate, setPaygate] = useState<PaygateState>({ open: false, reason: '' });
 
   const applyUser = useCallback((u: WfUser | null, t: Tier) => {
     setUser(u);
@@ -145,9 +137,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [refresh]);
 
-  const openPaygate = useCallback((reason = '') => setPaygate({ open: true, reason }), []);
-  const closePaygate = useCallback(() => setPaygate((p) => ({ ...p, open: false })), []);
-
   const value: AuthContextType = {
     status,
     tier,
@@ -155,11 +144,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     loggedIn: !!user,
     isPremium: tier === 'premium',
     signIn: signInRedirect,
-    upgrade: goToPremiumUpgrade,
     refresh,
-    paygate,
-    openPaygate,
-    closePaygate,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
