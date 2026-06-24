@@ -9,6 +9,7 @@ import ClientOnly from './components/ClientOnly';
 import { useBreadcrumbs } from './hooks/useBreadcrumbs';
 import { useAnalytics } from './hooks/useAnalytics';
 import { ThemeProvider } from './hooks/useTheme';
+import { AuthProvider } from './hooks/useAuth';
 // Home is imported eagerly (not lazy) so the same tree renders during the
 // static prerender and on the client — required for clean hydration of "/".
 import Home from './pages/Home';
@@ -65,7 +66,9 @@ const AppContent: React.FC = () => {
  */
 export const AppShell: React.FC = () => (
     <ThemeProvider>
-        <AppContent />
+        <AuthProvider>
+            <AppContent />
+        </AuthProvider>
     </ThemeProvider>
 );
 
