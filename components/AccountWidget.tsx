@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { SSO_PREVIEW } from '../services/featureFlags';
+import { SSO_PREVIEW, SSO_SIGNIN_PREVIEW } from '../services/featureFlags';
 
 /**
  * Account control for the navigation bar. Wrapped in <ClientOnly> by the caller
@@ -22,8 +22,9 @@ const AccountWidget: React.FC<{ mobile?: boolean }> = ({ mobile = false }) => {
 
   if (!loggedIn) {
     // Gated preview: show nothing to anyone who isn't a recognized (allow-listed)
-    // user, so the public sees no sign of the feature.
-    if (SSO_PREVIEW) return null;
+    // user, so the public sees no sign of the feature — UNLESS a tester opted in
+    // with ?signin=1 to exercise the login redirect.
+    if (SSO_PREVIEW && !SSO_SIGNIN_PREVIEW) return null;
     return (
       <div className="account-widget" style={wrapStyle}>
         <button type="button" className="nav-link" onClick={signIn} style={{ background: 'none', border: 'none', cursor: 'pointer', font: 'inherit' }}>

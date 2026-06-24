@@ -22,4 +22,22 @@ export const SSO_ENABLED: boolean = w?.__WF_SSO_ENABLED__ === true;
 // deployed-but-gated rollout reveals nothing to anyone who isn't allow-listed.
 export const SSO_PREVIEW: boolean = w?.__WF_SSO_PREVIEW__ === true;
 
+// Tester escape hatch: append `?signin=1` to reveal the anonymous "Sign in"
+// affordances even while preview-mode is hiding them, so the full XF login
+// redirect can be exercised end-to-end without un-gating it for the public.
+// Persisted to sessionStorage so it survives in-app navigation during a test.
+function computeSigninPreview(): boolean {
+  if (!w) return false;
+  try {
+    if (new URLSearchParams(w.location.search).get('signin') === '1') {
+      w.sessionStorage.setItem('wf_sso_signin_preview', '1');
+      return true;
+    }
+    return w.sessionStorage.getItem('wf_sso_signin_preview') === '1';
+  } catch {
+    return false;
+  }
+}
+export const SSO_SIGNIN_PREVIEW: boolean = computeSigninPreview();
+
 export {};
