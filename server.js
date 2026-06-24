@@ -3434,14 +3434,28 @@ app.use((req, res) => {
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
 
-  // The homepage is prerendered into #root (hydrated on the client) for fast
-  // LCP; every other route is served with an empty #root and rendered fully on
-  // the client. Other routes must NOT get the homepage markup or hydration
-  // would mismatch. In development, read from disk to avoid stale caching.
+  // The homepage and the static inner routes (/about, /documentation, /donate,
+  // /analyzer) are prerendered into #root and hydrated on the client; any other
+  // route is served with an empty #root and rendered fully on the client. Each
+  // route must get its OWN prerendered markup (or the empty shell) — never another
+  // route's — or hydration would mismatch. In development, read from disk to avoid
+  // stale caching.
   if (process.env.NODE_ENV !== 'production') {
     try {
-      let diskPath = path.join(__dirname, 'dist', isHome ? 'index.prerendered.html' : 'index.html');
-      if (isHome && !fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
+      let diskPath;
+      if (isHome) {
+        diskPath = path.join(__dirname, 'dist', 'index.prerendered.html');
+        if (!fs.existsSync(diskPath)) diskPath = path.join(__dirname, 'dist', 'index.html');
+      } else {
+        // Single-segment route name only (guards the disk read against traversal).
+        const seg = normalized.slice(1);
+        const routeFile = /^[a-z0-9_-]+$/i.test(seg)
+          ? path.join(__dirname, 'dist', 'prerendered', seg + '.html')
+          : null;
+        diskPath = routeFile && fs.existsSync(routeFile)
+          ? routeFile
+          : path.join(__dirname, 'dist', 'index.html');
+      }
       if (fs.existsSync(diskPath)) {
         res.send(injectSsoFlags(fs.readFileSync(diskPath, 'utf-8')));
         return;
@@ -3451,13 +3465,22 @@ app.use((req, res) => {
     }
   }
 
-  res.send(isHome ? cachedHomeHtml : cachedIndexHtml);
+  // Production (in-memory): the route's prerendered HTML when present, else the
+  // client-rendered shell for dynamic/unknown routes.
+  if (isHome) {
+    res.send(cachedHomeHtml);
+  } else {
+    res.send(cachedRouteHtml[normalized] || cachedIndexHtml);
+  }
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
 let cachedIndexHtml;
 // Prerendered homepage HTML served for the "/" route (falls back to index.html)
 let cachedHomeHtml;
+// Prerendered per-route HTML keyed by route ("/about" -> markup); populated from
+// dist/prerendered/*.html at startup. Unknown routes fall back to cachedIndexHtml.
+let cachedRouteHtml = {};
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
 
@@ -3500,6 +3523,21 @@ async function startServer() {
     // without a rebuild.
     cachedIndexHtml = injectSsoFlags(cachedIndexHtml);
     cachedHomeHtml = injectSsoFlags(cachedHomeHtml);
+
+    // Per-route prerendered HTML (scripts/prerender.mjs writes dist/prerendered/<route>.html).
+    // Served for each exact route so Auto-ads + crawlers see a fully laid-out page; an
+    // empty #root shell makes Auto-ads pin viewport-fixed rails over content. Unknown /
+    // dynamic routes still fall back to the client-rendered shell (cachedIndexHtml).
+    const prerenderedDir = path.join(__dirname, 'dist', 'prerendered');
+    if (fs.existsSync(prerenderedDir)) {
+      for (const file of fs.readdirSync(prerenderedDir)) {
+        if (!file.endsWith('.html')) continue;
+        const route = '/' + file.slice(0, -5);
+        cachedRouteHtml[route] = injectSsoFlags(fs.readFileSync(path.join(prerenderedDir, file), 'utf-8'));
+        console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(cachedRouteHtml[route])} bytes)`);
+      }
+    }
+
     if (WF_SSO_ENABLED) {
       console.log(`[SSO] Feature ENABLED (preview=${WF_SSO_PREVIEW}, allowedUids=[${WF_SSO_ALLOWED_UIDS.join(',')}])`);
     }
