@@ -26,9 +26,9 @@
     "optimize-css": "node scripts/purge-css.js --apply"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^11.2.0",
-    "@fastify/multipart": "^10.0.0",
+    "@fastify/cookie": "^11.1.0",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/multipart": "^10.1.0",
     "@google/genai": "^2.10.0",
     "@upstash/redis": "^1.38.0",
     "concurrently": "^10.0.3",
