@@ -2,7 +2,7 @@
  * Upstash Redis Cache Service
  *
  * Provides persistent caching across Cloud Run deployments for:
- * - AI report generation (Gemini API responses)
+ * - AI report generation (model-specific provider responses)
  * - WinDBG analysis results
  *
  * Cache keys are based on content hashes to ensure deterministic lookups.
@@ -194,7 +194,7 @@ function getAnalysisKey(fileHash) {
 /**
  * Get cached complete analysis (WinDBG + AI report) by file hash
  * @param {string} fileHash - The file content hash
- * @returns {Promise<object|null>} Cached analysis { windbgOutput, aiReport, timestamp } or null
+ * @returns {Promise<object|null>} Cached analysis { windbgOutput, aiReport, aiReports, timestamp } or null
  */
 export async function getCachedAnalysis(fileHash) {
   if (!isCacheEnabled()) return null;
@@ -219,7 +219,7 @@ export async function getCachedAnalysis(fileHash) {
 /**
  * Merge and cache complete analysis (WinDBG + AI report)
  * @param {string} fileHash - The file or prompt content hash
- * @param {object} data - { windbgOutput, analysisSignalText, structured, aiReport }
+ * @param {object} data - { windbgOutput, analysisSignalText, structured, aiReport, aiModel }
  */
 export async function setCachedAnalysis(fileHash, data) {
   if (!isCacheEnabled()) return false;
@@ -228,12 +228,20 @@ export async function setCachedAnalysis(fileHash, data) {
     const key = getAnalysisKey(fileHash);
     const existingValue = await redis.get(key);
     const existing = existingValue ? parseCachedValue(existingValue) : {};
+    const modelReports = data.aiReport !== undefined && data.aiModel
+      ? {
+          ...(existing.aiReports && typeof existing.aiReports === 'object' ? existing.aiReports : {}),
+          [data.aiModel]: data.aiReport
+        }
+      : existing.aiReports;
     const cacheData = {
       ...existing,
       ...(data.windbgOutput !== undefined ? { windbgOutput: data.windbgOutput } : {}),
       ...(data.analysisSignalText !== undefined ? { analysisSignalText: data.analysisSignalText } : {}),
       ...(data.structured !== undefined ? { structured: data.structured } : {}),
       ...(data.aiReport !== undefined ? { aiReport: data.aiReport } : {}),
+      ...(data.aiModel !== undefined ? { aiModel: data.aiModel } : {}),
+      ...(modelReports !== undefined ? { aiReports: modelReports } : {}),
       timestamp: Date.now()
     };
 

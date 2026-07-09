@@ -58,6 +58,23 @@ else
 fi
 echo ""
 
+# 1b. DeepSeek API Key (optional alternative AI provider)
+echo "🤖 DeepSeek API Key"
+if [ -z "$DEEPSEEK_API_KEY" ]; then
+    echo -n "Enter your DeepSeek API Key (or press Enter to skip): "
+    read -r -s DEEPSEEK_KEY
+    echo ""
+else
+    DEEPSEEK_KEY="$DEEPSEEK_API_KEY"
+    echo "  Using provided DeepSeek API key from environment"
+fi
+if [ ! -z "$DEEPSEEK_KEY" ]; then
+    setup_secret "deepseek-api-key" "$DEEPSEEK_KEY" "DeepSeek API Key"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
 # 2. Turnstile Secret Key
 echo "2️⃣ Cloudflare Turnstile Secret Key"
 if [ -z "$TURNSTILE_SECRET_KEY" ]; then
@@ -203,7 +220,7 @@ echo "🔓 Granting runtime access only to application runtime secrets..."
 
 # Grant access to each runtime secret. Cloudflare purge secrets are intentionally
 # not granted to the runtime service account.
-for SECRET in "gemini-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token"; do
+for SECRET in "gemini-api-key" "deepseek-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \

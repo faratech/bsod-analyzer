@@ -15,6 +15,31 @@ echo "Project: ${PROJECT_ID}"
 echo "Region: ${REGION}"
 echo "Service: ${SERVICE_NAME}"
 
+SELECTED_AI_MODEL=$(tr -d '[:space:]' < model.cfg)
+RUNTIME_SECRETS="TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest"
+
+if gcloud secrets describe gemini-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="GEMINI_API_KEY=gemini-api-key:latest,${RUNTIME_SECRETS}"
+fi
+if gcloud secrets describe deepseek-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="DEEPSEEK_API_KEY=deepseek-api-key:latest,${RUNTIME_SECRETS}"
+fi
+
+if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
+  REQUIRED_AI_SECRET="deepseek-api-key"
+elif [[ "${SELECTED_AI_MODEL}" == gemini-* ]]; then
+  REQUIRED_AI_SECRET="gemini-api-key"
+else
+  echo "Unsupported model.cfg value: ${SELECTED_AI_MODEL}"
+  exit 1
+fi
+
+if ! gcloud secrets describe "${REQUIRED_AI_SECRET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  echo "Selected model ${SELECTED_AI_MODEL} requires Secret Manager secret ${REQUIRED_AI_SECRET}"
+  exit 1
+fi
+echo "Selected AI model: ${SELECTED_AI_MODEL}"
+
 # Deploy directly from source
 echo "☁️  Deploying to Cloud Run from source..."
 gcloud run deploy ${SERVICE_NAME} \
@@ -32,7 +57,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --memory 1Gi \
   --cpu 1 \
   --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
+  --update-secrets "${RUNTIME_SECRETS}" \
   --project ${PROJECT_ID}
 
 # Get the service URL
