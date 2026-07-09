@@ -6,12 +6,17 @@ This document describes how secrets are managed for the BSOD Analyzer applicatio
 
 All sensitive configuration values are stored in Google Secret Manager and injected into the Cloud Run service at runtime. This ensures that secrets are never exposed in code or container images.
 
-## Required Secrets
+## Runtime Secrets
 
 ### 1. Gemini API Key (`gemini-api-key`)
 - **Purpose**: Authentication for Google's Gemini AI API
-- **Usage**: Required for AI-powered crash dump analysis
+- **Usage**: Required when `model.cfg` selects a Gemini model
 - **How to obtain**: https://makersuite.google.com/app/apikey
+
+### 1b. DeepSeek API Key (`deepseek-api-key`)
+- **Purpose**: Authentication for the DeepSeek API
+- **Usage**: Required only when `model.cfg` is `deepseek-v4-flash`
+- **How to obtain**: https://platform.deepseek.com/api_keys
 
 ### 2. Turnstile Secret Key (`turnstile-secret-key`)
 - **Purpose**: Server-side verification of Cloudflare Turnstile CAPTCHA
@@ -65,13 +70,14 @@ All sensitive configuration values are stored in Google Secret Manager and injec
 
 This script will:
 1. Prompt for your Gemini API key
-2. Set up the Turnstile secret key
-3. Generate a random session secret
-4. Prompt for Upstash Redis credentials
-5. Prompt for Cloudflare purge token and zone ID
-6. Create/verify the dedicated Cloud Run runtime service account
-7. Grant the runtime service account access to application runtime secrets
-8. Grant Cloud Build service accounts access to deploy as the runtime account and read Cloudflare purge secrets
+2. Optionally prompt for a DeepSeek API key
+3. Set up the Turnstile secret key
+4. Generate a random session secret
+5. Prompt for Upstash Redis credentials
+6. Prompt for Cloudflare purge token and zone ID
+7. Create/verify the dedicated Cloud Run runtime service account
+8. Grant the runtime service account access to application runtime secrets
+9. Grant Cloud Build service accounts access to deploy as the runtime account and read Cloudflare purge secrets
 
 ### Individual Secret Setup
 
@@ -102,6 +108,7 @@ The `deploy-with-secret.sh` script automatically configures Cloud Run to use the
 ```bash
 --update-secrets \
   GEMINI_API_KEY=gemini-api-key:latest,\
+  DEEPSEEK_API_KEY=deepseek-api-key:latest,\
   TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,\
   SESSION_SECRET=session-secret:latest,\
   BSOD_API_KEY=bsod-api-key:latest,\
@@ -122,6 +129,7 @@ For local development, create a `.env.local` file:
 
 ```env
 GEMINI_API_KEY=your-gemini-api-key-here
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
 TURNSTILE_SECRET_KEY=your-turnstile-secret-key-here
 SESSION_SECRET=any-random-string-for-dev
 WINDBG_API_KEY=optional-windbg-key
@@ -130,6 +138,10 @@ UPSTASH_REDIS_REST_TOKEN=optional-upstash-token
 ```
 
 **Note**: Never commit `.env.local` to version control!
+
+Only the API key for the model selected in `model.cfg` is required. DeepSeek is
+optional; `deploy-with-secret.sh` injects `DEEPSEEK_API_KEY` only when the
+`deepseek-api-key` Secret Manager secret exists.
 
 When running `NODE_ENV=production` locally without Redis, set
 `REQUIRE_REDIS_RUNTIME=false`. When testing production mode outside Cloudflare,

@@ -45,6 +45,15 @@ import {
   normalizeRateLimitIp
 } from './server/rateLimit.js';
 import { createUploadHandler } from './server/uploadHandler.js';
+import {
+  AIProviderError,
+  DEFAULT_DEEPSEEK_API_BASE_URL,
+  DEFAULT_GEMINI_MODEL,
+  generateDeepSeekContent,
+  getAIProviderForModel,
+  getCachedAIReportForModel,
+  isSupportedAIModel
+} from './services/aiProvider.js';
 
 const execFileAsync = promisify(execFile);
 import {
@@ -131,6 +140,12 @@ const HASH_RE = /^[a-f0-9]{8,16}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
+const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, GEMINI_TIMEOUT_MS);
+const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPSEEK_API_BASE_URL;
+const DEEPSEEK_REASONING_EFFORT = process.env.DEEPSEEK_REASONING_EFFORT === 'max' ? 'max' : 'high';
+const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
+  String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
+);
 const TURNSTILE_TIMEOUT_MS = readPositiveInt(process.env.TURNSTILE_TIMEOUT_MS, 10_000);
 const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_UPLOAD_TIMEOUT_MS, 240_000);
 const WINDBG_POLL_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_POLL_TIMEOUT_MS, 20_000);
@@ -651,15 +666,26 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000); // Clean every 10 minutes
 
-// Gemini model selection.
+// Server-owned AI model selection.
 // - getPrimaryModel() re-reads model.cfg per call with a 30s cache so the model can
 //   be swapped without a redeploy (edit model.cfg in the running container / overlay).
 // - FALLBACK_MODEL is a prior-generation stable flash-lite kept as a safety net in case
-//   the primary model 404s or is throttled — generateWithFallback() catches that and retries.
+//   a Gemini primary model 404s or is throttled. Provider selection never comes from
+//   the browser, and DeepSeek never silently crosses over to Gemini.
 const FALLBACK_MODEL = 'gemini-2.5-flash-lite';
 const MODEL_CFG_PATH = path.join(__dirname, 'model.cfg');
 const MODEL_CFG_TTL_MS = 30_000;
-let _modelCfgCache = { value: 'gemini-3.1-flash-lite', readAt: 0 };
+
+function readInitialModel() {
+  try {
+    const configured = fs.readFileSync(MODEL_CFG_PATH, 'utf8').trim();
+    return isSupportedAIModel(configured) ? configured : DEFAULT_GEMINI_MODEL;
+  } catch {
+    return DEFAULT_GEMINI_MODEL;
+  }
+}
+
+let _modelCfgCache = { value: readInitialModel(), readAt: 0 };
 
 function getPrimaryModel() {
   const now = Date.now();
@@ -669,8 +695,10 @@ function getPrimaryModel() {
     fs.promises.readFile(MODEL_CFG_PATH, 'utf8')
       .then(modelConfig => {
         const cleaned = modelConfig.trim();
-        if (cleaned) {
+        if (isSupportedAIModel(cleaned)) {
           _modelCfgCache.value = cleaned;
+        } else if (cleaned) {
+          log.warn('ai.model.invalid', { model: cleaned.slice(0, 100) });
         }
       })
       .catch(() => {
@@ -682,7 +710,11 @@ function getPrimaryModel() {
 
 // Prime once at startup so the existing startup log is meaningful.
 const DEFAULT_MODEL_NAME = getPrimaryModel();
-log.info('gemini.startup', { primary: DEFAULT_MODEL_NAME, fallback: FALLBACK_MODEL });
+log.info('ai.startup', {
+  primary: DEFAULT_MODEL_NAME,
+  provider: getAIProviderForModel(DEFAULT_MODEL_NAME),
+  geminiFallback: FALLBACK_MODEL
+});
 
 // Recognise the error shapes Gemini returns when a model is missing / preview-pulled.
 function isModelUnavailableError(err) {
@@ -690,15 +722,67 @@ function isModelUnavailableError(err) {
   return /\bNOT_FOUND\b|\b404\b|is not found for API version|UNIMPLEMENTED/i.test(msg);
 }
 
-// Wrap any ai.models.generateContent(request) call so that if the configured primary
-// model is unavailable, we transparently retry against the stable fallback.
-async function generateWithFallback(request) {
+function normalizeAIResponse(response, cacheModel) {
+  return {
+    text: response?.text ?? '',
+    usageMetadata: response?.usageMetadata,
+    modelVersion: response?.modelVersion || cacheModel,
+    candidates: response?.candidates,
+    cacheModel
+  };
+}
+
+// Dispatch through the provider selected by model.cfg and normalize each provider
+// to the response shape already consumed by the rest of the application.
+async function generateAIContent(request) {
+  const provider = getAIProviderForModel(request.model);
+  if (!provider) {
+    throw new AIProviderError(`Unsupported AI model: ${request.model}`, {
+      code: 'UNSUPPORTED_AI_MODEL',
+      status: 500
+    });
+  }
+
+  if (provider === 'deepseek') {
+    try {
+      const response = await withTimeout(
+        () => generateDeepSeekContent(request, {
+          apiKey: process.env.DEEPSEEK_API_KEY,
+          baseUrl: DEEPSEEK_API_BASE_URL,
+          reasoningEffort: DEEPSEEK_REASONING_EFFORT,
+          thinkingEnabled: DEEPSEEK_THINKING_ENABLED,
+          signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+        }),
+        DEEPSEEK_TIMEOUT_MS,
+        'DeepSeek request timed out'
+      );
+      return normalizeAIResponse(response, request.model);
+    } catch (error) {
+      if (!error?.code && /timed out/i.test(error?.message || '')) {
+        throw new AIProviderError('DeepSeek request timed out', {
+          code: 'AI_TIMEOUT',
+          status: 504,
+          retryable: true
+        });
+      }
+      throw error;
+    }
+  }
+
+  if (!genAI) {
+    throw new AIProviderError('GEMINI_API_KEY is not configured', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+
   try {
-    return await withTimeout(
+    const response = await withTimeout(
       () => genAI.models.generateContent(request),
       GEMINI_TIMEOUT_MS,
       'Gemini request timed out'
     );
+    return normalizeAIResponse(response, request.model);
   } catch (err) {
     if (!isModelUnavailableError(err) || request.model === FALLBACK_MODEL) throw err;
     log.warn('gemini.model.fallback', {
@@ -706,11 +790,12 @@ async function generateWithFallback(request) {
       fallback: FALLBACK_MODEL,
       reason: err.message?.slice(0, 200)
     });
-    return await withTimeout(
+    const response = await withTimeout(
       () => genAI.models.generateContent({ ...request, model: FALLBACK_MODEL }),
       GEMINI_TIMEOUT_MS,
       'Gemini fallback request timed out'
     );
+    return normalizeAIResponse(response, FALLBACK_MODEL);
   }
 }
 
@@ -958,14 +1043,22 @@ app.use(staticMiddleware(path.join(__dirname, 'dist'), {
   }
 }));
 
-// Validate Gemini API key at startup
-if (!process.env.GEMINI_API_KEY) {
-  console.error('WARNING: GEMINI_API_KEY not configured - AI analysis will not work');
-  // Don't exit in production - allow service to start but AI features will be disabled
+// Initialize provider clients with server-side credentials only. DeepSeek uses
+// the native fetch adapter in services/aiProvider.js, so it needs no SDK client.
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+
+function isAIProviderConfigured(model) {
+  const provider = getAIProviderForModel(model);
+  if (provider === 'deepseek') return Boolean(process.env.DEEPSEEK_API_KEY);
+  if (provider === 'gemini') return Boolean(genAI);
+  return false;
 }
 
-// Initialize Gemini AI with server-side API key
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
+  console.error('WARNING: No AI provider API key is configured - AI analysis will not work');
+} else if (!isAIProviderConfigured(DEFAULT_MODEL_NAME)) {
+  console.error(`WARNING: ${DEFAULT_MODEL_NAME} is selected but its provider API key is not configured`);
+}
 
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
@@ -1812,11 +1905,14 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
   required: ['summary', 'probableCause', 'culprit', 'recommendations']
 });
 
-// Proxy endpoint for Gemini API calls - now requires session
+// Browser compatibility endpoint. Provider/model selection remains server-owned.
 app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
   try {
-    // Check if Gemini AI is configured
-    if (!genAI) {
+    const modelName = getPrimaryModel();
+    const provider = getAIProviderForModel(modelName);
+
+    // The model/provider is selected only by server-side model.cfg.
+    if (!isAIProviderConfigured(modelName)) {
       return res.status(503).json({ 
         error: 'AI service not configured. Please try again later.' 
       });
@@ -1929,14 +2025,20 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
     }
     const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
-    const cachedResponse = (await getCachedAnalysis(cacheKey))?.aiReport;
+    const cachedAnalysis = await getCachedAnalysis(cacheKey);
+    const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
         ? cachedResponse.text
         : JSON.stringify(cachedResponse);
       const cachedValidation = parseAndValidateAnalysisReport(cachedText);
       if (cachedValidation.valid) {
-        log.info('gemini.cache.hit', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
+        log.info('ai.cache.hit', {
+          provider,
+          model: modelName,
+          keyed: ownedFileHash ? 'fileHash' : 'prompt',
+          fileHash: ownedFileHash ? fileHash : undefined
+        });
         return res.json({
           ...cachedResponse,
           candidates: [{ content: { parts: [{ text: cachedValidation.text }] } }],
@@ -1944,19 +2046,20 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
           cached: true
         });
       }
-      log.warn('gemini.cache.invalid', { keyed: ownedFileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
+      log.warn('ai.cache.invalid', { provider, model: modelName, keyed: ownedFileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
     }
-    log.info('gemini.cache.miss', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
+    log.info('ai.cache.miss', {
+      provider,
+      model: modelName,
+      keyed: ownedFileHash ? 'fileHash' : 'prompt',
+      fileHash: ownedFileHash ? fileHash : undefined
+    });
 
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
     await storeSessionTracking(quotaKey, sessionTracking);
     
-    // Always use the model from config file (re-read with 30s TTL so model.cfg can be
-    // swapped at runtime) — ignore any client-provided model for security.
-    const modelName = getPrimaryModel();
-
     // Accept only narrow generation controls from the browser. Tool use, response
     // schemas, stop sequences, model overrides, and sampling breadth are server-owned.
     const frontendConfig = config || generationConfig || {};
@@ -1979,15 +2082,14 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // implicit-cache namespace.
     sdkConfig.systemInstruction = SYSTEM_INSTRUCTION_ANALYSIS;
 
-    const response = await generateWithFallback({
+    const response = await generateAIContent({
       model: modelName,
       contents: serverPrompt,
       config: sdkConfig
     });
 
-    // Track real input + output tokens using Gemini's usageMetadata when available;
-    // fall back to char/4 only when the API didn't report counts. The new SDK exposes
-    // response.text as a getter (not a method).
+    // Track real input + output tokens using the provider-normalized metadata;
+    // fall back to char/4 only when the API did not report counts.
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
@@ -1998,8 +2100,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
     const reportValidation = parseAndValidateAnalysisReport(responseText);
 
-    log.info('gemini.request', {
+    log.info('ai.request', {
       sessionId: sessionId?.substring(0, 10) + '...',
+      provider,
       model: response.modelVersion || modelName,
       promptType: validation.promptType,
       inputTokens: actualInputTokens,
@@ -2018,8 +2121,10 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     });
 
     if (!reportValidation.valid) {
-      log.warn('gemini.response.invalid', {
+      log.warn('ai.response.invalid', {
         sessionId: sessionId?.substring(0, 10) + '...',
+        provider,
+        model: response.modelVersion || modelName,
         reason: reportValidation.reason,
         finishReason,
         responsePreview: responseText.substring(0, 200)
@@ -2039,12 +2144,31 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     };
 
     // Cache only a validated analysis response.
-    await setCachedAnalysis(cacheKey, { aiReport: responseData });
+    await setCachedAnalysis(cacheKey, {
+      aiReport: responseData,
+      aiModel: response.cacheModel || modelName
+    });
 
     res.json(responseData);
   } catch (error) {
-    log.error('gemini.error', { message: error.message, stack: error.stack?.split('\n').slice(0, 3).join(' | ') });
-    res.status(500).json({ error: 'AI analysis failed. Please try again later.' });
+    log.error('ai.error', {
+      code: error.code,
+      status: error.status,
+      message: error.message,
+      stack: error.stack?.split('\n').slice(0, 3).join(' | ')
+    });
+    const status = error.code === 'AI_NOT_CONFIGURED' || error.code === 'UNSUPPORTED_AI_MODEL'
+      ? 503
+      : error.code === 'AI_TIMEOUT'
+        ? 504
+        : error.code === 'INVALID_AI_RESPONSE'
+          ? 502
+          : error.code === 'AI_AUTH_FAILED'
+            ? 502
+            : error.code === 'AI_UPSTREAM_ERROR'
+              ? (error.retryable ? 503 : 502)
+              : 500;
+    res.status(status).json({ error: 'AI analysis failed. Please try again later.' });
   }
 });
 
@@ -2095,8 +2219,10 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
 
     // Use the combined analysis cache.
     const cached = await getCachedAnalysis(hash);
+    const modelName = getPrimaryModel();
+    const cachedAiReport = getCachedAIReportForModel(cached, modelName);
 
-    if (cached && (cached.windbgOutput || cached.aiReport)) {
+    if (cached && (cached.windbgOutput || cachedAiReport)) {
       console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}...`);
       return res.json({
         success: true,
@@ -2104,7 +2230,8 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
         windbgAnalysis: cached.windbgOutput || null,
         analysisSignalText: cached.analysisSignalText || null,
         structured: cached.structured || null,
-        aiReport: cached.aiReport || null,
+        aiReport: cachedAiReport,
+        aiModel: cachedAiReport ? modelName : null,
         fileHash: hash
       });
     }
@@ -2684,9 +2811,11 @@ function persistCrashSignal(report, fileHash) {
 }
 
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
+  const modelName = getPrimaryModel();
   // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
   const cacheKey = fileHash || windbgAnalysis;
-  const cachedReport = (await getCachedAnalysis(cacheKey))?.aiReport;
+  const cachedAnalysis = await getCachedAnalysis(cacheKey);
+  const cachedReport = getCachedAIReportForModel(cachedAnalysis, modelName);
   if (cachedReport) {
     const normalizedCachedReport = normalizeAnalysisReport(cachedReport);
     if (normalizedCachedReport) {
@@ -2717,7 +2846,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
   // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
-  // the tail so Gemini implicit caching can reuse the prefix across analyses.
+  // the tail so provider-side prefix caching can be reused across analyses.
   const evidence = `**File Information:**
 - Filename: ${fileName}
 - Dump Type: ${dumpType}
@@ -2731,8 +2860,8 @@ ${analysisForPrompt}
   const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
 
   try {
-    const response = await generateWithFallback({
-      model: getPrimaryModel(),
+    const response = await generateAIContent({
+      model: modelName,
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -2750,7 +2879,10 @@ ${analysisForPrompt}
     const report = reportValidation.report;
 
     // Cache the successful AI report under the stable file hash (or analysis text as fallback)
-    await setCachedAnalysis(cacheKey, { aiReport: report });
+    await setCachedAnalysis(cacheKey, {
+      aiReport: report,
+      aiModel: response.cacheModel || modelName
+    });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
     return report;
   } catch (error) {
@@ -3215,8 +3347,8 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       });
     }
 
-    // Check if Gemini AI is configured
-    if (!genAI) {
+    // Check the provider selected by the server-owned model configuration.
+    if (!isAIProviderConfigured(getPrimaryModel())) {
       return res.status(503).json({
         success: false,
         error: 'AI service not configured',
@@ -3650,7 +3782,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`h2c enabled: ${ENABLE_H2C ? 'Yes' : 'No'}`);
+    console.log(`Selected AI model: ${getPrimaryModel()}`);
     console.log(`Gemini API Key configured: ${process.env.GEMINI_API_KEY ? 'Yes' : 'No'}`);
+    console.log(`DeepSeek API Key configured: ${process.env.DEEPSEEK_API_KEY ? 'Yes' : 'No'}`);
     console.log(`Turnstile Secret Key configured: ${TURNSTILE_SECRET_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Key configured: ${WINDBG_API_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Base URL: ${WINDBG_API_BASE_URL}`);

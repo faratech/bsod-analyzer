@@ -1,13 +1,13 @@
 # BSOD AI Analyzer
 
-Enterprise-grade Windows crash dump analyzer powered by Google's Gemini AI and real WinDBG debugging. Instantly diagnose Blue/Black Screen of Death errors with professional-grade analysis. Supports both classic blue screens and Windows 11's modern black screens.
+Enterprise-grade Windows crash dump analyzer powered by server-selected AI and real WinDBG debugging. Instantly diagnose Blue/Black Screen of Death errors with professional-grade analysis. Supports both classic blue screens and Windows 11's modern black screens.
 
 **Live:** [bsod.windowsforum.com](https://bsod.windowsforum.com)
 
 ## Features
 
 - **Real WinDBG Analysis**: Server-side WinDBG debugging with `!analyze -v` on actual crash dumps
-- **AI-Powered Reports**: Gemini AI interprets WinDBG output into user-friendly diagnostics
+- **AI-Powered Reports**: Gemini or DeepSeek interprets WinDBG output into user-friendly diagnostics
 - **Content-Addressed Caching**: XXHash-based deduplication with Upstash Redis; identical dumps return instant results
 - **Dual Analysis Paths**: WinDBG server primary path with AI fallback when WinDBG is unavailable
 - **Multiple Formats**: Supports `.dmp`, `.mdmp`, `.hdmp`, `.kdmp` files and `.zip`, `.7z`, `.rar` archives
@@ -21,7 +21,7 @@ Enterprise-grade Windows crash dump analyzer powered by Google's Gemini AI and r
 
 - Node.js 22+
 - npm 11
-- Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/) or a DeepSeek API key
 
 ### Local Development
 
@@ -30,7 +30,7 @@ git clone https://github.com/faratech/bsod-analyzer.git
 cd bsod-analyzer
 npm install
 
-# Create .env.local with your Gemini key
+# Configure the key for the model selected in model.cfg
 echo "GEMINI_API_KEY=your-gemini-api-key" > .env.local
 
 # Start backend (8080) + frontend concurrently
@@ -59,8 +59,8 @@ npm run dev
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Browser   │────▶│   Fastify   │────▶│  Gemini API  │     │ Upstash Redis│
-│   (React)   │◀────│   Server    │◀────│   (Google)   │     │   (Cache)    │
+│   Browser   │────▶│   Fastify   │────▶│ AI Provider  │     │ Upstash Redis│
+│   (React)   │◀────│   Server    │◀────│Gemini/DeepSeek│    │   (Cache)    │
 └─────────────┘     └──────┬──────┘     └──────────────┘     └──────────────┘
      Frontend              │                 AI Service           Cache Layer
                            │
@@ -76,7 +76,8 @@ npm run dev
 
 | File | Purpose |
 |------|---------|
-| `server.js` | Fastify-backed API server — security middleware, session management, rate limiting, Gemini API proxy, WinDBG proxy, external API, caching |
+| `server.js` | Fastify-backed API server — security middleware, session management, rate limiting, AI provider routing, WinDBG proxy, external API, caching |
+| `services/aiProvider.js` | Backend-only model allowlist and DeepSeek API adapter |
 | `services/cache.js` | Upstash Redis cache layer for WinDBG analysis and AI reports |
 | `services/geminiProxy.ts` | Client-side service routing API calls through backend with session cookies |
 | `services/windbgService.ts` | Client-side WinDBG integration (upload, poll, download via backend proxy) |
@@ -118,7 +119,7 @@ User uploads dump/archive
                     └────────┬─────────┘
                              │
                     ┌────────▼─────────┐
-                    │ Gemini AI        │
+                    │ Selected AI      │
                     │ interprets output│
                     │ into user report │
                     └────────┬─────────┘
@@ -141,11 +142,11 @@ User uploads dump/archive
 
 When the WinDBG server is not configured (`WINDBG_API_KEY` not set) or fails:
 
-1. Minidumps and other files at or below the 5MB full-local threshold use local dump parsing, string extraction, hex evidence, and direct Gemini analysis.
+1. Minidumps and other files at or below the 5MB full-local threshold use local dump parsing, string extraction, hex evidence, and direct AI analysis.
 2. Large dumps avoid full browser-side parsing. The client samples bounded head/tail byte ranges, extracts limited strings/hex evidence, and sends a clearly marked lightweight fallback prompt.
-3. Extracted evidence is sent to the backend Gemini proxy endpoint.
+3. Extracted evidence is sent to the backend AI proxy endpoint.
 4. Backend validates the session, rate limits, prompt shape, and response schema.
-5. Backend forwards to Gemini API with the server-side API key.
+5. Backend forwards to the model selected in `model.cfg` using only its server-side API key.
 6. AI returns a best-effort report. These results are less complete than full WinDBG output, especially for large sampled dumps.
 
 ### External REST API
@@ -165,7 +166,7 @@ All caching uses Upstash Redis with content-addressed keys:
 | Cache Layer | Key | Value | Purpose |
 |-------------|-----|-------|---------|
 | WinDBG output | File XXHash64 | Raw WinDBG text + metadata | Skip re-uploading identical dumps |
-| AI report | Hash of WinDBG output | Structured report JSON | Skip re-running Gemini for same WinDBG output |
+| AI report | Hash of WinDBG output + model | Structured report JSON | Skip re-running the selected model for the same WinDBG output |
 | Combined | File hash | WinDBG + AI report | Client-side cache check before upload |
 | Runtime state | Runtime-prefixed keys | Sessions, ownership, jobs, quotas, rate limits | Keep Cloud Run instances consistent |
 
@@ -186,7 +187,12 @@ debugging.
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `GEMINI_API_KEY` | Gemini AI API access | Yes |
+| `GEMINI_API_KEY` | Gemini API access | When a Gemini model is selected |
+| `DEEPSEEK_API_KEY` | DeepSeek API access | When `deepseek-v4-flash` is selected |
+| `DEEPSEEK_API_BASE_URL` | DeepSeek API base URL | No; defaults to `https://api.deepseek.com` |
+| `DEEPSEEK_TIMEOUT_MS` | DeepSeek request timeout | No; defaults to the Gemini timeout or 60 seconds |
+| `DEEPSEEK_THINKING` | DeepSeek thinking toggle | No; defaults to `enabled` |
+| `DEEPSEEK_REASONING_EFFORT` | DeepSeek reasoning effort (`high` or `max`) | No; defaults to `high` |
 | `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile verification | Production |
 | `SESSION_SECRET` | Session cookie signing | Production |
@@ -200,6 +206,10 @@ debugging.
 For local development, set in `.env.local` or export directly.
 When running `NODE_ENV=production` locally without Redis or Cloudflare ingress,
 set `REQUIRE_REDIS_RUNTIME=false` and `CLOUDFLARE_ONLY_INGRESS=false`.
+
+Model selection is backend-only. Keep `model.cfg` at its default Gemini value,
+or set its single line to `deepseek-v4-flash`. The browser cannot override the
+selected provider or model.
 
 ## Deployment
 
@@ -220,6 +230,19 @@ echo -n "your-gemini-api-key" | gcloud secrets create gemini-api-key --data-file
 # Deploy
 ./deploy-with-secret.sh
 ```
+
+To deploy with DeepSeek V4 Flash, create the optional secret and change the
+single line in `model.cfg` before building:
+
+```bash
+echo -n "your-deepseek-api-key" | gcloud secrets create deepseek-api-key --data-file=-
+printf 'deepseek-v4-flash\n' > model.cfg
+./deploy-with-secret.sh
+```
+
+`deploy-with-secret.sh` binds whichever provider secrets exist and verifies that
+the selected model's secret is present. For a DeepSeek Cloud Build trigger, set
+`_AI_SECRET_BINDING` to `DEEPSEEK_API_KEY=deepseek-api-key:latest`.
 
 Cloudflare cache purge runs after deploy. Missing purge credentials are treated
 as a deploy failure unless `SKIP_CF_PURGE=true` is set explicitly.
@@ -271,7 +294,7 @@ gcloud builds triggers create github \
 | Frontend | React 19, TypeScript, Vite |
 | Backend | Fastify 5 (ES modules), Node.js 22+ |
 | Compression | Adapter-level zstd/br/gzip/deflate; Cloudflare-origin requests force zstd |
-| AI | Google Gemini via `@google/genai` SDK |
+| AI | Google Gemini via `@google/genai`, or DeepSeek V4 Flash via its OpenAI-compatible API |
 | Cache | Upstash Redis (`@upstash/redis`) |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
 | File Processing | FileReader API, JSZip, `@fastify/multipart` |
@@ -283,7 +306,8 @@ gcloud builds triggers create github \
 
 ### POST /api/gemini/generateContent
 
-Proxies requests to Google's Gemini API (used by the web UI).
+Compatibility endpoint used by the web UI. The backend routes the validated
+request to the model selected in `model.cfg`; the browser cannot select a model.
 
 **Requires:** Valid session cookie
 
@@ -334,7 +358,7 @@ These are used internally by the web UI:
 
 ### Common Issues
 
-1. **API Key Errors** — Ensure `GEMINI_API_KEY` is set. For production: `gcloud secrets list`
+1. **API Key Errors** — Ensure the key for the selected model (`GEMINI_API_KEY` or `DEEPSEEK_API_KEY`) is set. For production: `gcloud secrets list`
 2. **WinDBG Fallback** — If WinDBG is unavailable, minidumps use full local evidence and large dumps use sampled AI fallback
 3. **Container Failures** — Check logs: `gcloud logging read --limit 50`. Verify PORT=8080
 4. **Build Failures** — Ensure Node.js 22+: `node --version`
