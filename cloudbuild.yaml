@@ -66,9 +66,9 @@ steps:
 
 substitutions:
   _REGION: us-east1
-  # Override with "DEEPSEEK_API_KEY=deepseek-api-key:latest" on a trigger whose
-  # source model.cfg selects deepseek-v4-flash.
-  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest'
+  # Both providers are bound so model.cfg can be hot-swapped between them at
+  # runtime without a redeploy. Both secrets must exist in Secret Manager.
+  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest'
 
 availableSecrets:
   secretManager:
