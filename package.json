@@ -31,7 +31,7 @@
     "@fastify/multipart": "^10.1.0",
     "@google/genai": "^2.13.0",
     "@upstash/redis": "^1.38.0",
-    "concurrently": "^10.0.3",
+    "concurrently": "^10.0.4",
     "dotenv": "^17.4.2",
     "fastify": "^5.10.0",
     "jszip": "^3.10.1",
