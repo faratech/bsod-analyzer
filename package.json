@@ -49,7 +49,7 @@
     "postcss": "^8.5.26",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.3.3",
-    "terser": "^5.49.2",
+    "terser": "^5.50.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.1"
   },
