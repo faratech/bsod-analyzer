@@ -3712,6 +3712,12 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
           };
         })();
 
+        // Await the pipeline (bounded by the 5-minute timeout above) so the
+        // job status reflects the real outcome instead of throwing on an
+        // undefined `result`.
+        const result = await Promise.race([analysisPromise, timeoutPromise]);
+        clearTimeout(timeoutHandle);
+
         const processingTime = (Date.now() - runStartTime) / 1000;
         log.info('analyze.complete', {
           processingTime,
