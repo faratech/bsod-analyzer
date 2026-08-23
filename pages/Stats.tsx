@@ -131,8 +131,9 @@ const StatsPage: React.FC = () => {
           value={formatCount(snapshot?.totals.analyses)}
           hint={trackingSinceLabel ? `Tracking since ${trackingSinceLabel}` : undefined}
         />
-        <StatTile label="Today (UTC)" value={formatCount(snapshot?.gauges.today)} />
-        <StatTile label="Last hour" value={formatCount(snapshot?.gauges.lastHour)} />
+        <StatTile label="Unique dumps today" value={formatCount(snapshot?.gauges.today)} />
+        <StatTile label="Analysis runs today" value={formatCount(snapshot?.gauges.runsToday)} />
+        <StatTile label="Runs · last hour" value={formatCount(snapshot?.gauges.lastHour)} />
       </div>
 
       <DailyVolumeChart daily={daily} />
@@ -202,8 +203,8 @@ const StatsEmbedPage: React.FC = () => {
       {error ? <p className="stats-error" role="alert">{error}</p> : null}
       <div className="stats-tiles">
         <StatTile label="All time" value={formatCount(snapshot?.totals.analyses)} />
-        <StatTile label="Today" value={formatCount(snapshot?.gauges.today)} />
-        <StatTile label="Last hour" value={formatCount(snapshot?.gauges.lastHour)} />
+        <StatTile label="Unique today" value={formatCount(snapshot?.gauges.today)} />
+        <StatTile label="Runs · 1h" value={formatCount(snapshot?.gauges.lastHour)} />
       </div>
       <DailyVolumeChart daily={snapshot?.daily ?? []} />
       <BarList title="Top stop codes" family={snapshot?.topStopCodes ?? { items: [], other: 0, total: 0 }} max={3} />

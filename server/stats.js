@@ -207,7 +207,9 @@ export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = 
     totals: { analyses: Math.max(0, Math.floor(Number(raw.total) || 0)) },
     gauges: {
       lastHour: Math.max(0, Math.floor(Number(raw.lastHour) || 0)),
-      today: todayCount(raw.daily, now)
+      today: todayCount(raw.daily, now),
+      // Raw completed analysis runs today (no unique-dump dedupe).
+      runsToday: Math.max(0, Math.floor(Number(raw.runsToday) || 0))
     },
     daily: dailySeries(pairList(raw.daily), now, windowDays),
     topStopCodes,
