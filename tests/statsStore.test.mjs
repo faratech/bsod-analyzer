@@ -108,6 +108,7 @@ function createFakeRedis({ failWrites = false } = {}) {
     pipeline() {
       const queue = [];
       const pipe = {
+        set(k, v, opts) { queue.push(['set', k, v, opts]); return pipe; },
         hincrby(k, f, d) { queue.push(['hincrby', k, f, d]); return pipe; },
         hset(k, f, v) { queue.push(['hset', k, f, v]); return pipe; },
         zincrby(k, d, m) { queue.push(['zincrby', k, d, m]); return pipe; },
@@ -201,6 +202,7 @@ test('getSnapshot returns cached copy; buildSnapshot writes and shapes it', asyn
   await store.recordAnalysis(WINDGBG_FACTS);
   const snapshot = await store.buildSnapshot();
   assert.equal(snapshot.totals.analyses, 1);
+  assert.equal(snapshot.trackingSince, '2026-08-23T12:00:00.000Z');
   assert.equal(snapshot.gauges.today, 1);
   assert.equal(snapshot.topStopCodes.items[0].value, '0x1A');
   assert.equal(snapshot.daily.at(-1).count, 1);

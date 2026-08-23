@@ -60,6 +60,9 @@ export function createStatsStore({
 
       const dumpType = normalizeDumpType(facts.dumpType) || 'unknown';
       const pipe = redis.pipeline();
+      // Tracking-start marker: first counted event wins (SETNX), so the
+      // public page can say "since <date>"; resets only if the data does.
+      pipe.set(key('start'), new Date(ts).toISOString(), { nx: true });
       pipe.hincrby(key('at:total'), 'analyses', 1);
       pipe.hincrby(key('at:source'), facts.source, 1);
       pipe.hincrby(key('at:dtype'), dumpType, 1);
@@ -123,7 +126,7 @@ export function createStatsStore({
     const redis = db();
     try {
       const [total, sources, dumpTypes, osVersions, stopCodes, stopCodeLabels,
-        buckets, modules, daily, lastHourCount] = await Promise.all([
+        buckets, modules, daily, lastHourCount, trackingStart] = await Promise.all([
         redis.hgetall(key('at:total')),
         redis.hgetall(key('at:source')),
         redis.hgetall(key('at:dtype')),
@@ -133,7 +136,8 @@ export function createStatsStore({
         redis.zrange(key('z:bucket'), 0, -1, { rev: true, withScores: true }),
         redis.zrange(key('z:module'), 0, -1, { rev: true, withScores: true }),
         redis.zrange(key('z:daily'), 0, -1, { withScores: true }),
-        redis.get(key(`h:${utcHourBucket(now())}`))
+        redis.get(key(`h:${utcHourBucket(now())}`)),
+        redis.get(key('start'))
       ]);
 
       const snapshot = shapeSnapshot({
@@ -146,7 +150,8 @@ export function createStatsStore({
         buckets: toPairs(buckets),
         modules: toPairs(modules),
         daily: toPairs(daily),
-        lastHour: Number(resultValue(lastHourCount)) || 0
+        lastHour: Number(resultValue(lastHourCount)) || 0,
+        trackingSince: resultValue(trackingStart) || null
       }, { now: now(), windowDays: dailyWindowDays });
 
       await redis.set(key('snapshot'), JSON.stringify(snapshot), { ex: snapshotTtlSeconds });

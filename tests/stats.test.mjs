@@ -95,11 +95,13 @@ test('buildSnapshot zero-fills window and folds Other', () => {
     buckets: [['AV_nt!ExFreePool', 9], ['ZEROED', 2]],
     modules: [['nvlddmkm.sys', 7], ['ntfs.sys', 3]],
     daily: [['20260822', '5'], ['20260823', '3']],
-    lastHour: '4'
+    lastHour: '4',
+    trackingSince: '2026-05-26T00:00:00.000Z'
   }, { now, windowDays: 90 });
 
   assert.equal(snapshot.success, true);
   assert.equal(snapshot.totals.analyses, 42);
+  assert.equal(snapshot.trackingSince, '2026-05-26T00:00:00.000Z');
   assert.equal(snapshot.gauges.lastHour, 4);
   assert.equal(snapshot.gauges.today, 3);
   assert.equal(snapshot.daily.length, 90);
@@ -118,6 +120,10 @@ test('buildSnapshot is fully deterministic on an empty store', () => {
   const empty = buildSnapshot({}, { now });
   assert.equal(empty.totals.analyses, 0);
   assert.equal(empty.gauges.today, 0);
+  assert.equal(empty.trackingSince, null);
   assert.equal(empty.daily.filter(d => d.count === 0).length, 90);
   assert.equal(empty.topStopCodes.total, 0);
+
+  // Garbage tracking timestamps are dropped, not passed through.
+  assert.equal(buildSnapshot({ trackingSince: 'not-a-date' }, { now }).trackingSince, null);
 });

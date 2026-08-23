@@ -19,6 +19,8 @@ export interface StatsSnapshot {
   windowDays: number;
   totals: { analyses: number };
   gauges: { lastHour: number; today: number };
+  /** ISO timestamp of the first counted analysis; null until data exists. */
+  trackingSince: string | null;
   daily: { date: string; count: number }[];
   topStopCodes: RankedFamily;
   topFailureBuckets: RankedFamily;

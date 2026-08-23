@@ -56,9 +56,17 @@ function formatCount(value?: number): string {
   return typeof value === 'number' ? value.toLocaleString('en-US') : '—';
 }
 
+function formatTrackingSince(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
 const StatsPage: React.FC = () => {
   const { snapshot, error } = useStatsSnapshot();
   const daily = snapshot?.daily ?? [];
+  const trackingSinceLabel = formatTrackingSince(snapshot?.trackingSince);
   return (
     <PageLayout
       title="Windows Crash Statistics"
@@ -73,7 +81,11 @@ const StatsPage: React.FC = () => {
       />
       {error ? <p className="stats-error" role="alert">{error}</p> : null}
       <div className="stats-tiles">
-        <StatTile label="Analyses (all time)" value={formatCount(snapshot?.totals.analyses)} />
+        <StatTile
+          label="Analyses (all time)"
+          value={formatCount(snapshot?.totals.analyses)}
+          hint={trackingSinceLabel ? `Tracking since ${trackingSinceLabel}` : undefined}
+        />
         <StatTile label="Today (UTC)" value={formatCount(snapshot?.gauges.today)} />
         <StatTile label="Last hour" value={formatCount(snapshot?.gauges.lastHour)} />
       </div>
@@ -119,7 +131,10 @@ const StatsPage: React.FC = () => {
           </tbody>
         </table>
       </details>
-      <p className="stats-note">Counts are anonymous aggregates. Days and hours are UTC.</p>
+      <p className="stats-note">
+        Counts are anonymous aggregates. Days and hours are UTC.
+        {trackingSinceLabel ? ` Tracking since ${trackingSinceLabel} (UTC).` : ''}
+      </p>
     </PageLayout>
   );
 };
