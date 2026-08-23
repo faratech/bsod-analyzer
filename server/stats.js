@@ -196,6 +196,8 @@ export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = 
     success: true,
     schema: STATS_SNAPSHOT_SCHEMA,
     generatedAt: new Date(now).toISOString(),
+    // ISO timestamp of the first counted analysis (null until one exists).
+    trackingSince: isValidIso(raw.trackingSince) ? raw.trackingSince : null,
     windowDays,
     totals: { analyses: Math.max(0, Math.floor(Number(raw.total) || 0)) },
     gauges: {
@@ -215,6 +217,12 @@ export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = 
 // Sorts desc and keeps the top TOP_LIST_SIZE entries as [value, count] pairs.
 function topEntries(entries) {
   return [...entries].sort((a, b) => b[1] - a[1]).slice(0, TOP_LIST_SIZE);
+}
+
+function isValidIso(value) {
+  return typeof value === 'string' && value.length === 24
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)
+    && !Number.isNaN(Date.parse(value));
 }
 
 function rankedFromPairs(pairs) {
