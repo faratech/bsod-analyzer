@@ -88,9 +88,10 @@ substitutions:
   # Production completed the reader-first rollout. Override to false only when
   # deliberately staging a new dictionary-aware reader revision.
   _CACHE_ZSTD_WRITES_ENABLED: 'true'
-  # Both providers are bound so model.cfg can be hot-swapped between them at
-  # runtime without a redeploy. Both secrets must exist in Secret Manager.
-  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,OPENAI_ADMIN_KEY=openai-admin-key:latest'
+  # All providers are bound so model.cfg can be hot-swapped between them at
+  # runtime without a redeploy. All secrets must exist in Secret Manager.
+  # OPENROUTER_API_KEY additionally powers the AI narrative on /stats.
+  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,OPENAI_ADMIN_KEY=openai-admin-key:latest,OPENROUTER_API_KEY=openrouter-api-key:latest'
 
 availableSecrets:
   secretManager:
