@@ -3950,12 +3950,19 @@ app.use((req, res) => {
   }
 
   // Production (in-memory): the route's prerendered HTML when present, else the
-  // client-rendered shell for dynamic/unknown routes.
-  if (isHome) {
-    res.send(cachedHomeHtml);
-  } else {
-    res.send(cachedRouteHtml[normalized] || cachedIndexHtml);
+  // client-rendered shell for dynamic/unknown routes. If-None-Match gets a 304
+  // so navigations cost ~200 bytes when the document is unchanged, while a new
+  // deploy always delivers fresh markup for hydration.
+  const html = isHome ? cachedHomeHtml : (cachedRouteHtml[normalized] || cachedIndexHtml);
+  const etag = isHome
+    ? htmlEtags['/']
+    : (htmlEtags[normalized] ?? htmlEtags.__fallback);
+  res.setHeader('ETag', etag);
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch && String(ifNoneMatch).split(',').map(s => s.trim()).includes(etag)) {
+    return res.status(304).end();
   }
+  res.send(html);
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
@@ -3967,6 +3974,10 @@ let cachedHomeHtml;
 let cachedRouteHtml = {};
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
+// Strong ETags per served HTML document: browsers revalidate each navigation,
+// unchanged documents answer with a ~200-byte 304 instead of the full page,
+// and a stale cached document can never pair with a newer bundle unnoticed.
+const htmlEtags = {};
 
 async function startServer() {
   // Initialize xxhash before accepting requests
@@ -4021,6 +4032,17 @@ async function startServer() {
         cachedRouteHtml[route] = injectSsoFlags(fs.readFileSync(path.join(prerenderedDir, file), 'utf-8'));
         console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(cachedRouteHtml[route])} bytes)`);
       }
+    }
+
+    // Compute strong ETags after SSO-flag injection so they cover the exact
+    // bytes served. Revalidation answers with 304 when the deploy is unchanged.
+    const etagOf = (html) => '"'
+      + crypto.createHash('sha256').update(html).digest('base64url').slice(0, 27)
+      + '"';
+    htmlEtags['/'] = etagOf(cachedHomeHtml);
+    htmlEtags.__fallback = etagOf(cachedIndexHtml);
+    for (const [route, html] of Object.entries(cachedRouteHtml)) {
+      htmlEtags[route] = etagOf(html);
     }
 
     if (WF_SSO_ENABLED) {
