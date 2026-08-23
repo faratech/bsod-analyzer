@@ -283,7 +283,11 @@ const makeLimiter = createRateLimiterFactory({
   incrementRuntimeCounter,
   deleteRuntimeValue,
   defaultKeyGenerator: rateLimitKey,
-  defaultHandler: jsonRateLimitHandler
+  defaultHandler: jsonRateLimitHandler,
+  // Dev/no-Redis mode fails open on store errors; production keeps fail-closed
+  // (Redis is required anyway) and /health probes Redis so Cloud Run stops
+  // routing to an instance whose runtime store is down.
+  failOpenOnStoreError: !REQUIRE_REDIS_RUNTIME
 });
 
 function createConcurrencyLimiter(max, code) {
@@ -396,7 +400,11 @@ const WF_SSO_PREVIEW = process.env.WF_SSO_PREVIEW === 'true';
 // no restriction. e.g. WF_SSO_ALLOWED_UIDS=1 limits SSO to user id 1.
 const WF_SSO_ALLOWED_UIDS = (process.env.WF_SSO_ALLOWED_UIDS || '')
   .split(',')
-  .map((s) => Number(s.trim()))
+  .map((s) => s.trim())
+  // Strict decimal digits only: bare Number() would accept '0x10'/'1e3'/'0b101'
+  // as UIDs, silently allowlisting ids the operator never typed.
+  .filter((s) => /^\d+$/.test(s))
+  .map((s) => Number(s))
   .filter((n) => Number.isInteger(n) && n > 0);
 
 // Deny-by-default gate. An unset/blank/typo'd allow-list parses to [] and must NOT
@@ -580,9 +588,22 @@ async function sessionOwnsHash(sessionId, hash) {
   return true;
 }
 
+function ownershipIncludesSession(job, sessionId) {
+  if (!job || !sessionId) return false;
+  // Current shape tracks every session that uploaded this identical dump so a
+  // second uploader cannot steal ownership out from under the first.
+  if (Array.isArray(job.sessions)) return job.sessions.includes(sessionId);
+  return job.sessionId === sessionId; // legacy single-session entries
+}
+
 async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
   if (!sessionId || !uid || !fileHash) return;
-  const ownership = { sessionId, fileHash, upstreamJobId, timestamp: Date.now() };
+  const existing = winDbgJobOwnership.get(uid) || await loadWinDbgJobOwnership(uid);
+  const ownership = existing
+    ? { ...existing,
+        sessions: [...new Set([...(Array.isArray(existing.sessions) ? existing.sessions : [existing.sessionId].filter(Boolean)), sessionId])],
+        timestamp: Date.now() }
+    : { sessions: [sessionId], fileHash, upstreamJobId, timestamp: Date.now() };
   winDbgJobOwnership.set(uid, ownership);
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
@@ -604,7 +625,7 @@ async function loadWinDbgJobOwnership(uid) {
 
 async function getOwnedWinDbgJob(sessionId, uid) {
   const job = await loadWinDbgJobOwnership(uid);
-  if (!job || job.sessionId !== sessionId) return null;
+  if (!ownershipIncludesSession(job, sessionId)) return null;
   if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
     winDbgJobOwnership.delete(uid);
     await deleteRuntimeValue(runtimeWinDbgJobKey(uid));
@@ -842,8 +863,11 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      // Deny by omitting CORS headers instead of throwing: an error here used
+      // to surface as 500 INTERNAL_ERROR, polluting error alerting for what is
+      // a routine cross-origin denial. Browsers still block the read.
       console.warn(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
+      callback(null, false);
     }
   },
   credentials: true,
@@ -1237,7 +1261,7 @@ async function validateSession(sessionId, sessionHash) {
   }
   
   // Verify hash
-  if (sessionData.hash !== sessionHash) {
+  if (!timingSafeEqualString(sessionData.hash, sessionHash)) {
     return { valid: false, reason: 'Invalid session hash' };
   }
 
@@ -1411,12 +1435,34 @@ const requireApiKey = (req, res, next) => {
 };
 
 // Health check endpoint for Cloud Run (not rate limited)
+// Redis health is probed (result cached briefly) so the load balancer stops
+// routing to an instance whose runtime store is down instead of serving 503s
+// from every /api route until the blip passes on its own.
+let lastRedisProbe = { at: 0, ok: true };
+async function probeRedisHealth() {
+  if (!isCacheEnabled()) return true;
+  const now = Date.now();
+  if (now - lastRedisProbe.at < 5000) return lastRedisProbe.ok;
+  try {
+    const ok = await Promise.race([
+      checkCacheConnection(),
+      new Promise(resolve => setTimeout(() => resolve(false), 1000))
+    ]);
+    lastRedisProbe = { at: now, ok: ok === true };
+  } catch {
+    lastRedisProbe = { at: now, ok: false };
+  }
+  return lastRedisProbe.ok;
+}
+
 app.get('/health', async (req, res) => {
   res.set({
     'Cache-Control': 'no-store, max-age=0'
   });
-  res.status(200).json({
-    status: 'ok',
+  const redisOk = await probeRedisHealth();
+  res.status(redisOk ? 200 : 503).json({
+    status: redisOk ? 'ok' : 'degraded',
+    redis: redisOk,
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -2153,24 +2199,42 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     res.json(responseData);
   } catch (error) {
+    // Refund the request/token estimate committed before the provider call so
+    // provider outages do not burn the user's hourly tier quota. (The
+    // pre-commit still guards against concurrent TOCTOU overrun.)
+    try {
+      if (quotaKey && sessionTracking.count > 0) {
+        sessionTracking.count -= 1;
+        sessionTracking.totalTokens = Math.max(0, sessionTracking.totalTokens - estimatedInputTokens);
+        await storeSessionTracking(quotaKey, sessionTracking);
+      }
+    } catch (refundError) {
+      log.warn('ai.quota_refund_failed', { message: refundError.message });
+    }
     log.error('ai.error', {
       code: error.code,
       status: error.status,
       message: error.message,
       stack: error.stack?.split('\n').slice(0, 3).join(' | ')
     });
-    const status = error.code === 'AI_NOT_CONFIGURED' || error.code === 'UNSUPPORTED_AI_MODEL'
-      ? 503
-      : error.code === 'AI_TIMEOUT'
-        ? 504
-        : error.code === 'INVALID_AI_RESPONSE'
-          ? 502
-          : error.code === 'AI_AUTH_FAILED'
-            ? 502
-            : error.code === 'AI_UPSTREAM_ERROR'
-              ? (error.retryable ? 503 : 502)
-              : 500;
-    res.status(status).json({ error: 'AI analysis failed. Please try again later.' });
+    // @google/genai's ApiError carries a numeric .status but no string .code,
+    // and Gemini timeouts throw a plain Error - both must map to upstream
+    // statuses instead of masquerading as local 500s.
+    let status;
+    if (error.code === 'AI_NOT_CONFIGURED' || error.code === 'UNSUPPORTED_AI_MODEL') {
+      status = 503;
+    } else if (error.code === 'AI_TIMEOUT' || /timed out/i.test(error.message || '')) {
+      status = 504;
+    } else if (typeof error.status === 'number' && error.status >= 400) {
+      status = error.status === 429 || error.status >= 500 ? 503 : 502;
+    } else if (error.code === 'INVALID_AI_RESPONSE' || error.code === 'AI_AUTH_FAILED') {
+      status = 502;
+    } else if (error.code === 'AI_UPSTREAM_ERROR') {
+      status = error.retryable ? 503 : 502;
+    } else {
+      status = 500;
+    }
+    res.status(status).json({ error: 'AI analysis failed. Please try again later.', upstreamStatus: typeof error.status === 'number' ? error.status : undefined });
   }
 });
 
@@ -2287,14 +2351,16 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
       });
     }
 
-    // Limit number of hashes to check at once
-    const hashesToCheck = hashes.slice(0, 20);
+    // Validate first, then cap: slicing before filtering would let 20
+    // malformed entries crowd out every real hash in the same request.
+    const validHashes = (Array.isArray(hashes) ? hashes : [])
+      .filter(hash => typeof hash === 'string' && HASH_RE.test(hash));
+    const hashesToCheck = validHashes.slice(0, 20);
     const results = {};
 
     // Check each hash against the combined cache. The client uses this as a
     // hint before fetching cached results by hash.
     const checkPromises = hashesToCheck
-      .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
         const cached = await isAnalysisCached(hash);
         results[hash] = cached;
@@ -2356,6 +2422,19 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       return res.status(400).json({
         success: false,
         error: validation.error
+      });
+    }
+
+    // The WinDBG server rejects uploads above its own 128 MB cap; failing here
+    // gives a clear size-specific 413 instead of flattening the upstream 413
+    // into a retry-inviting 502 later.
+    const WINDBG_UPSTREAM_MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
+    if (fileBuffer.length > WINDBG_UPSTREAM_MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        success: false,
+        error: `Dump exceeds the ${Math.floor(WINDBG_UPSTREAM_MAX_UPLOAD_BYTES / (1024 * 1024))} MB limit of the analysis service`,
+        code: 'WINDBG_FILE_TOO_LARGE',
+        max: WINDBG_UPSTREAM_MAX_UPLOAD_BYTES
       });
     }
 
@@ -2633,6 +2712,17 @@ app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SI
     res.send(zipBuffer);
   } catch (error) {
     console.error('[Archive] Extraction error:', error);
+    // Infrastructure failures (ENOSPC/EIO on tmp, missing 7z/bsdtar binary) are
+    // server faults, not client mistakes - report 5xx so alerting sees them.
+    const infraCode = ['ENOSPC', 'EIO', 'ENOENT', 'EACCES', 'EMFILE'].includes(error?.code);
+    if (infraCode) {
+      res.status(500).json({
+        success: false,
+        error: 'Archive extraction failed due to a temporary server issue. Please try again later.',
+        code: 'ARCHIVE_INFRASTRUCTURE_ERROR'
+      });
+      return;
+    }
     res.status(400).json({
       success: false,
       error: 'Failed to extract archive. Please ensure it is a valid format and is not password-protected.'
@@ -2902,7 +2992,8 @@ ${analysisForPrompt}
     return report;
   } catch (error) {
     console.error('[API/AI] AI analysis error:', error);
-    // Return basic report if AI fails (don't cache failures)
+    // Return basic report if AI fails (don't cache failures). aiAvailable:false
+    // lets API consumers distinguish degraded output from a real AI report.
     return {
       summary: `Windows crash in ${fileName} analyzed by WinDBG`,
       probableCause: 'WinDBG analysis completed but AI interpretation failed.',
@@ -2911,7 +3002,9 @@ ${analysisForPrompt}
         'Review the raw WinDBG output manually',
         'Update drivers mentioned in the analysis',
         'Check Windows Event Viewer for related errors'
-      ]
+      ],
+      aiAvailable: false,
+      aiError: 'AI interpretation unavailable'
     };
   }
 }
@@ -3437,14 +3530,6 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
           };
         })();
 
-        analysisPromise.catch(() => {});
-        let result;
-        try {
-          result = await Promise.race([analysisPromise, timeoutPromise]);
-        } finally {
-          clearTimeout(timeoutHandle);
-        }
-
         const processingTime = (Date.now() - runStartTime) / 1000;
         log.info('analyze.complete', {
           processingTime,
@@ -3456,6 +3541,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         // Save complete status
         jobData.status = 'completed';
         jobData.data = result.report;
+        jobData.aiStatus = result.report?.aiAvailable === false ? 'unavailable' : 'ok';
         jobData.processingTime = processingTime;
         jobData.timestamp = Date.now();
         await storeJob(uid, jobData);

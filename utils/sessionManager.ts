@@ -137,8 +137,14 @@ function handleVisibilityChange(): void {
   }
 }
 
+// Owners currently keeping the refresh timer alive. The timer stops only when
+// the LAST owner releases it: previously, unmounting one page stopped the
+// module-global timer other components had started.
+const refreshOwners = new Set<string>();
+
 // Start automatic session refresh (call after successful init)
-export function startSessionRefresh(): void {
+export function startSessionRefresh(owner = 'default'): void {
+  refreshOwners.add(owner);
   if (refreshInterval) return; // Already running
 
   lastRefreshTime = Date.now();
@@ -156,8 +162,11 @@ export function startSessionRefresh(): void {
   console.log('[Session] Auto-refresh started (every 20 min when active)');
 }
 
-// Stop automatic session refresh
-export function stopSessionRefresh(): void {
+// Release this owner's claim on the refresh timer
+export function stopSessionRefresh(owner = 'default'): void {
+  refreshOwners.delete(owner);
+  if (refreshOwners.size > 0) return; // someone else still needs it
+
   if (refreshInterval) {
     clearInterval(refreshInterval);
     refreshInterval = null;

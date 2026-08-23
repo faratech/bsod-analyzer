@@ -50,6 +50,13 @@ export function createMemoryRateLimitStore(windowMs) {
   return {
     async increment(key) {
       const now = Date.now();
+      // Opportunistic sweep so expired keys cannot accumulate forever when the
+      // memory store is active (dev/no-Redis mode).
+      if (hits.size > 0) {
+        for (const [existingKey, entry] of hits) {
+          if (entry.resetTime.getTime() <= now) hits.delete(existingKey);
+        }
+      }
       let entry = hits.get(key);
       if (!entry || entry.resetTime.getTime() <= now) {
         entry = { totalHits: 0, resetTime: new Date(now + windowMs) };
@@ -83,7 +90,8 @@ export function createRateLimiter({
   handler = jsonRateLimitHandler,
   skip = () => false,
   name = 'generic',
-  store
+  store,
+  failOpenOnStoreError = false
 }) {
   if (typeof keyGenerator !== 'function') {
     throw new TypeError('createRateLimiter requires a keyGenerator function');
@@ -106,6 +114,15 @@ export function createRateLimiter({
       if (totalHits > max) return handler(req, res);
       next();
     } catch (error) {
+      if (failOpenOnStoreError) {
+        // Transient runtime-store failure: allow the request instead of
+        // failing the whole /api surface with 503s. Production keeps this off
+        // (REQUIRE_REDIS_RUNTIME already hard-requires Redis for sessions) and
+        // relies on /health probing Redis so the load balancer stops routing
+        // to a broken instance.
+        console.error(`[RateLimit] ${name} store error, failing open:`, error.message);
+        return next();
+      }
       next(error);
     }
   };
@@ -116,7 +133,8 @@ export function createRateLimiterFactory({
   incrementRuntimeCounter,
   deleteRuntimeValue,
   defaultKeyGenerator,
-  defaultHandler = jsonRateLimitHandler
+  defaultHandler = jsonRateLimitHandler,
+  failOpenOnStoreError = false
 }) {
   return function makeLimiter({
     windowMs,
@@ -140,7 +158,8 @@ export function createRateLimiterFactory({
       handler,
       skip,
       name,
-      store
+      store,
+      failOpenOnStoreError
     });
   };
 }

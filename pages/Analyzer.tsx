@@ -32,12 +32,14 @@ const Analyzer: React.FC = () => {
         initializeSession().then(success => {
             setSessionReady(success);
             if (success) {
-                startSessionRefresh();
+                startSessionRefresh('analyzer-page');
             }
         });
 
         return () => {
-            stopSessionRefresh();
+            // Reference-counted: releasing here no longer kills the timer for
+            // AuthProvider/FileUploader owners elsewhere in the app.
+            stopSessionRefresh('analyzer-page');
         };
     }, []);
 
