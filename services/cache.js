@@ -335,7 +335,7 @@ export async function incrementRuntimeCounter(key, ttlSeconds, delta = 1) {
 
   try {
     const runtimeKey = getRuntimeKey(key);
-    const count = Number(await redis.incrBy(runtimeKey, delta));
+    const count = Number(await redis.incrby(runtimeKey, delta));
     if (!Number.isFinite(count)) {
       throw new Error('Redis INCR returned a non-numeric counter');
     }
