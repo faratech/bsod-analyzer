@@ -330,16 +330,16 @@ export async function checkCacheConnection() {
   }
 }
 
-export async function incrementRuntimeCounter(key, ttlSeconds) {
+export async function incrementRuntimeCounter(key, ttlSeconds, delta = 1) {
   if (!isCacheEnabled()) return null;
 
   try {
     const runtimeKey = getRuntimeKey(key);
-    const count = Number(await redis.incr(runtimeKey));
+    const count = Number(await redis.incrBy(runtimeKey, delta));
     if (!Number.isFinite(count)) {
       throw new Error('Redis INCR returned a non-numeric counter');
     }
-    if (count === 1) {
+    if (count === delta) {
       await redis.expire(runtimeKey, ttlSeconds);
     }
 

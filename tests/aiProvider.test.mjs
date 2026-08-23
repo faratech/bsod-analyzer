@@ -6,6 +6,8 @@ import {
   DEEPSEEK_V4_FLASH_MODEL,
   generateDeepSeekContent,
   generateOpenRouterContent,
+  generateOpenAIContent,
+  isOpenAIFreeTier,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel,
@@ -249,5 +251,66 @@ test('OpenRouter adapter normalizes chat-completions responses and maps errors',
   await assert.rejects(
     () => createOpenRouterClientForTest([{ status: 402, body: JSON.stringify({ error: { message: 'Insufficient Balance' } }) }])({ contents: 'x' }),
     error => error.code === 'AI_UPSTREAM_ERROR' && error.retryable === false,
+  );
+});
+
+// OpenAI free-tier adapter: body shape, tier passthrough, quota classification.
+function createOpenAIClientForTest(responses) {
+  const captured = [];
+  return {
+    calls: captured,
+    client: (request, options = {}) => generateOpenAIContent(request, {
+      apiKey: 'test-key',
+      maxRetries: 0,
+      sleepImpl: () => Promise.resolve(),
+      fetchImpl: async (_url, init) => {
+        captured.push(JSON.parse(init.body));
+        const spec = responses[Math.min(captured.length - 1, responses.length - 1)];
+        if (!spec.status || spec.status === 200) {
+          return new Response(spec.body, { status: 200 });
+        }
+        return new Response(spec.body, { status: spec.status });
+      },
+      ...options,
+    }),
+  };
+}
+
+test('OpenAI adapter sends reasoning-model-safe JSON bodies and passes service_tier', async () => {
+  const { calls, client } = createOpenAIClientForTest([
+    {
+      status: 200,
+      body: JSON.stringify({
+        model: 'gpt-5.6-luna',
+        service_tier: 'data sharing incentive',
+        choices: [{ message: { content: '{"summary":"ok"}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }),
+    },
+  ]);
+  const result = await client({
+    contents: 'analyze',
+    config: { responseMimeType: 'application/json', maxOutputTokens: 512 },
+  });
+
+  assert.equal(result.text, '{"summary":"ok"}');
+  assert.equal(result.serviceTier, 'data sharing incentive');
+  assert.equal(isOpenAIFreeTier(result.serviceTier), true);
+  assert.equal(calls[0].max_completion_tokens, 512);
+  assert.equal(calls[0].temperature, undefined);
+  assert.equal(calls[0].max_tokens, undefined);
+  assert.equal(calls[0].response_format.type, 'json_object');
+});
+
+test('OpenAI adapter classifies insufficient_quota as exhausted, not retryable', async () => {
+  const { client } = createOpenAIClientForTest([
+    {
+      status: 429,
+      body: JSON.stringify({ error: { type: 'insufficient_quota', message: 'You exceeded your current quota' } }),
+    },
+  ]);
+  await assert.rejects(
+    () => client({ contents: 'x' }),
+    error => error.code === 'AI_QUOTA_EXHAUSTED' && error.retryable === false,
   );
 });
