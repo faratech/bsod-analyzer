@@ -51,8 +51,11 @@ import {
   DEFAULT_GEMINI_MODEL,
   generateDeepSeekContent,
   generateOpenRouterContent,
+  generateOpenAIContent,
+  isOpenAIFreeTier,
   DEFAULT_OPENROUTER_BASE_URL,
   DEFAULT_OPENROUTER_FREE_MODEL,
+  DEFAULT_OPENAI_FREE_MODEL,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel
@@ -152,6 +155,15 @@ const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPS
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
 const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || DEFAULT_OPENROUTER_FREE_MODEL;
+// OpenAI data-sharing incentive (complimentary tokens): gpt-5.6-luna is used
+// FIRST each UTC day while the free quota lasts, then the chain falls back to
+// DeepSeek -> OpenRouter. OPENAI_ADMIN_KEY enables an org-wide usage cross-check.
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_ADMIN_KEY = process.env.OPENAI_ADMIN_KEY;
+const OPENAI_FREE_MODEL = process.env.OPENAI_FREE_MODEL || DEFAULT_OPENAI_FREE_MODEL;
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
+const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
 const DEEPSEEK_REASONING_EFFORT = process.env.DEEPSEEK_REASONING_EFFORT === 'max' ? 'max' : 'high';
 const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
   String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
@@ -769,6 +781,88 @@ function normalizeAIResponse(response, cacheModel) {
 
 // Dispatch through the provider selected by model.cfg and normalize each provider
 // to the response shape already consumed by the rest of the application.
+// ---------------------------------------------------------------------------
+// OpenAI complimentary-token (free tier) routing helpers.
+// Three layers of quota detection: (1) per-response service_tier, (2) a Redis
+// UTC-day token tally, (3) an optional org-wide Usage API cross-check.
+// ---------------------------------------------------------------------------
+
+function openAIFreeDateKey(now = new Date()) {
+  return now.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function secondsUntilUtcMidnight(now = new Date()) {
+  const next = Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0
+  );
+  return Math.max(60, Math.ceil((next - now.getTime()) / 1000));
+}
+
+async function markOpenAIExhausted(reason) {
+  const key = `openai-exhausted:${openAIFreeDateKey()}`;
+  await setRuntimeValue(key, { reason, timestamp: Date.now() }, secondsUntilUtcMidnight());
+}
+
+let openaiUsageApi = { attemptedAt: 0, used: null };
+
+// Org-wide incentive-tier tokens used today via the Usage API. Returns null
+// when unavailable (no admin key, API error, throttled) so callers fall back
+// to the local tally. Errors are retried at most once per 5 minutes.
+async function fetchOpenAIIncentiveTokensUsed() {
+  if (!OPENAI_ADMIN_KEY) return null;
+  const now = Date.now();
+  if (now - openaiUsageApi.attemptedAt < 5 * 60 * 1000) return openaiUsageApi.used;
+  openaiUsageApi.attemptedAt = now;
+
+  try {
+    const startSeconds = Math.floor(Date.UTC(
+      new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()
+    ) / 1000);
+    const url = `${OPENAI_BASE_URL.replace(/\/+$/, '')}/organization/usage/completions`
+      + `?start_time=${startSeconds}&bucket_width=1d&group_by[]=service_tier`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    let payload;
+    try {
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${OPENAI_ADMIN_KEY}` },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      payload = await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+    let used = 0;
+    for (const bucket of payload?.data ?? []) {
+      if (isOpenAIFreeTier(bucket?.service_tier)) {
+        used += Number(bucket?.input_tokens ?? 0) + Number(bucket?.output_tokens ?? 0);
+      }
+    }
+    openaiUsageApi = { attemptedAt: now, used: Number.isFinite(used) ? used : null };
+    return openaiUsageApi.used;
+  } catch (error) {
+    log.warn('ai.openai.free.usage_api_failed', { message: error.message?.slice(0, 120) });
+    openaiUsageApi.used = null;
+    return null;
+  }
+}
+
+// Returns true when the free-tier path should be attempted for a request with
+// the given projected token usage.
+async function openAIFreeGate(estimatedTokens) {
+  if (!OPENAI_API_KEY || !isCacheEnabled()) return false;
+  const dateKey = openAIFreeDateKey();
+  if (await getRuntimeValue(`openai-exhausted:${dateKey}`)) return false;
+
+  const threshold = OPENAI_FREE_DAILY_TOKEN_CAP - OPENAI_FREE_SAFETY_BUFFER;
+  let used = await fetchOpenAIIncentiveTokensUsed();
+  if (used === null) {
+    used = Number(await getRuntimeValue(`openai-free:${dateKey}`)) || 0;
+  }
+  return used + estimatedTokens <= threshold;
+}
+
 async function generateAIContent(request) {
   const provider = getAIProviderForModel(request.model);
   if (!provider) {
@@ -776,6 +870,54 @@ async function generateAIContent(request) {
       code: 'UNSUPPORTED_AI_MODEL',
       status: 500
     });
+  }
+
+  if (provider === 'deepseek') {
+    // Free-tier-first: consume the OpenAI data-sharing incentive on
+    // gpt-5.6-luna before spending DeepSeek credits. Falls through to the
+    // normal chain when the daily quota is out or the attempt fails.
+    const configuredMaxOutput = Number(request.config?.maxOutputTokens);
+    const projectedTokens = Math.ceil(String(request.contents || '').length / 4)
+      + (Number.isFinite(configuredMaxOutput) ? configuredMaxOutput : 4096);
+    if (await openAIFreeGate(projectedTokens)) {
+      try {
+        const response = await withTimeout(
+          () => generateOpenAIContent(request, {
+            apiKey: OPENAI_API_KEY,
+            baseUrl: OPENAI_BASE_URL,
+            model: OPENAI_FREE_MODEL,
+            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          }),
+          DEEPSEEK_TIMEOUT_MS,
+          'OpenAI free request timed out'
+        );
+        const used = response.usageMetadata?.totalTokenCount || 0;
+        if (used > 0) {
+          await incrementRuntimeCounter(`openai-free:${openAIFreeDateKey()}`, 172800, used);
+        }
+        log.info('ai.openai.free', {
+          model: OPENAI_FREE_MODEL,
+          used,
+          serviceTier: response.serviceTier || null,
+          free: isOpenAIFreeTier(response.serviceTier)
+        });
+        if (response.serviceTier && !isOpenAIFreeTier(response.serviceTier)) {
+          // We expected complimentary tokens but got billed-tier traffic: the
+          // org quota was consumed elsewhere today. Stop routing here.
+          await markOpenAIExhausted('billed-service-tier');
+          log.warn('ai.openai.free.billed', { serviceTier: response.serviceTier });
+        }
+        return normalizeAIResponse(response, `openai:${OPENAI_FREE_MODEL}`);
+      } catch (error) {
+        const exhausted = error instanceof AIProviderError
+          && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
+        if (exhausted) await markOpenAIExhausted(error.code);
+        log.warn(exhausted ? 'ai.openai.free.exhausted' : 'ai.openai.free.error', {
+          message: error.message?.slice(0, 140)
+        });
+        // Fall through to DeepSeek -> OpenRouter.
+      }
+    }
   }
 
   if (provider === 'deepseek') {

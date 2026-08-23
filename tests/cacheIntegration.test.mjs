@@ -44,7 +44,10 @@ function createFakeClients() {
       return 1;
     },
     async incr(key) {
-      const next = Number(values.get(key) || 0) + 1;
+      return redisClient.incrBy(key, 1);
+    },
+    async incrBy(key, delta) {
+      const next = Number(values.get(key) || 0) + delta;
       values.set(key, String(next));
       return next;
     },
