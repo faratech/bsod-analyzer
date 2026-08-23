@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import ts from 'typescript';
+import { transform } from 'rolldown/experimental';
 
+// TypeScript 7 removed transpileModule from its JS API, so tests load .ts
+// sources through rolldown's oxc transform (already a vite dependency).
 async function loadMinidumpParser() {
   const source = await fs.readFile(new URL('../utils/minidumpStreams.ts', import.meta.url), 'utf8');
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.ES2020,
-      target: ts.ScriptTarget.ES2020
-    }
-  });
-  const encoded = Buffer.from(transpiled.outputText, 'utf8').toString('base64');
+  const result = await transform('minidumpStreams.ts', source);
+  if (result.errors?.length) {
+    throw new Error(`Failed to transform minidumpStreams.ts: ${result.errors[0]}`);
+  }
+  const encoded = Buffer.from(result.code, 'utf8').toString('base64');
   return import(`data:text/javascript;base64,${encoded}`);
 }
 
