@@ -41,13 +41,15 @@ export function createStatsStore({
   // Records one completed crash analysis. Returns true when counters moved.
   // Dedupe: one event per (fileHash, UTC day); hashless records count
   // unconditionally (defensive — callers should always have a hash).
-  async function recordAnalysis(facts) {
+  // options.ts: event time for backfilled history (defaults to now). Old
+  // events update all-time/daily aggregates but skip the live hourly gauge.
+  async function recordAnalysis(facts, options = {}) {
     if (!active() || !facts || facts.source !== 'windbg' && facts.source !== 'ai-fallback') {
       return false;
     }
     const redis = db();
     try {
-      const ts = now();
+      const ts = Number.isFinite(options.ts) ? options.ts : now();
       const day = utcDay(ts);
 
       if (facts.fileHash) {
@@ -83,19 +85,27 @@ export function createStatsStore({
       }
       pipe.zincrby(key('z:daily'), 1, day);
       pipe.zremrangebyrank(key('z:daily'), 0, -(dailyWindowDays + DAILY_KEEP_MARGIN + 1));
-      const hourKey = key(`h:${utcHourBucket(ts)}`);
-      pipe.incrby(hourKey, 1);
-      pipe.ttl(hourKey);
+      // Live "last hour" gauge only makes sense for events happening now;
+      // backfilled history must not inflate it.
+      const isCurrentHour = utcHourBucket(ts) === utcHourBucket(now());
+      let hourKey = null;
+      if (isCurrentHour) {
+        hourKey = key(`h:${utcHourBucket(now())}`);
+        pipe.incrby(hourKey, 1);
+        pipe.ttl(hourKey);
+      }
 
       const results = await pipe.exec();
       if (results.some(r => resultValue(r) instanceof Error || r?.error)) {
         throw new Error('pipeline reported command errors');
       }
-      const ttl = Number(resultValue(results[results.length - 1]));
-      if (!Number.isFinite(ttl) || ttl < 0) {
-        // EXPIRE-on-first semantics (cf. incrementRuntimeCounter): a fresh
-        // hour bucket has no TTL yet.
-        await redis.expire(hourKey, HOURLY_TTL_SECONDS);
+      if (hourKey) {
+        const ttl = Number(resultValue(results[results.length - 1]));
+        if (!Number.isFinite(ttl) || ttl < 0) {
+          // EXPIRE-on-first semantics (cf. incrementRuntimeCounter): a fresh
+          // hour bucket has no TTL yet.
+          await redis.expire(hourKey, HOURLY_TTL_SECONDS);
+        }
       }
       return true;
     } catch (error) {
