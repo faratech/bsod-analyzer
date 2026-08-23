@@ -33,7 +33,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       if (!cancelled) {
         setIsVerified(sessionValid);
         if (sessionValid) {
-          startSessionRefresh();
+          startSessionRefresh('uploader');
         }
       }
     };
@@ -69,7 +69,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       return false;
     }
 
-    startSessionRefresh();
+    startSessionRefresh('uploader');
     return true;
   }, [isVerified]);
 
@@ -164,7 +164,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
         setIsVerified(true);
         setVerificationError(false);
         markSessionInitialized();
-        startSessionRefresh();
+        startSessionRefresh('uploader');
 
         // Log successful verification
         console.log('Turnstile verified:', {

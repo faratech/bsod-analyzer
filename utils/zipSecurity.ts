@@ -50,14 +50,10 @@ export async function validateZipFile(file: File): Promise<ZipValidationResult> 
           throw new Error(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
         }
       } else {
-        filePromises.push(
-          zipEntry.async('uint8array').then(data => {
-            totalExtractedSize += data.length;
-            if (totalExtractedSize > SECURITY_CONFIG.zip.maxExtractedSize) {
-              throw new Error(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
-            }
-          })
-        );
+        // Without trusted size metadata we would have to fully decompress the
+        // entry BEFORE knowing its size - a crafted archive could exhaust
+        // memory client-side. Reject rather than guess.
+        throw new Error('ZIP entry is missing uncompressed size metadata and cannot be safely validated.');
       }
     });
 

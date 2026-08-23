@@ -233,20 +233,25 @@ function readRequestBody(req, limitBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let done = false;
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > limitBytes) {
+      if (size > limitBytes && !done) {
+        done = true;
+        chunks.length = 0; // release buffered bytes; stop accumulating
         const err = new Error('request entity too large');
         err.type = 'entity.too.large';
         err.status = 413;
+        // Drain the remainder instead of destroying the socket so the error
+        // middleware can deliver a structured 413 response.
+        req.resume();
         reject(err);
-        req.destroy();
         return;
       }
-      chunks.push(chunk);
+      if (!done) chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => { if (!done) resolve(Buffer.concat(chunks).toString('utf8')); });
+    req.on('error', err => { if (!done) reject(err); });
   });
 }
 
@@ -316,7 +321,18 @@ export function staticMiddleware(root, options = {}) {
       res.setHeader('Last-Modified', stat.mtime.toUTCString());
       res.setHeader('ETag', `W/"${stat.size.toString(16)}-${Number(stat.mtimeMs).toString(16)}"`);
       if (req.method === 'HEAD') return res.end();
-      fs.createReadStream(filePath).on('error', next).pipe(res);
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', err => {
+        // Errors after the first chunk has flushed cannot turn the response
+        // into an error status anymore; appending an error body would corrupt
+        // the asset. Destroy the socket instead.
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        next(err);
+      });
+      stream.pipe(res);
     });
   };
 }
