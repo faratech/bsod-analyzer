@@ -224,6 +224,26 @@ test('hourly gauge gets EXPIRE-on-first', async () => {
   assert.ok(ttlAfterFirst > 0 && ttlAfterFirst <= 26 * 3600, `ttl=${ttlAfterFirst}`);
 });
 
+test('raw-run gauges count deduped repeats too (activity vs unique)', async () => {
+  const redis = createFakeRedis();
+  let nowMs = Date.UTC(2026, 7, 23, 12);
+  const store = createStatsStore({ redis, now: () => nowMs });
+
+  await store.recordAnalysis(WINDGBG_FACTS);
+  // Same file again the same day: deduped for aggregates...
+  await store.recordAnalysis({ ...WINDGBG_FACTS, source: 'ai-fallback' });
+  assert.equal((await redis.hgetall('stats:at:total')).analyses, '1');
+  // ...but every run increments both activity gauges.
+  const dayKey = 'stats:r:20260823';
+  assert.equal(await redis.get(dayKey), '2');
+  const hourKeys = [...redis._strings.keys()].filter(k => k.startsWith('stats:h:'));
+  assert.equal(await redis.get(hourKeys[0]), '2');
+
+  // Backfilled history must not touch today's gauges.
+  await store.recordAnalysis(WINDGBG_FACTS, { ts: Date.UTC(2026, 7, 20, 12) });
+  assert.equal(await redis.get(dayKey), '2');
+});
+
 test('disabled store is a no-op; write failures are swallowed', async () => {
   const disabled = fixedStore(createFakeRedis(), { isEnabled: () => false });
   assert.equal(await disabled.recordAnalysis(WINDGBG_FACTS), false);

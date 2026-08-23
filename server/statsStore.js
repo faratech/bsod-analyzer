@@ -13,6 +13,7 @@ import {
 
 const SEEN_TTL_SECONDS = 48 * 60 * 60;      // idempotency window (>2 days covers UTC-day rollover)
 const HOURLY_TTL_SECONDS = 26 * 60 * 60;    // last-hour gauge outlives its hour
+const RUNS_TTL_SECONDS = 48 * 60 * 60;      // raw-runs-per-day counter
 const ZSET_MAX_MEMBERS = 500;               // cardinality cap for buckets/modules
 const DAILY_KEEP_MARGIN = 6;                // keep a few days beyond the window
 
@@ -52,6 +53,27 @@ export function createStatsStore({
       const ts = Number.isFinite(options.ts) ? options.ts : now();
       const day = utcDay(ts);
 
+      // Raw-activity gauges count EVERY completed analysis run, independent of
+      // the unique-dump dedupe below — "1 in the last hour" used to mean
+      // "1 new distinct dump", which read as undercounting to everyone.
+      if (day === utcDay(now())) {
+        const runsKey = key(`r:${day}`);
+        const hourKey = key(`h:${utcHourBucket(now())}`);
+        const gaugePipe = redis.pipeline();
+        gaugePipe.incrby(runsKey, 1);
+        gaugePipe.ttl(runsKey);
+        gaugePipe.incrby(hourKey, 1);
+        gaugePipe.ttl(hourKey);
+        const gauges = await gaugePipe.exec();
+        for (let i = 0; i < gauges.length; i += 2) {
+          const ttl = Number(resultValue(gauges[i + 1]));
+          const target = i === 0 ? runsKey : hourKey;
+          if (!Number.isFinite(ttl) || ttl < 0) {
+            await redis.expire(target, i === 0 ? RUNS_TTL_SECONDS : HOURLY_TTL_SECONDS);
+          }
+        }
+      }
+
       if (facts.fileHash) {
         const seenKey = key(`seen:${day}:${facts.fileHash}`);
         const created = await redis.set(seenKey, '1', { nx: true, ex: SEEN_TTL_SECONDS });
@@ -85,27 +107,10 @@ export function createStatsStore({
       }
       pipe.zincrby(key('z:daily'), 1, day);
       pipe.zremrangebyrank(key('z:daily'), 0, -(dailyWindowDays + DAILY_KEEP_MARGIN + 1));
-      // Live "last hour" gauge only makes sense for events happening now;
-      // backfilled history must not inflate it.
-      const isCurrentHour = utcHourBucket(ts) === utcHourBucket(now());
-      let hourKey = null;
-      if (isCurrentHour) {
-        hourKey = key(`h:${utcHourBucket(now())}`);
-        pipe.incrby(hourKey, 1);
-        pipe.ttl(hourKey);
-      }
 
       const results = await pipe.exec();
       if (results.some(r => resultValue(r) instanceof Error || r?.error)) {
         throw new Error('pipeline reported command errors');
-      }
-      if (hourKey) {
-        const ttl = Number(resultValue(results[results.length - 1]));
-        if (!Number.isFinite(ttl) || ttl < 0) {
-          // EXPIRE-on-first semantics (cf. incrementRuntimeCounter): a fresh
-          // hour bucket has no TTL yet.
-          await redis.expire(hourKey, HOURLY_TTL_SECONDS);
-        }
       }
       return true;
     } catch (error) {
@@ -136,7 +141,7 @@ export function createStatsStore({
     const redis = db();
     try {
       const [total, sources, dumpTypes, osVersions, stopCodes, stopCodeLabels,
-        buckets, modules, daily, lastHourCount, trackingStart] = await Promise.all([
+        buckets, modules, daily, lastHourCount, runsTodayCount, trackingStart] = await Promise.all([
         redis.hgetall(key('at:total')),
         redis.hgetall(key('at:source')),
         redis.hgetall(key('at:dtype')),
@@ -147,6 +152,7 @@ export function createStatsStore({
         redis.zrange(key('z:module'), 0, -1, { rev: true, withScores: true }),
         redis.zrange(key('z:daily'), 0, -1, { withScores: true }),
         redis.get(key(`h:${utcHourBucket(now())}`)),
+        redis.get(key(`r:${utcDay(now())}`)),
         redis.get(key('start'))
       ]);
 
@@ -161,6 +167,7 @@ export function createStatsStore({
         modules: toPairs(modules),
         daily: toPairs(daily),
         lastHour: Number(resultValue(lastHourCount)) || 0,
+        runsToday: Number(resultValue(runsTodayCount)) || 0,
         trackingSince: resultValue(trackingStart) || null
       }, { now: now(), windowDays: dailyWindowDays });
 
