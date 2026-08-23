@@ -3599,3 +3599,13 @@ body.mobile-menu-open {
   font-size: 0.75rem !important;
   color: var(--text-tertiary) !important;
 }
+
+.bar-list-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+.stats-embed .bar-list-desc { display: none; } /* keep the widget compact */
