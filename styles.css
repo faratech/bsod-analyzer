@@ -3577,3 +3577,25 @@ body.mobile-menu-open {
 }
 .stats-embed.is-compact .daily-chart-plot { height: 80px; }
 .stats-embed .stats-note { margin-top: 0; }
+
+/* AI insight narrative card */
+.stats-insight {
+  margin: 8px 0 24px;
+  padding: 16px 20px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-left: 3px solid var(--brand-primary);
+  border-radius: 10px;
+}
+.stats-insight p {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+.stats-insight p:last-of-type { margin-bottom: 0; }
+.stats-insight-meta {
+  margin-top: 12px !important;
+  font-size: 0.75rem !important;
+  color: var(--text-tertiary) !important;
+}

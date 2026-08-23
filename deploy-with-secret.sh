@@ -51,6 +51,10 @@ fi
 if gcloud secrets describe deepseek-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
   RUNTIME_SECRETS="DEEPSEEK_API_KEY=deepseek-api-key:latest,${RUNTIME_SECRETS}"
 fi
+# Optional: powers the AI narrative on /stats (free-tier OpenRouter model).
+if gcloud secrets describe openrouter-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,${RUNTIME_SECRETS}"
+fi
 
 if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
   REQUIRED_AI_SECRET="deepseek-api-key"

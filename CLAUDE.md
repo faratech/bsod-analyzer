@@ -95,6 +95,8 @@ npm run optimize-css     # Apply CSS purging
 | `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
 | `STATS_SNAPSHOT_TTL_SECONDS` | TTL of the cached public snapshot (`stats:snapshot`) | Defaults `60` |
 | `STATS_DAILY_WINDOW_DAYS` | Rolling daily-volume window for crash statistics | Defaults `90` |
+| `STATS_INSIGHT_ENABLED` | AI narrative on `/stats` via OpenRouter free model (`OPENROUTER_API_KEY`) | Defaults on; degrades without key |
+| `OPENROUTER_API_KEY` | OpenRouter access (AI failover + stats narrative) | Optional secret `openrouter-api-key` |
 
 For local development, set in `.env.local` or export directly. To run with
 `NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` and

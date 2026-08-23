@@ -59,6 +59,10 @@ import {
 import { extractStatsFacts } from './server/stats.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import {
+  createStatsInsightService,
+  registerStatsInsightRoute
+} from './server/statsInsight.js';
+import {
   AIProviderError,
   DEFAULT_DEEPSEEK_API_BASE_URL,
   DEFAULT_GEMINI_MODEL,
@@ -1101,7 +1105,7 @@ const apiLimiter = makeLimiter({
   skip: (req) => {
     // Skip rate limiting for health check and public stats endpoints
     // (both get dedicated limiters or no limiter by design).
-    return req.path === '/health' || req.path === '/api/stats';
+    return req.path === '/health' || req.path === '/api/stats' || req.path === '/api/stats/insight';
   }
 });
 
@@ -1660,6 +1664,18 @@ const statsStore = createStatsStore({
   dailyWindowDays: readPositiveInt(process.env.STATS_DAILY_WINDOW_DAYS, DEFAULT_DAILY_WINDOW_DAYS)
 });
 registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
+
+// AI narrative over the aggregates (OpenRouter free tier, heavily cached).
+const statsInsightService = createStatsInsightService({
+  getClient: () => getRedisCommandClient(),
+  isEnabled: () =>
+    isCacheEnabled() &&
+    process.env.STATS_ENABLED !== 'false' &&
+    process.env.STATS_INSIGHT_ENABLED !== 'false',
+  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot(),
+  model: process.env.OPENROUTER_FREE_MODEL
+});
+registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
