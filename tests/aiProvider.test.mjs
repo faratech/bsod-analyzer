@@ -5,6 +5,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   DEEPSEEK_V4_FLASH_MODEL,
   generateDeepSeekContent,
+  generateOpenRouterContent,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel,
@@ -206,4 +207,47 @@ test('DeepSeek adapter retries a rare empty JSON-mode response once', async () =
 
   assert.equal(calls, 2);
   assert.equal(result.text, '{"ok":true}');
+});
+
+
+// Thin fetch stub: each entry describes one HTTP response; returns a client
+// whose calls are recorded for assertions.
+function createOpenRouterClientForTest(responses) {
+  let call = 0;
+  return (request, options = {}) => generateOpenRouterContent(request, {
+    apiKey: 'test-key',
+    maxRetries: 0,
+    sleepImpl: () => Promise.resolve(),
+    fetchImpl: async (_url, init) => {
+      const spec = responses[Math.min(call, responses.length - 1)];
+      call += 1;
+      if (!spec.status || spec.status === 200) {
+        return new Response(spec.body, { status: 200, headers: init.headers });
+      }
+      return new Response(spec.body, { status: spec.status });
+    },
+    ...options,
+  });
+}
+
+test('OpenRouter adapter normalizes chat-completions responses and maps errors', async () => {
+  const client = createOpenRouterClientForTest([
+    {
+      status: 200,
+      body: JSON.stringify({
+        model: 'deepseek/deepseek-chat-v3.1:free',
+        choices: [{ message: { content: '{"summary":"ok"}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+    },
+  ]);
+  const result = await client({ contents: 'analyze this' });
+
+  assert.equal(result.text, '{"summary":"ok"}');
+  assert.equal(result.usageMetadata.totalTokenCount, 15);
+
+  await assert.rejects(
+    () => createOpenRouterClientForTest([{ status: 402, body: JSON.stringify({ error: { message: 'Insufficient Balance' } }) }])({ contents: 'x' }),
+    error => error.code === 'AI_UPSTREAM_ERROR' && error.retryable === false,
+  );
 });
