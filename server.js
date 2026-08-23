@@ -58,6 +58,7 @@ import {
 const execFileAsync = promisify(execFile);
 import {
   initCache,
+  initCacheCompression,
   initHashing,
   hashContent,
   getCachedAnalysis,
@@ -3699,6 +3700,7 @@ async function startServer() {
     }
     log.warn('redis.health.failed', { runtimeRequired: false });
   }
+  await initCacheCompression();
 
   // Cache index.html in memory (~9KB, avoids disk read on every request)
   const indexPath = path.join(__dirname, 'dist', 'index.html');

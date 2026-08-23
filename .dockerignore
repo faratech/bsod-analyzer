@@ -9,3 +9,9 @@ README.md
 dist
 .vscode
 *.log
+*.dict
+*.zdict
+*.zstd-dict
+dictionary.zstd
+redis-zstd-dictionary*
+cache-zstd-dictionary*

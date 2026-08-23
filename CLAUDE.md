@@ -87,6 +87,8 @@ npm run optimize-css     # Apply CSS purging
 | `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
+| `CACHE_ZSTD_DICTIONARY_PATH` | Binary cache dictionary path (`/secrets/redis-zstd/dictionary` in Cloud Run) | Production |
+| `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
 | `REQUIRE_REDIS_RUNTIME` | Require Redis-backed sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
@@ -105,8 +107,15 @@ deployment is unsupported because uploads, archive extraction, WinDBG proxying,
 AI proxying, sessions, and rate limits require the Node/Fastify backend.
 
 ```bash
-# Manual deploy
-./deploy-with-secret.sh
+# Benchmark/train while the existing analysis cache is still uncompressed
+node scripts/cache-zstd-dictionary.mjs
+node scripts/cache-zstd-dictionary.mjs --upload --project="$PROJECT_ID"
+
+# Deploy dictionary-aware readers, then explicitly enable writers after checks
+CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
+  CACHE_ZSTD_WRITES_ENABLED=false ./deploy-with-secret.sh
+CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
+  CACHE_ZSTD_WRITES_ENABLED=true ./deploy-with-secret.sh
 
 # Update secrets
 ./setup-all-secrets.sh
@@ -127,6 +136,9 @@ AI proxying, sessions, and rate limits require the Node/Fastify backend.
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
 - **Runtime state**: Keep sessions, ownership, jobs, rate limits, and token accounting Redis-backed in production
+- **Cache compression**: Compress only `analysis:*` values. Keep raw binary transport, legacy JSON reads, `runtime:*` serialization, counters, and the seven-day TTL intact
+- **Dictionary secrets**: Pin a numeric `redis-zstd-dictionary` version at `/secrets/redis-zstd/dictionary`; never use `latest`, commit the binary, or log its contents
+- **Redis flushes**: Never automate a whole-database flush. It is user-owned and also deletes sessions, ownership, jobs, quotas, rate-limit/token counters, and in-flight state
 
 ### Session Errors
 

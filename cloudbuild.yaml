@@ -1,4 +1,20 @@
 steps:
+  # Reject mutable dictionary aliases and invalid staged-write values before
+  # spending time on the image build.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-ceu'
+      - |
+        if [[ ! "${_CACHE_ZSTD_DICTIONARY_VERSION}" =~ ^[1-9][0-9]*$ ]]; then
+          echo "_CACHE_ZSTD_DICTIONARY_VERSION must be a pinned numeric Secret Manager version."
+          exit 1
+        fi
+        if [[ "${_CACHE_ZSTD_WRITES_ENABLED}" != "true" && "${_CACHE_ZSTD_WRITES_ENABLED}" != "false" ]]; then
+          echo "_CACHE_ZSTD_WRITES_ENABLED must be exactly 'true' or 'false'."
+          exit 1
+        fi
+
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '--pull', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/bsod-analyzer:latest', '.']
@@ -38,9 +54,9 @@ steps:
       - '--cpu-throttling'
       - '--cpu-boost'
       - '--update-env-vars'
-      - 'NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net'
+      - 'NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED}'
       - '--update-secrets'
-      - '${_AI_SECRET_BINDING},TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest'
+      - '${_AI_SECRET_BINDING},TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:${_CACHE_ZSTD_DICTIONARY_VERSION}'
 
   # Purge Cloudflare cache after deployment
   - name: 'gcr.io/cloud-builders/curl'
@@ -66,6 +82,12 @@ steps:
 
 substitutions:
   _REGION: us-east1
+  # Dictionary deployments must pin a numeric Secret Manager version. Version
+  # 1 is the initial rollout default; override it after every dictionary upload.
+  _CACHE_ZSTD_DICTIONARY_VERSION: '1'
+  # Production completed the reader-first rollout. Override to false only when
+  # deliberately staging a new dictionary-aware reader revision.
+  _CACHE_ZSTD_WRITES_ENABLED: 'true'
   # Both providers are bound so model.cfg can be hot-swapped between them at
   # runtime without a redeploy. Both secrets must exist in Secret Manager.
   _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest'

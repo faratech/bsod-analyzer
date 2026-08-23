@@ -205,6 +205,21 @@ else
 fi
 echo ""
 
+# 10. Redis zstd dictionary secret container. The dictionary is binary training
+# output, so never paste it into this interactive script or commit it to the
+# repository. The operator tool uploads the first version after training.
+echo "🔟 Redis zstd Dictionary"
+if ! gcloud secrets describe redis-zstd-dictionary --project=${PROJECT_ID} >/dev/null 2>&1; then
+    gcloud secrets create redis-zstd-dictionary \
+        --replication-policy="automatic" \
+        --project=${PROJECT_ID} >/dev/null
+    echo "  ✅ Created redis-zstd-dictionary (no version uploaded)"
+    echo "  ℹ️  Run the cache dictionary operator tool to train and upload version 1"
+else
+    echo "  ℹ️  redis-zstd-dictionary already exists"
+fi
+echo ""
+
 # Create dedicated runtime service account
 echo "🔐 Ensuring dedicated Cloud Run runtime service account exists..."
 if ! gcloud iam service-accounts describe "${RUNTIME_SERVICE_ACCOUNT}" --project=${PROJECT_ID} >/dev/null 2>&1; then
@@ -220,7 +235,7 @@ echo "🔓 Granting runtime access only to application runtime secrets..."
 
 # Grant access to each runtime secret. Cloudflare purge secrets are intentionally
 # not granted to the runtime service account.
-for SECRET in "gemini-api-key" "deepseek-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token"; do
+for SECRET in "gemini-api-key" "deepseek-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token" "redis-zstd-dictionary"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
@@ -275,14 +290,21 @@ echo ""
 echo "✅ All secrets configured successfully!"
 echo ""
 echo "📝 Next Steps:"
-echo "1. Update deploy-with-secret.sh if adding new secrets"
-echo "2. Deploy your service with: ./deploy-with-secret.sh"
+echo "1. Export the Upstash URL/token and benchmark the current cache:"
+echo "   node scripts/cache-zstd-dictionary.mjs"
+echo "2. Train and upload the validated dictionary:"
+echo "   node scripts/cache-zstd-dictionary.mjs --upload --project=${PROJECT_ID}"
+echo "3. Record the numeric Secret Manager version printed by the tool"
+echo "4. Deploy readers first (explicitly disable compressed writes for this stage):"
+echo "   CACHE_ZSTD_DICTIONARY_VERSION=VERSION CACHE_ZSTD_WRITES_ENABLED=false ./deploy-with-secret.sh"
+echo "5. After verification, deploy with CACHE_ZSTD_WRITES_ENABLED=true"
 echo ""
 echo "🔍 To list all secrets:"
 echo "   gcloud secrets list --project=${PROJECT_ID}"
 echo ""
-echo "🔍 To view a specific secret:"
-echo "   gcloud secrets versions access latest --secret=SECRET_NAME --project=${PROJECT_ID}"
+echo "🔍 To list a secret's versions without printing its value:"
+echo "   gcloud secrets versions list SECRET_NAME --project=${PROJECT_ID}"
+echo "   Never print redis-zstd-dictionary bytes to the terminal"
 
 # Make scripts executable
 chmod +x setup-all-secrets.sh
