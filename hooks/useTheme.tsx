@@ -21,6 +21,14 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   // Resolve the persisted/system preference after mount (client only).
   useEffect(() => {
     try {
+      // Embed widgets (?theme=light|dark, e.g. /stats/embed) take priority and
+      // are deliberately NOT persisted: the iframe shares this origin's
+      // localStorage with the visitor's normal site preference.
+      const urlTheme = new URLSearchParams(window.location.search).get('theme');
+      if (urlTheme === 'light' || urlTheme === 'dark') {
+        setTheme(urlTheme);
+        return;
+      }
       const stored = localStorage.getItem('theme');
       const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
       if (hasUserPreference && (stored === 'light' || stored === 'dark')) {
@@ -60,6 +68,11 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
 
     const handleChange = (e: MediaQueryListEvent) => {
+      try {
+        // Never override an explicit ?theme= embed override.
+        const urlTheme = new URLSearchParams(window.location.search).get('theme');
+        if (urlTheme === 'light' || urlTheme === 'dark') return;
+      } catch { /* no window (SSR) — nothing to override */ }
       // Only auto-switch if user hasn't manually set a preference
       const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
       if (!hasUserPreference) {

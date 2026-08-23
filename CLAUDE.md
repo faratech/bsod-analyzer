@@ -92,6 +92,9 @@ npm run optimize-css     # Apply CSS purging
 | `REQUIRE_REDIS_RUNTIME` | Require Redis-backed sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
+| `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
+| `STATS_SNAPSHOT_TTL_SECONDS` | TTL of the cached public snapshot (`stats:snapshot`) | Defaults `60` |
+| `STATS_DAILY_WINDOW_DAYS` | Rolling daily-volume window for crash statistics | Defaults `90` |
 
 For local development, set in `.env.local` or export directly. To run with
 `NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` and

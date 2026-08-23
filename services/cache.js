@@ -107,6 +107,14 @@ export function isCacheEnabled() {
   return cacheEnabled && redis !== null && analysisRedis !== null;
 }
 
+/**
+ * JSON-command Redis client (hash/zset/sorted-set ops) for modules that need
+ * more than the runtime counter helpers. Returns null while caching is off.
+ */
+export function getRedisCommandClient() {
+  return isCacheEnabled() ? redis : null;
+}
+
 function getRuntimeKey(key) {
   return `${CACHE_PREFIX.RUNTIME}:${key}`;
 }

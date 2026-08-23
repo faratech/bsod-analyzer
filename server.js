@@ -46,6 +46,19 @@ import {
 } from './server/rateLimit.js';
 import { createUploadHandler } from './server/uploadHandler.js';
 import {
+  CSP_EMBED_HEADER,
+  CSP_HEADER,
+  EMBEDDABLE_PATHS,
+  createSecurityHeadersMiddleware
+} from './server/securityHeaders.js';
+import {
+  DEFAULT_DAILY_WINDOW_DAYS,
+  DEFAULT_SNAPSHOT_TTL_SECONDS,
+  createStatsStore
+} from './server/statsStore.js';
+import { extractStatsFacts } from './server/stats.js';
+import { registerStatsRoute } from './server/statsRoute.js';
+import {
   AIProviderError,
   DEFAULT_DEEPSEEK_API_BASE_URL,
   DEFAULT_GEMINI_MODEL,
@@ -75,6 +88,7 @@ import {
   setRuntimeValue,
   deleteRuntimeValue,
   isCacheEnabled,
+  getRedisCommandClient,
   checkCacheConnection,
   incrementRuntimeCounter
 } from './services/cache.js';
@@ -1039,8 +1053,12 @@ const corsOptions = {
       allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()));
     }
     
-    // Default production origins
-    allowedOrigins.push('https://bsod.windowsforum.com');
+    // Default production origins (+ forum hosts that embed the stats widget)
+    allowedOrigins.push(
+      'https://bsod.windowsforum.com',
+      'https://windowsforum.com',
+      'https://www.windowsforum.com'
+    );
 
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -1081,8 +1099,9 @@ const apiLimiter = makeLimiter({
   handler: jsonRateLimitHandler,
   name: 'api',
   skip: (req) => {
-    // Skip rate limiting for health check endpoint
-    return req.path === '/health';
+    // Skip rate limiting for health check and public stats endpoints
+    // (both get dedicated limiters or no limiter by design).
+    return req.path === '/health' || req.path === '/api/stats';
   }
 });
 
@@ -1101,6 +1120,8 @@ const externalAnalyzeLimiter = makeLimiter({
     return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
   }
 });
+// Public stats endpoint: generous per-IP budget for widget traffic.
+const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
 
 const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
@@ -1114,39 +1135,13 @@ const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE
 // so unauthenticated requests are rejected before allocating a parse buffer.
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
-// Precompute CSP header string once at startup (avoids rebuilding on every request)
-const CSP_HEADER = [
-  "default-src 'self'",
-  // *.doubleclick.net + www.googleadservices.com cover Google Ads conversion
-  // tracking scripts (gtag loads viewthroughconversion/conversion_async from these).
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://adnxs.com https://www.paypalobjects.com",
-  // AdSense's adsbygoogle.js runtime injects a small container-sizing stylesheet
-  // as a data:text/css URL, so 'data:' is required here for ad slots to render.
-  "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://windowsforum.com https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://generativelanguage.googleapis.com https://www.paypal.com",
-  "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self' https://www.paypal.com",
-  "frame-ancestors 'self'",
-  "upgrade-insecure-requests"
-].join('; ');
-
-// Global security headers middleware
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  res.setHeader('Content-Security-Policy', CSP_HEADER);
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  next();
-});
+// Global security headers middleware (CSP strings + embeddable-path handling
+// live in server/securityHeaders.js).
+app.use(createSecurityHeadersMiddleware({
+  cspHeader: CSP_HEADER,
+  cspEmbedHeader: CSP_EMBED_HEADER,
+  embeddablePaths: EMBEDDABLE_PATHS
+}));
 
 // MIME type lookup for static assets
 const MIME_TYPES = {
@@ -1653,6 +1648,26 @@ app.get('/health', async (req, res) => {
     packageManager: PACKAGE_MANAGER
   });
 });
+
+// Crash-statistics aggregation (public GET /api/stats; recording is
+// fire-and-forget from each analysis-completion site — see recordStats).
+const statsStore = createStatsStore({
+  // Lazy accessor: the Upstash client connects during startServer(), after
+  // module load, so a captured instance would be null forever.
+  getClient: () => getRedisCommandClient(),
+  isEnabled: () => isCacheEnabled() && process.env.STATS_ENABLED !== 'false',
+  snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
+  dailyWindowDays: readPositiveInt(process.env.STATS_DAILY_WINDOW_DAYS, DEFAULT_DAILY_WINDOW_DAYS)
+});
+registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
+
+// Best-effort stats recording; never affects the analysis response.
+function recordStats(input) {
+  if (!isCacheEnabled() || process.env.STATS_ENABLED === 'false') return;
+  const facts = extractStatsFacts(input);
+  if (!facts) return;
+  statsStore.recordAnalysis(facts).catch(() => {});
+}
 
 // Apply rate limiting to API endpoints
 app.use('/api/', apiLimiter);
@@ -2269,6 +2284,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
           keyed: ownedFileHash ? 'fileHash' : 'prompt',
           fileHash: ownedFileHash ? fileHash : undefined
         });
+        // Hook D (cache-hit): local-parser analyses served from cache still
+        // count once per file per day; windbg-prompt requests are excluded
+        // because hook A already counted them.
+        if (validation.promptType === 'local') {
+          recordStats({
+            source: 'ai-fallback',
+            fileHash: ownedFileHash ? fileHash : undefined,
+            aiReport: cachedValidation.report,
+            promptText: validation.promptText
+          });
+        }
         return res.json({
           ...cachedResponse,
           candidates: [{ content: { parts: [{ text: cachedValidation.text }] } }],
@@ -2378,6 +2404,16 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       aiReport: responseData,
       aiModel: response.cacheModel || modelName
     });
+
+    // Hook D (fresh): local-parser + AI fallback completed — record stats.
+    if (validation.promptType === 'local') {
+      recordStats({
+        source: 'ai-fallback',
+        fileHash: ownedFileHash ? fileHash : undefined,
+        aiReport: reportValidation.report,
+        promptText: validation.promptText
+      });
+    }
 
     res.json(responseData);
   } catch (error) {
@@ -2672,6 +2708,13 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
     });
     await markWinDbgJob(req.sessionId, uid, uid, submitResult.job_id);
+    // Hook B: stash the dump type for the stats recorder (buffer only
+    // exists here; the download hook can't classify minidump-vs-kernel).
+    if (isCacheEnabled() && process.env.STATS_ENABLED !== 'false') {
+      try {
+        statsStore.setDumpTypeHint(uid, detectDumpType(fileBuffer));
+      } catch { /* best-effort */ }
+    }
 
     console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id);
     res.json({
@@ -2809,6 +2852,19 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       analysisSignalText,
       structured,
     });
+
+    // Hook A: web WinDBG analysis completed — record crash stats.
+    // Dump-type hint comes from the upload-time meta (hook B); resolve it
+    // out-of-band so the response is never delayed.
+    statsStore.getDumpTypeHint(uid)
+      .then(dt => recordStats({
+        source: 'windbg',
+        fileHash: uid,
+        structured,
+        analysisText,
+        dumpType: dt
+      }))
+      .catch(() => {});
 
     res.json({
       success: true,
@@ -3698,6 +3754,15 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
             structured: windbgPackage.structured,
           });
 
+          // Hook C: external-API WinDBG analysis completed — record stats.
+          recordStats({
+            source: 'windbg',
+            fileHash,
+            structured: windbgPackage.structured,
+            analysisText: windbgAnalysis,
+            dumpType
+          });
+
           // Step 4: Generate AI report
           console.log(`[API/Analyze] Job ${uid} Step 4: Generating AI report...`);
           const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, {
@@ -3891,7 +3956,9 @@ const KNOWN_SPA_ROUTES = new Set([
   '/analyzer',
   '/about',
   '/documentation',
-  '/donate'
+  '/donate',
+  '/stats',
+  '/stats/embed'
 ]);
 
 function getSpaStatus(pathname) {
