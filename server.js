@@ -3906,11 +3906,14 @@ app.use((req, res) => {
   }
 
   // Serve React app for all other routes (non-asset routes only)
-  // CDN caches 24h (purged on deploy), browser always revalidates
+  // CDN caches 24h (purged on deploy); the browser must always revalidate the
+  // document itself — max-age>0 here let browsers pair a cached prerendered
+  // page (with its baked build-stamp text) against a newer JS bundle, causing
+  // React hydration text mismatches (#418) after every deploy.
   const normalized = pathname.replace(/\/+$/, '') || '/';
   const isHome = normalized === '/';
   res.status(getSpaStatus(pathname));
-  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
+  res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate, s-maxage=86400');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
