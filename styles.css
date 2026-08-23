@@ -926,6 +926,15 @@ body.mobile-menu-open {
   padding: 0;
 }
 
+.action-btn.labeled {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.75rem;
+  font-size: 0.8rem;
+}
+
 .action-btn:hover:not(:disabled) {
   background-color: var(--bg-hover);
   color: var(--text-primary);

@@ -60,6 +60,9 @@ const Navigation: React.FC = () => {
                             <Link to="/documentation" className={`nav-link ${isActive('/documentation') ? 'active' : ''}`}>
                                 Documentation
                             </Link>
+                            <a href="https://windowsforum.com/" target="_blank" rel="noopener noreferrer" className="nav-link">
+                                Community
+                            </a>
                             <Link to="/donate" className={`nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}>
                                 Support Us
                             </Link>
@@ -117,6 +120,15 @@ const Navigation: React.FC = () => {
                     >
                         Documentation
                     </Link>
+                    <a
+                        href="https://windowsforum.com/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mobile-nav-link"
+                        onClick={closeMobileMenu}
+                    >
+                        Community
+                    </a>
                     <Link
                         to="/donate"
                         className={`mobile-nav-link donate-link ${isActive('/donate') ? 'active' : ''}`}
