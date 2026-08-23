@@ -332,9 +332,13 @@ export async function generateOpenRouterContent(request, {
   const body = {
     model,
     messages,
-    stream: false,
-    response_format: { type: 'json_object' }
+    stream: false
   };
+  // Analysis reports parse strict JSON; lighter callers (stats narrative)
+  // opt out because many free providers reject structured-output requests.
+  if (config.jsonObjectMode !== false) {
+    body.response_format = { type: 'json_object' };
+  }
   const maxTokens = safeInteger(config.maxOutputTokens);
   if (maxTokens) body.max_tokens = maxTokens;
   if (Number.isFinite(config.temperature)) {
@@ -483,9 +487,13 @@ export async function generateOpenAIContent(request, {
   const body = {
     model,
     messages,
-    stream: false,
-    response_format: { type: 'json_object' }
+    stream: false
   };
+  // Analysis reports parse strict JSON; lighter callers (stats narrative)
+  // opt out because many free providers reject structured-output requests.
+  if (config.jsonObjectMode !== false) {
+    body.response_format = { type: 'json_object' };
+  }
   const maxTokens = safeInteger(config.maxOutputTokens);
   if (maxTokens) body.max_completion_tokens = maxTokens;
 
