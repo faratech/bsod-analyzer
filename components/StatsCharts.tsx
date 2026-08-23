@@ -29,7 +29,7 @@ export const StatTile: React.FC<StatTileProps> = ({ label, value, hint }) => (
 
 interface BarListProps {
   title: string;
-  family: { items: { value: string; label?: string; count: number }[]; other: number; total: number };
+  family: { items: { value: string; label?: string; count: number; description?: string }[]; other: number; total: number };
   max?: number;
 }
 
@@ -50,7 +50,12 @@ export const BarList: React.FC<BarListProps> = ({ title, family, max = 8 }) => {
           {items.map((item, index) => (
             <li key={item.value} className={index === 0 ? 'is-top' : undefined}>
               <div className="bar-list-head">
-                <span className="bar-list-label">{item.label || item.value}</span>
+                <span className="bar-list-label">
+                  {item.label || item.value}
+                  {item.description ? (
+                    <span className="bar-list-desc">{item.description}</span>
+                  ) : null}
+                </span>
                 <span className="bar-list-count">{formatCount(item.count)}</span>
               </div>
               <div

@@ -108,6 +108,10 @@ const StatsPage: React.FC = () => {
   const { snapshot, error } = useStatsSnapshot();
   const daily = snapshot?.daily ?? [];
   const trackingSinceLabel = formatTrackingSince(snapshot?.trackingSince);
+  // Snapshot freshness stamp, rendered in UTC.
+  const lastUpdatedLabel = snapshot?.generatedAt && !Number.isNaN(Date.parse(snapshot.generatedAt))
+    ? new Date(snapshot.generatedAt).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' })
+    : null;
   return (
     <PageLayout
       title="Windows Crash Statistics"
@@ -176,7 +180,8 @@ const StatsPage: React.FC = () => {
       </details>
       <p className="stats-note">
         Counts are anonymous aggregates. Days and hours are UTC.
-        {trackingSinceLabel ? ` Tracking since ${trackingSinceLabel} (UTC).` : ''}
+        {trackingSinceLabel ? ` Tracking since ${trackingSinceLabel}.` : ''}
+        {lastUpdatedLabel ? ` Last updated ${lastUpdatedLabel} UTC.` : ''}
       </p>
     </PageLayout>
   );
