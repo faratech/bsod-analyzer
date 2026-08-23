@@ -8,7 +8,9 @@ export const useBreadcrumbs = () => {
         '/analyzer': 'Analyzer',
         '/about': 'About',
         '/documentation': 'Documentation',
-        '/donate': 'Donate'
+        '/donate': 'Donate',
+        '/stats': 'Crash Statistics',
+        '/stats/embed': 'Crash Statistics Widget'
     };
 
     const generateBreadcrumbs = () => {
