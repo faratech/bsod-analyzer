@@ -54,7 +54,7 @@ function buildService(redis, { providerCalls = [], nowMs = Date.UTC(2026, 7, 23,
     now: () => clock,
     provider,
     apiKey,
-    model: 'test/free-model',
+    models: ['test/free-model'],
     ttlSeconds
   });
   return {

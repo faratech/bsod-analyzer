@@ -7,10 +7,29 @@ import { generateOpenRouterContent, DEFAULT_OPENROUTER_BASE_URL } from '../servi
 const DEFAULT_TTL_SECONDS = 6 * 60 * 60;   // fresh for 6h
 const LOCK_TTL_SECONDS = 120;              // concurrent-generation guard
 
+// Free-tier slugs rotate on OpenRouter (deepseek-chat-v3.1:free was retired
+// mid-2026), so the insight tries an ordered list instead of one model.
+// OPENROUTER_STATS_MODEL overrides (comma-separated for your own fallbacks).
+const DEFAULT_INSIGHT_MODELS = [
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'z-ai/glm-5.2:free',
+  'dots-studio/dots-3-note-preview:free',
+  'cohere/north-mini-code:free',
+  'google/gemma-4-31b-it:free'
+];
+
+function resolveModels(explicit) {
+  const configured = String(explicit || '')
+    .split(',')
+    .map(m => m.trim())
+    .filter(Boolean);
+  return configured.length > 0 ? configured : DEFAULT_INSIGHT_MODELS;
+}
+
 const SYSTEM_INSTRUCTION =
   'You are a Windows crash-analysis expert writing a short public summary for a community BSOD statistics page. ' +
   'You receive anonymous aggregate counts (never user data). Reply ONLY with JSON {"insight": "..."} containing plain prose: ' +
-  'no markdown, no headings, no bullet points.';
+  'no markdown, no headings, no bullet points. Do not think out loud or show any deliberation - output only the final JSON object.';
 
 function buildDigest(snapshot) {
   const daily = snapshot.daily || [];
@@ -41,7 +60,7 @@ export function createStatsInsightService({
   provider = generateOpenRouterContent,
   apiKey = process.env.OPENROUTER_API_KEY,
   baseUrl = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL,
-  model = process.env.OPENROUTER_FREE_MODEL,
+  models = resolveModels(process.env.OPENROUTER_STATS_MODEL || process.env.OPENROUTER_FREE_MODEL),
   ttlSeconds = DEFAULT_TTL_SECONDS
 } = {}) {
   const active = () => Boolean(getClient?.()) && isEnabled() && Boolean(apiKey);
@@ -51,29 +70,49 @@ export function createStatsInsightService({
   }
 
   async function generateInsight(snapshot) {
-    const result = await provider({
-      contents: `Aggregate Windows crash statistics (anonymous counts):\n` +
-        JSON.stringify(buildDigest(snapshot)) +
-        `\n\nWrite 2-4 sentences (max ~150 words) of plain prose for the statistics page: name what dominates, ` +
-        `note any change between the previous and most recent week, and give one practical takeaway for Windows users. ` +
-        `Treat driver/module names exactly as given.`,
-      config: { systemInstruction: SYSTEM_INSTRUCTION, maxOutputTokens: 400, temperature: 0.4 }
-    }, { apiKey, baseUrl, model });
-    let parsed;
-    try {
-      parsed = JSON.parse(result);
-    } catch {
-      parsed = null;
-    }
-    const text = typeof parsed?.insight === 'string' && parsed.insight.trim()
-      ? parsed.insight.trim().slice(0, 1200)
-      : typeof result === 'string' && result.trim() ? result.trim().slice(0, 1200) : '';
-    if (!text) throw new Error('insight generation produced no usable text');
-    return {
-      text,
-      model: model || 'openrouter',
-      generatedAt: new Date(now()).toISOString()
+    const prompt = `Aggregate Windows crash statistics (anonymous counts):\n` +
+      JSON.stringify(buildDigest(snapshot)) +
+      `\n\nWrite 2-4 sentences (max ~150 words) of plain prose for the statistics page: name what dominates, ` +
+      `note any change between the previous and most recent week, and give one practical takeaway for Windows users. ` +
+      `Treat driver/module names exactly as given.`;
+    const config = {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      // Generous budget: several free models spend hidden reasoning tokens
+      // before any visible content, and a tight cap yields empty text.
+      maxOutputTokens: 2000,
+      temperature: 0.4,
+      // Free providers commonly reject structured-output requests; the prompt
+      // already demands {"insight": "..."} and the parser accepts plain prose.
+      jsonObjectMode: false
     };
+
+    // Free slugs retire periodically; walk the fallback list until one answers.
+    let lastError;
+    for (const candidate of models) {
+      try {
+        const result = await provider({ contents: prompt, config }, { apiKey, baseUrl, model: candidate });
+        // Providers return either a plain string or a Gemini-shaped
+        // {text, modelVersion, ...} envelope — accept both.
+        const raw = typeof result === 'string'
+          ? result
+          : typeof result?.text === 'string' ? result.text : '';
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = null;
+        }
+        const text = typeof parsed?.insight === 'string' && parsed.insight.trim()
+          ? parsed.insight.trim().slice(0, 1200)
+          : typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 1200) : '';
+        if (!text) throw new Error('produced no usable text');
+        return { text, model: candidate, generatedAt: new Date(now()).toISOString() };
+      } catch (error) {
+        lastError = error;
+        console.warn(`[Stats] insight model ${candidate} failed:`, error?.message || error);
+      }
+    }
+    throw lastError ?? new Error('no insight models configured');
   }
 
   // Returns {available:false} when disabled/failed; otherwise the cached or
