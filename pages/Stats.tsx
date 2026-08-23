@@ -63,6 +63,47 @@ function formatTrackingSince(iso: string | null | undefined): string | null {
   return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
 
+interface InsightPayload {
+  available?: boolean;
+  text?: string;
+  model?: string;
+  generatedAt?: string;
+}
+
+function StatsInsightCard() {
+  // Deterministic placeholder during prerender/hydration; hidden entirely when
+  // the AI layer is unavailable so the page never shows an empty box.
+  const [insight, setInsight] = useState<InsightPayload | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/stats/insight', { signal: controller.signal })
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => {
+        if (body?.available && body.text) setInsight(body);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  if (!insight) return null;
+  const generated = insight.generatedAt
+    ? new Date(insight.generatedAt).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+  return (
+    <section className="stats-insight" aria-label="AI-generated crash trend summary">
+      <h3 className="chart-title">What the data says</h3>
+      {insight.text?.split(/\n{2,}/).map((paragraph, i) => (
+        <p key={i}>{paragraph}</p>
+      ))}
+      <p className="stats-insight-meta">
+        AI-generated summary
+        {generated ? ` · ${generated} UTC` : ''}
+        {insight.model ? ` · ${insight.model}` : ''}
+        {' · '}may contain mistakes — verify against the tables below
+      </p>
+    </section>
+  );
+}
+
 const StatsPage: React.FC = () => {
   const { snapshot, error } = useStatsSnapshot();
   const daily = snapshot?.daily ?? [];
@@ -91,6 +132,8 @@ const StatsPage: React.FC = () => {
       </div>
 
       <DailyVolumeChart daily={daily} />
+
+      <StatsInsightCard />
 
       <div className="stats-grid">
         <SplitBar

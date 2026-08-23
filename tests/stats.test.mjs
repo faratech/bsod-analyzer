@@ -111,6 +111,10 @@ test('buildSnapshot zero-fills window and folds Other', () => {
   assert.ok(snapshot.daily.slice(0, 80).every(d => d.count === 0));
   assert.equal(snapshot.topStopCodes.items[0].value, '0x1A');
   assert.equal(snapshot.topStopCodes.items[0].label, 'MEMORY_MANAGEMENT');
+  assert.match(snapshot.topStopCodes.items[0].description, /memory management corruption/i);
+  // Unknown code with no label still gets a generic-but-useful line or none.
+  assert.equal(typeof snapshot.topStopCodes.items[2].description === 'string' ||
+    snapshot.topStopCodes.items[2].description === undefined, true);
   assert.equal(snapshot.topFailureBuckets.items[0].value, 'AV_nt!ExFreePool');
   assert.equal(snapshot.sources.total, 42);
 });

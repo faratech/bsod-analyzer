@@ -6,6 +6,7 @@ export const STATS_SNAPSHOT_SCHEMA = 'bsod_stats_snapshot_v1';
 export const TOP_LIST_SIZE = 10;
 
 import { extractWinDbgWindowsVersion } from '../shared/windowsVersion.js';
+import { describeBugcheck } from './bugcheckKnowledge.js';
 
 // ---------------------------------------------------------------------------
 // Time buckets (UTC everywhere so day/hour keys are instance-independent)
@@ -183,11 +184,15 @@ export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = 
   const stopTotal = stopEntries.reduce((sum, [, c]) => sum + c, 0);
   const stopTopTotal = stopEntries.slice(0, TOP_LIST_SIZE).reduce((sum, [, c]) => sum + c, 0);
   const topStopCodes = {
-    items: stopEntries.slice(0, TOP_LIST_SIZE).map(([code, count]) => ({
-      value: code,
-      label: normalizeLabel(labels[code]) || undefined,
-      count
-    })),
+    items: stopEntries.slice(0, TOP_LIST_SIZE).map(([code, count]) => {
+      const label = normalizeLabel(labels[code]) || undefined;
+      return {
+        value: code,
+        label,
+        description: describeBugcheck(code, label),
+        count
+      };
+    }),
     other: Math.max(0, stopTotal - stopTopTotal),
     total: stopTotal
   };
