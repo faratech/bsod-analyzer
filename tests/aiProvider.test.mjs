@@ -314,3 +314,11 @@ test('OpenAI adapter classifies insufficient_quota as exhausted, not retryable',
     error => error.code === 'AI_QUOTA_EXHAUSTED' && error.retryable === false,
   );
 });
+
+test('isOpenAIFreeTier recognizes the live complimentary tier string', () => {
+  assert.equal(isOpenAIFreeTier('incentivized-tier'), true);
+  assert.equal(isOpenAIFreeTier('data sharing incentive tier - input tokens'), true);
+  assert.equal(isOpenAIFreeTier('default'), false);
+  assert.equal(isOpenAIFreeTier('flex'), false);
+  assert.equal(isOpenAIFreeTier(undefined), false);
+});
