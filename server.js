@@ -50,6 +50,9 @@ import {
   DEFAULT_DEEPSEEK_API_BASE_URL,
   DEFAULT_GEMINI_MODEL,
   generateDeepSeekContent,
+  generateOpenRouterContent,
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_OPENROUTER_FREE_MODEL,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel
@@ -144,6 +147,11 @@ const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, GEMINI_TIMEOUT_MS);
 const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPSEEK_API_BASE_URL;
+// OpenRouter free-tier failover: used when the DeepSeek account cannot serve
+// requests (out of credits, auth revoked). Unset key = failover disabled.
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
+const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || DEFAULT_OPENROUTER_FREE_MODEL;
 const DEEPSEEK_REASONING_EFFORT = process.env.DEEPSEEK_REASONING_EFFORT === 'max' ? 'max' : 'high';
 const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
   String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
@@ -791,6 +799,34 @@ async function generateAIContent(request) {
           status: 504,
           retryable: true
         });
+      }
+
+      // DeepSeek account cannot serve requests ("Insufficient Balance",
+      // revoked key, billing hold): fail over to the OpenRouter free tier when
+      // configured so analyses keep working while credits are down.
+      const fatalDeepSeek = error instanceof AIProviderError && (
+        error.code === 'AI_AUTH_FAILED' ||
+        error.code === 'AI_NOT_CONFIGURED' ||
+        (error.code === 'AI_UPSTREAM_ERROR' && !error.retryable) ||
+        /insufficient balance|payment required|billing|quota exceeded/i.test(error.message || '')
+      );
+      if (fatalDeepSeek && OPENROUTER_API_KEY) {
+        log.warn('ai.provider.failover', {
+          from: request.model,
+          to: OPENROUTER_FREE_MODEL,
+          reason: error.message?.slice(0, 160)
+        });
+        const response = await withTimeout(
+          () => generateOpenRouterContent(request, {
+            apiKey: OPENROUTER_API_KEY,
+            baseUrl: OPENROUTER_BASE_URL,
+            model: OPENROUTER_FREE_MODEL,
+            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          }),
+          DEEPSEEK_TIMEOUT_MS,
+          'OpenRouter fallback request timed out'
+        );
+        return normalizeAIResponse(response, `openrouter:${OPENROUTER_FREE_MODEL}`);
       }
       throw error;
     }

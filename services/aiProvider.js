@@ -272,3 +272,157 @@ export async function generateDeepSeekContent(request, {
     candidates: [{ content: { parts: [{ text }] }, finishReason }]
   };
 }
+
+// ---------------------------------------------------------------------------
+// OpenRouter fallback provider (OpenAI-compatible chat completions).
+//
+// Used by server.js as a failover when the primary DeepSeek account cannot
+// serve requests (e.g. "Insufficient Balance", auth revoked). Free-tier models
+// on OpenRouter are slugged with a `:free` suffix and configurable via
+// OPENROUTER_FREE_MODEL.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+export const DEFAULT_OPENROUTER_FREE_MODEL = 'deepseek/deepseek-chat-v3.1:free';
+
+const TRANSIENT_OPENROUTER_STATUSES = new Set([429, 500, 502, 503]);
+
+export function normalizeOpenRouterBaseUrl(value = DEFAULT_OPENROUTER_BASE_URL) {
+  return String(value || DEFAULT_OPENROUTER_BASE_URL).trim().replace(/\/+$/, '');
+}
+
+export async function generateOpenRouterContent(request, {
+  apiKey,
+  baseUrl = DEFAULT_OPENROUTER_BASE_URL,
+  model = DEFAULT_OPENROUTER_FREE_MODEL,
+  fetchImpl = globalThis.fetch,
+  maxRetries = 1,
+  signal,
+  sleepImpl = wait
+} = {}) {
+  if (!apiKey) {
+    throw new AIProviderError('OPENROUTER_API_KEY is not configured', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new AIProviderError('Fetch is unavailable for the OpenRouter provider', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+  if (!model) {
+    throw new AIProviderError('OPENROUTER_FREE_MODEL is not configured', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+
+  const config = request.config || {};
+  const prompt = typeof request.contents === 'string'
+    ? request.contents
+    : JSON.stringify(request.contents ?? '');
+  const messages = [];
+  if (config.systemInstruction) {
+    messages.push({ role: 'system', content: String(config.systemInstruction) });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  const body = {
+    model,
+    messages,
+    stream: false,
+    response_format: { type: 'json_object' }
+  };
+  const maxTokens = safeInteger(config.maxOutputTokens);
+  if (maxTokens) body.max_tokens = maxTokens;
+  if (Number.isFinite(config.temperature)) {
+    body.temperature = Math.min(Math.max(config.temperature, 0), 2);
+  }
+
+  let response;
+  let lastNetworkError;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      response = await fetchImpl(`${normalizeOpenRouterBaseUrl(baseUrl)}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://bsod.windowsforum.com',
+          'X-Title': 'BSOD Analyzer'
+        },
+        body: JSON.stringify(body),
+        signal
+      });
+    } catch (error) {
+      lastNetworkError = error;
+      if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || attempt >= maxRetries) break;
+      await sleepImpl(Math.min(250 * (2 ** attempt), 2_000));
+      continue;
+    }
+
+    if (response.ok) break;
+    if (!TRANSIENT_OPENROUTER_STATUSES.has(response.status) || attempt >= maxRetries) {
+      const message = await readDeepSeekError(response); // same shape: {error:{message}} or text
+      throw new AIProviderError(message, {
+        code: response.status === 401 ? 'AI_AUTH_FAILED' : 'AI_UPSTREAM_ERROR',
+        status: response.status,
+        retryable: TRANSIENT_OPENROUTER_STATUSES.has(response.status)
+      });
+    }
+    await sleepImpl(retryDelayMs(response, attempt));
+  }
+
+  if (lastNetworkError) {
+    const timedOut = lastNetworkError?.name === 'AbortError' || lastNetworkError?.name === 'TimeoutError';
+    throw new AIProviderError(timedOut ? 'OpenRouter request timed out' : 'OpenRouter request failed', {
+      code: timedOut ? 'AI_TIMEOUT' : 'AI_UPSTREAM_ERROR',
+      status: timedOut ? 504 : 502,
+      retryable: true
+    });
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new AIProviderError('OpenRouter returned an invalid response', {
+      code: 'INVALID_AI_RESPONSE',
+      status: 502
+    });
+  }
+  if (data?.error) {
+    throw new AIProviderError(data.error.message || 'OpenRouter request failed', {
+      code: 'AI_UPSTREAM_ERROR',
+      status: 502
+    });
+  }
+
+  const choice = data?.choices?.[0];
+  const text = typeof choice?.message?.content === 'string'
+    ? choice.message.content.trim()
+    : '';
+  if (!text) {
+    throw new AIProviderError('OpenRouter returned an empty response', {
+      code: 'INVALID_AI_RESPONSE',
+      status: 502
+    });
+  }
+
+  const usage = data.usage || {};
+  const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
+  return {
+    text,
+    modelVersion: typeof data.model === 'string' ? data.model : model,
+    usageMetadata: {
+      promptTokenCount: safeInteger(usage.prompt_tokens),
+      candidatesTokenCount: safeInteger(usage.completion_tokens),
+      totalTokenCount: safeInteger(usage.total_tokens),
+      cachedContentTokenCount: 0,
+      thoughtsTokenCount: 0
+    },
+    candidates: [{ content: { parts: [{ text }] }, finishReason }]
+  };
+}
