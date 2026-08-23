@@ -278,6 +278,12 @@ function rateLimitKey(req) {
   return normalizeRateLimitIp(getClientIp(req));
 }
 
+// Whether the runtime store is mandatory. Declared BEFORE makeLimiter (which
+// reads it for fail-open/fail-closed selection) — a later declaration would be
+// a temporal-dead-zone crash at module load.
+const REQUIRE_REDIS_RUNTIME =
+  (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
+
 const makeLimiter = createRateLimiterFactory({
   isCacheEnabled,
   incrementRuntimeCounter,
@@ -344,8 +350,6 @@ let hasher;
 
 // Initialize Upstash Redis cache
 initCache();
-const REQUIRE_REDIS_RUNTIME =
-  (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
 
 // Secret for session validation
 const SESSION_SECRET = process.env.SESSION_SECRET;
