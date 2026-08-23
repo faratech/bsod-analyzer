@@ -390,6 +390,15 @@ function getAnalysisKey(fileHash) {
 }
 
 /**
+ * Namespace for prompt-keyed analysis entries. These have no owning session,
+ * so they must never be addressable through the file-hash path that
+ * /api/cache/get exposes to clients.
+ */
+export function getPromptCacheKey(promptHash) {
+  return `prompt:${promptHash}`;
+}
+
+/**
  * Get cached complete analysis (WinDBG + AI report) by file hash
  * @param {string} fileHash - The file content hash
  * @returns {Promise<object|null>} Cached analysis { windbgOutput, aiReport, aiReports, timestamp } or null
