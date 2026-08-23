@@ -442,7 +442,10 @@ export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-5.6-luna';
 const TRANSIENT_OPENAI_STATUSES = new Set([429, 500, 502, 503]);
 
 export function isOpenAIFreeTier(tier) {
-  return typeof tier === 'string' && /data.shar/i.test(tier);
+  // Verified live: complimentary traffic reports service_tier "incentivized-tier"
+  // on the Usage API/chat responses ("data sharing incentive ..." is only the
+  // dashboard label). Unknown/absent tiers are treated as billed.
+  return typeof tier === 'string' && (/data.shar/i.test(tier) || /^incentivized/i.test(tier));
 }
 
 export async function generateOpenAIContent(request, {

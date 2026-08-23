@@ -90,7 +90,7 @@ substitutions:
   _CACHE_ZSTD_WRITES_ENABLED: 'true'
   # Both providers are bound so model.cfg can be hot-swapped between them at
   # runtime without a redeploy. Both secrets must exist in Secret Manager.
-  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest'
+  _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,OPENAI_ADMIN_KEY=openai-admin-key:latest'
 
 availableSecrets:
   secretManager:
