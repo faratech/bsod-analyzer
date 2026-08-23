@@ -19,11 +19,14 @@ const hasherReady = xxhash().then(h => {
     return h;
 });
 
-// Polling configuration - increased intervals to reduce server load
+// Polling configuration - increased intervals to reduce server load.
+// The upstream API allows MAX_JOB_DURATION=360s per job on top of unbounded
+// queue wait, so a 5-minute budget used to abandon jobs that were still going
+// to complete successfully (and cache their results).
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
-const MAX_POLL_ATTEMPTS = 30; // Max 5 minutes of polling (30 * 10s = 300s), then fallback to local analysis
+const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s = 600s), then fallback to local analysis
 const UPLOAD_TIMEOUT_MS = 240000; // 4 minute upload timeout for slow proxy/origin submits
-const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout for entire WinDBG process
+const WINDBG_TOTAL_TIMEOUT_MS = 660000; // 11 minute hard timeout: upload window + poll budget + margin
 
 export interface WinDBGUploadResponse {
     success: boolean;

@@ -61,6 +61,7 @@ import {
   initCacheCompression,
   initHashing,
   hashContent,
+  getPromptCacheKey,
   getCachedAnalysis,
   setCachedAnalysis,
   isAnalysisCached,
@@ -2025,7 +2026,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
     }
-    const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
+    const cacheKey = ownedFileHash ? fileHash : getPromptCacheKey(hashContent(requestText));
     const cachedAnalysis = await getCachedAnalysis(cacheKey);
     const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
@@ -2215,6 +2216,18 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Invalid or missing hash parameter'
+      });
+    }
+
+    // Ownership gate: cached analyses may only be read by the session that
+    // uploaded the dump. Un-owned hashes answer with the standard miss shape
+    // so callers learn nothing about other users' cache entries.
+    if (!(await sessionOwnsHash(req.sessionId, hash))) {
+      console.log(`[Cache] GET denied for unowned hash ${hash.substring(0, 12)}...`);
+      return res.json({
+        success: false,
+        cached: false,
+        error: 'Not found in cache'
       });
     }
 
@@ -2813,8 +2826,9 @@ function persistCrashSignal(report, fileHash) {
 
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
   const modelName = getPrimaryModel();
-  // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
-  const cacheKey = fileHash || windbgAnalysis;
+  // Check cache first — prefer stable fileHash; fall back to a prompt-namespaced
+  // key over the analysis text (never addressable as a file hash).
+  const cacheKey = fileHash || getPromptCacheKey(hashContent(windbgAnalysis));
   const cachedAnalysis = await getCachedAnalysis(cacheKey);
   const cachedReport = getCachedAIReportForModel(cachedAnalysis, modelName);
   if (cachedReport) {

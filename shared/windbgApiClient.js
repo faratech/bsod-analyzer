@@ -18,10 +18,16 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Transient upstream failures: Cloudflare 52x edge errors plus origin
+// overload/limiting statuses that resolve on their own within seconds.
+function isTransientUpstreamStatus(status) {
+  return status === 429 || status === 502 || status === 503 || status === 504
+    || status === 520 || status === 522 || status === 524 || status === 525;
+}
+
 function isRetryableSubmitError(error) {
-  const status = Number(error?.upstreamStatus);
   return error?.code === 'WINDBG_UPSTREAM_ERROR'
-    && (status === 520 || status === 522 || status === 524 || status === 525);
+    && isTransientUpstreamStatus(Number(error.upstreamStatus));
 }
 
 function escapeMultipartValue(value) {
@@ -141,6 +147,16 @@ async function submitWinDbgJob({
   throw lastError;
 }
 
+function isRetryablePollError(error, signal) {
+  if (signal?.aborted || error?.name === 'AbortError') return false;
+  if (error?.code === 'WINDBG_UPSTREAM_ERROR') {
+    return isTransientUpstreamStatus(Number(error.upstreamStatus));
+  }
+  // Network-level failures (fetch rejection) and non-JSON 2xx proxy pages are
+  // worth another attempt; anything else is permanent.
+  return true;
+}
+
 async function getWinDbgJob({
   baseUrl,
   apiKey,
@@ -160,12 +176,28 @@ async function getWinDbgJob({
     headers['X-API-Key'] = apiKey;
   }
 
-  const response = await fetchImpl(winDbgApiUrl(baseUrl, `/jobs/${encodeURIComponent(jobId)}`), {
-    headers,
-    signal
-  });
+  // A single transient failure during a multi-minute poll window must not
+  // abort an otherwise healthy analysis, so tolerate brief upstream blips.
+  const maxAttempts = 3;
+  let lastError;
 
-  return await readJsonResponse(response, 'WinDBG job status');
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(winDbgApiUrl(baseUrl, `/jobs/${encodeURIComponent(jobId)}`), {
+        headers,
+        signal
+      });
+      return await readJsonResponse(response, 'WinDBG job status');
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryablePollError(error, signal)) {
+        throw error;
+      }
+      await sleep(400 * attempt);
+    }
+  }
+
+  throw lastError;
 }
 
 function mapWinDbgJobStatus(status) {
