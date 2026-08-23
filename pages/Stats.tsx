@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import SEO from '../components/SEO';
 import PageLayout from '../components/PageLayout';
+import { MultiplexAd, HorizontalAd } from '../components/AdSense';
 import { BarList, DailyVolumeChart, SplitBar, StatTile } from '../components/StatsCharts';
 import {
   StatsSnapshot,
@@ -140,6 +141,12 @@ const StatsPage: React.FC = () => {
 
       <StatsInsightCard />
 
+      {/* Horizontal ad after the charts, before the rankings */}
+      <HorizontalAd
+        className="ad-inline"
+        style={{ margin: '2.5rem 0' }}
+      />
+
       <div className="stats-grid">
         <SplitBar
           title="Analysis source"
@@ -164,6 +171,10 @@ const StatsPage: React.FC = () => {
       </div>
 
       <BarList title="Windows versions" family={snapshot?.osVersions ?? { items: [], other: 0, total: 0 }} />
+
+      {/* Multiplex unit before the data table */}
+      <MultiplexAd style={{ margin: '2.5rem 0', minHeight: '300px' }} />
+
 
       <details className="stats-table">
         <summary>View as table</summary>
