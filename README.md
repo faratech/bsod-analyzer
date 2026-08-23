@@ -9,6 +9,7 @@ Enterprise-grade Windows crash dump analyzer powered by server-selected AI and r
 - **Real WinDBG Analysis**: Server-side WinDBG debugging with `!analyze -v` on actual crash dumps
 - **AI-Powered Reports**: Gemini or DeepSeek interprets WinDBG output into user-friendly diagnostics
 - **Content-Addressed Caching**: XXHash-based deduplication with Upstash Redis; identical dumps return instant results
+- **Dictionary-Compressed Cache**: Analysis values use zstd with a private dictionary trained from recent cache data
 - **Dual Analysis Paths**: WinDBG server primary path with AI fallback when WinDBG is unavailable
 - **Multiple Formats**: Supports `.dmp`, `.mdmp`, `.hdmp`, `.kdmp` files and `.zip`, `.7z`, `.rar` archives
 - **External API**: REST endpoint for programmatic access with API key authentication
@@ -19,7 +20,7 @@ Enterprise-grade Windows crash dump analyzer powered by server-selected AI and r
 
 ### Prerequisites
 
-- Node.js 22+
+- Node.js `^22.19.0` or `>=24.6.0` (dictionary-capable built-in zstd)
 - npm 11
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/) or a DeepSeek API key
 
@@ -165,10 +166,13 @@ All caching uses Upstash Redis with content-addressed keys:
 
 | Cache Layer | Key | Value | Purpose |
 |-------------|-----|-------|---------|
-| WinDBG output | File XXHash64 | Raw WinDBG text + metadata | Skip re-uploading identical dumps |
-| AI report | Hash of WinDBG output + model | Structured report JSON | Skip re-running the selected model for the same WinDBG output |
-| Combined | File hash | WinDBG + AI report | Client-side cache check before upload |
+| Analysis | `analysis:<file-or-prompt-hash>` | Dictionary-zstd WinDBG + model-report envelope | Reuse completed analysis and avoid repeated external work |
 | Runtime state | Runtime-prefixed keys | Sessions, ownership, jobs, quotas, rate limits | Keep Cloud Run instances consistent |
+
+Only `analysis:*` values are eligible for dictionary-zstd compression. They are
+sent to Upstash as raw binary values, with legacy JSON remaining readable during
+the rollout. `runtime:*` values and atomic counters keep their existing Redis
+representation. The seven-day analysis TTL is unchanged.
 
 In production, Redis-backed runtime state is required by default. Set
 `REQUIRE_REDIS_RUNTIME=false` only for local testing or controlled single-instance
@@ -199,6 +203,8 @@ debugging.
 | `BSOD_API_KEY` | External REST API authentication | No (disables `/api/analyze` if unset) |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
+| `CACHE_ZSTD_DICTIONARY_PATH` | Mounted binary zstd dictionary path | Production; `/secrets/redis-zstd/dictionary` in Cloud Run |
+| `CACHE_ZSTD_WRITES_ENABLED` | Enable compressed `analysis:*` writes after reader verification | No; defaults to `false` |
 | `REQUIRE_REDIS_RUNTIME` | Require Redis for sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests | Defaults `true` in production |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hop count | Defaults `2` |
@@ -227,9 +233,22 @@ export PROJECT_ID="your-gcp-project-id"
 # Create secrets
 echo -n "your-gemini-api-key" | gcloud secrets create gemini-api-key --data-file=-
 
-# Deploy
-./deploy-with-secret.sh
+# Provision the remaining secrets/IAM, train from the current cache, and upload
+./setup-all-secrets.sh
+node scripts/cache-zstd-dictionary.mjs --upload --project="$PROJECT_ID"
+
+# First deployment is reader-only for the compressed format
+CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
+  CACHE_ZSTD_WRITES_ENABLED=false ./deploy-with-secret.sh
 ```
+
+The dictionary command requires the Upstash URL/token in the environment and
+prints the numeric Secret Manager version to pin. Its default mode (without
+`--upload`) is a read-only benchmark. After verifying legacy reads and the
+mounted dictionary, redeploy with `CACHE_ZSTD_WRITES_ENABLED=true` and persist
+that flag plus the numeric version in the automatic-deployment configuration. See
+[`docs/SECRET-MANAGEMENT.md`](docs/SECRET-MANAGEMENT.md) for the complete staged
+rollout, rotation, and whole-Redis-flush warnings.
 
 To deploy with DeepSeek V4 Flash, create the optional secret and change the
 single line in `model.cfg` before building:
@@ -260,7 +279,8 @@ gcloud run deploy bsod-analyzer \
   --region us-east1 \
   --allow-unauthenticated \
   --service-account bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest
+  --set-env-vars CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=false \
+  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:NUMERIC_VERSION
 ```
 
 ### CI/CD
@@ -270,7 +290,8 @@ Cloud Build can be used for deployment:
 
 ```bash
 # Submit a build
-gcloud builds submit --config cloudbuild.yaml
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION,_CACHE_ZSTD_WRITES_ENABLED=false
 
 # Set up automatic deployments on push
 gcloud builds triggers create github \
@@ -283,6 +304,7 @@ gcloud builds triggers create github \
 ### Secret Management Scripts
 
 - `setup-all-secrets.sh` — Initial setup of all secrets in Google Secret Manager
+- `scripts/cache-zstd-dictionary.mjs` — Read-only cache benchmark and explicit dictionary training/upload
 - `update-turnstile-secret.sh` — Update Turnstile secret when regenerating keys
 - `deploy-with-secret.sh` — Deploy to Cloud Run with secrets from Secret Manager
 - `scripts/purge-cloudflare-cache.sh` — Purge CDN cache after deployment; set `SKIP_CF_PURGE=true` to skip intentionally
@@ -292,10 +314,10 @@ gcloud builds triggers create github \
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 19, TypeScript, Vite |
-| Backend | Fastify 5 (ES modules), Node.js 22+ |
+| Backend | Fastify 5 (ES modules), Node.js `^22.19.0` or `>=24.6.0` |
 | Compression | Adapter-level zstd/br/gzip/deflate; Cloudflare-origin requests force zstd |
 | AI | Google Gemini via `@google/genai`, or DeepSeek V4 Flash via its OpenAI-compatible API |
-| Cache | Upstash Redis (`@upstash/redis`) |
+| Cache | Upstash Redis (`@upstash/redis`) with raw binary dictionary-zstd analysis values |
 | Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
 | File Processing | FileReader API, JSZip, `@fastify/multipart` |
 | Markdown | Report export generated in-app |
@@ -361,9 +383,10 @@ These are used internally by the web UI:
 1. **API Key Errors** — Ensure the key for the selected model (`GEMINI_API_KEY` or `DEEPSEEK_API_KEY`) is set. For production: `gcloud secrets list`
 2. **WinDBG Fallback** — If WinDBG is unavailable, minidumps use full local evidence and large dumps use sampled AI fallback
 3. **Container Failures** — Check logs: `gcloud logging read --limit 50`. Verify PORT=8080
-4. **Build Failures** — Ensure Node.js 22+: `node --version`
+4. **Build Failures** — Ensure Node.js is `^22.19.0` or `>=24.6.0`: `node --version`
 5. **Session Errors** — Check cookie attributes are consistent; Turnstile must be configured for production
 6. **Runtime Store Errors** — In production, ensure Upstash Redis URL/token are configured and healthy
+7. **Cache Dictionary Errors** — Verify the mounted secret uses the pinned numeric version and keep compressed writes disabled until startup/read checks pass
 
 ### Monitoring
 

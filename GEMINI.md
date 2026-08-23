@@ -61,11 +61,12 @@ The application can be deployed to Google Cloud Run. The `README.md` provides de
     *   **Styling:** Custom CSS
     *   **Deployment:** Docker, Google Cloud Run, Secret Manager
 *   **Secret Management:**
-    *   **Production:** All secrets (e.g., `GEMINI_API_KEY`, `TURNSTILE_SECRET_KEY`, `SESSION_SECRET`, `WINDBG_API_KEY`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`) are stored in Google Secret Manager and injected as environment variables by Cloud Run.
+    *   **Production:** String secrets (e.g., `GEMINI_API_KEY`, `TURNSTILE_SECRET_KEY`, `SESSION_SECRET`, `WINDBG_API_KEY`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`) are stored in Google Secret Manager and injected as environment variables by Cloud Run. The private `redis-zstd-dictionary` binary is mounted at `/secrets/redis-zstd/dictionary` using a pinned numeric secret version, never `latest`.
     *   **Local Development:** Secrets are managed via `.env.local` files or direct environment variables. The `.env.local` file is git-ignored and should never be committed.
     *   Dedicated scripts (`setup-all-secrets.sh`, `update-turnstile-secret.sh`, `deploy-with-secret.sh`) are provided for secret management.
 *   **Security Best Practices:**
     *   Never commit secrets to the repository.
+    *   Keep `CACHE_ZSTD_WRITES_ENABLED=false` until the dictionary-aware reader revision is verified; never automate a whole Redis database flush.
     *   Regularly rotate secrets.
     *   Utilize Secret Manager for production environments.
     *   Adhere to the principle of least privilege for secret access.

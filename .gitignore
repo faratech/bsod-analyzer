@@ -47,6 +47,19 @@ services/geminiService.ts.backup
 build-and-upload.sh
 get-docker.sh
 
+# Private zstd dictionaries trained from production cache data. These binaries
+# may contain literal fragments from their samples and must never reach GitHub.
+*.dict
+*.zdict
+*.zstd-dict
+dictionary.zstd
+redis-zstd-dictionary
+cache-zstd-dictionary
+redis-zstd-dictionary*.bin
+redis-zstd-dictionary*.zstd
+cache-zstd-dictionary*.bin
+cache-zstd-dictionary*.zstd
+
 # API configuration (if it contains keys)
 api/config.js
 
