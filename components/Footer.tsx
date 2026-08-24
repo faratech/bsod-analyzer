@@ -27,6 +27,7 @@ const Footer: React.FC = () => {
                         <div className="footer-links">
                             <Link to="/documentation" className="footer-link">Documentation</Link>
                             <Link to="/about" className="footer-link">How It Works</Link>
+                            <Link to="/stats" className="footer-link">Crash Statistics</Link>
                             <a href="https://windowsforum.com" target="_blank" rel="noopener noreferrer" className="footer-link">WindowsForum</a>
                         </div>
                     </div>

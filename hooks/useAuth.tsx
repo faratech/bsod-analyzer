@@ -53,9 +53,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setSignedOut(false);
       // The exchange already established a verified BSOD session (cookies set).
       markSessionInitialized();
-      startSessionRefresh();
+      startSessionRefresh('auth');
     } else {
-      stopSessionRefresh();
+      stopSessionRefresh('auth');
     }
   }, []);
 

@@ -138,7 +138,7 @@ const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
       }
       
       const protection = params[1];
-      const validProtections = [0n, 1n, 8n, 10n];
+      const validProtections = [0n, 1n, 8n, 0x10n];
       if (!validProtections.includes(protection)) {
         errors.push(`Invalid page protection: ${protection}`);
       }

@@ -45,12 +45,46 @@ import {
   normalizeRateLimitIp
 } from './server/rateLimit.js';
 import { createUploadHandler } from './server/uploadHandler.js';
+import {
+  CSP_EMBED_HEADER,
+  CSP_HEADER,
+  EMBEDDABLE_PATHS,
+  createSecurityHeadersMiddleware
+} from './server/securityHeaders.js';
+import {
+  DEFAULT_DAILY_WINDOW_DAYS,
+  DEFAULT_SNAPSHOT_TTL_SECONDS,
+  createStatsStore
+} from './server/statsStore.js';
+import { extractStatsFacts } from './server/stats.js';
+import { registerStatsRoute } from './server/statsRoute.js';
+import {
+  createStatsInsightService,
+  registerStatsInsightRoute
+} from './server/statsInsight.js';
+import {
+  AIProviderError,
+  DEFAULT_DEEPSEEK_API_BASE_URL,
+  DEFAULT_GEMINI_MODEL,
+  generateDeepSeekContent,
+  generateOpenRouterContent,
+  generateOpenAIContent,
+  isOpenAIFreeTier,
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_OPENROUTER_FREE_MODEL,
+  DEFAULT_OPENAI_FREE_MODEL,
+  getAIProviderForModel,
+  getCachedAIReportForModel,
+  isSupportedAIModel
+} from './services/aiProvider.js';
 
 const execFileAsync = promisify(execFile);
 import {
   initCache,
+  initCacheCompression,
   initHashing,
   hashContent,
+  getPromptCacheKey,
   getCachedAnalysis,
   setCachedAnalysis,
   isAnalysisCached,
@@ -58,6 +92,7 @@ import {
   setRuntimeValue,
   deleteRuntimeValue,
   isCacheEnabled,
+  getRedisCommandClient,
   checkCacheConnection,
   incrementRuntimeCounter
 } from './services/cache.js';
@@ -131,6 +166,26 @@ const HASH_RE = /^[a-f0-9]{8,16}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
+const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, GEMINI_TIMEOUT_MS);
+const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPSEEK_API_BASE_URL;
+// OpenRouter free-tier failover: used when the DeepSeek account cannot serve
+// requests (out of credits, auth revoked). Unset key = failover disabled.
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
+const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || DEFAULT_OPENROUTER_FREE_MODEL;
+// OpenAI data-sharing incentive (complimentary tokens): gpt-5.6-luna is used
+// FIRST each UTC day while the free quota lasts, then the chain falls back to
+// DeepSeek -> OpenRouter. OPENAI_ADMIN_KEY enables an org-wide usage cross-check.
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_ADMIN_KEY = process.env.OPENAI_ADMIN_KEY;
+const OPENAI_FREE_MODEL = process.env.OPENAI_FREE_MODEL || DEFAULT_OPENAI_FREE_MODEL;
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
+const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
+const DEEPSEEK_REASONING_EFFORT = process.env.DEEPSEEK_REASONING_EFFORT === 'max' ? 'max' : 'high';
+const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
+  String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
+);
 const TURNSTILE_TIMEOUT_MS = readPositiveInt(process.env.TURNSTILE_TIMEOUT_MS, 10_000);
 const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_UPLOAD_TIMEOUT_MS, 240_000);
 const WINDBG_POLL_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_POLL_TIMEOUT_MS, 20_000);
@@ -261,12 +316,22 @@ function rateLimitKey(req) {
   return normalizeRateLimitIp(getClientIp(req));
 }
 
+// Whether the runtime store is mandatory. Declared BEFORE makeLimiter (which
+// reads it for fail-open/fail-closed selection) — a later declaration would be
+// a temporal-dead-zone crash at module load.
+const REQUIRE_REDIS_RUNTIME =
+  (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
+
 const makeLimiter = createRateLimiterFactory({
   isCacheEnabled,
   incrementRuntimeCounter,
   deleteRuntimeValue,
   defaultKeyGenerator: rateLimitKey,
-  defaultHandler: jsonRateLimitHandler
+  defaultHandler: jsonRateLimitHandler,
+  // Dev/no-Redis mode fails open on store errors; production keeps fail-closed
+  // (Redis is required anyway) and /health probes Redis so Cloud Run stops
+  // routing to an instance whose runtime store is down.
+  failOpenOnStoreError: !REQUIRE_REDIS_RUNTIME
 });
 
 function createConcurrencyLimiter(max, code) {
@@ -323,8 +388,6 @@ let hasher;
 
 // Initialize Upstash Redis cache
 initCache();
-const REQUIRE_REDIS_RUNTIME =
-  (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
 
 // Secret for session validation
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -379,7 +442,11 @@ const WF_SSO_PREVIEW = process.env.WF_SSO_PREVIEW === 'true';
 // no restriction. e.g. WF_SSO_ALLOWED_UIDS=1 limits SSO to user id 1.
 const WF_SSO_ALLOWED_UIDS = (process.env.WF_SSO_ALLOWED_UIDS || '')
   .split(',')
-  .map((s) => Number(s.trim()))
+  .map((s) => s.trim())
+  // Strict decimal digits only: bare Number() would accept '0x10'/'1e3'/'0b101'
+  // as UIDs, silently allowlisting ids the operator never typed.
+  .filter((s) => /^\d+$/.test(s))
+  .map((s) => Number(s))
   .filter((n) => Number.isInteger(n) && n > 0);
 
 // Deny-by-default gate. An unset/blank/typo'd allow-list parses to [] and must NOT
@@ -563,9 +630,22 @@ async function sessionOwnsHash(sessionId, hash) {
   return true;
 }
 
+function ownershipIncludesSession(job, sessionId) {
+  if (!job || !sessionId) return false;
+  // Current shape tracks every session that uploaded this identical dump so a
+  // second uploader cannot steal ownership out from under the first.
+  if (Array.isArray(job.sessions)) return job.sessions.includes(sessionId);
+  return job.sessionId === sessionId; // legacy single-session entries
+}
+
 async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
   if (!sessionId || !uid || !fileHash) return;
-  const ownership = { sessionId, fileHash, upstreamJobId, timestamp: Date.now() };
+  const existing = winDbgJobOwnership.get(uid) || await loadWinDbgJobOwnership(uid);
+  const ownership = existing
+    ? { ...existing,
+        sessions: [...new Set([...(Array.isArray(existing.sessions) ? existing.sessions : [existing.sessionId].filter(Boolean)), sessionId])],
+        timestamp: Date.now() }
+    : { sessions: [sessionId], fileHash, upstreamJobId, timestamp: Date.now() };
   winDbgJobOwnership.set(uid, ownership);
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
@@ -587,7 +667,7 @@ async function loadWinDbgJobOwnership(uid) {
 
 async function getOwnedWinDbgJob(sessionId, uid) {
   const job = await loadWinDbgJobOwnership(uid);
-  if (!job || job.sessionId !== sessionId) return null;
+  if (!ownershipIncludesSession(job, sessionId)) return null;
   if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
     winDbgJobOwnership.delete(uid);
     await deleteRuntimeValue(runtimeWinDbgJobKey(uid));
@@ -651,15 +731,26 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000); // Clean every 10 minutes
 
-// Gemini model selection.
+// Server-owned AI model selection.
 // - getPrimaryModel() re-reads model.cfg per call with a 30s cache so the model can
 //   be swapped without a redeploy (edit model.cfg in the running container / overlay).
 // - FALLBACK_MODEL is a prior-generation stable flash-lite kept as a safety net in case
-//   the primary model 404s or is throttled — generateWithFallback() catches that and retries.
+//   a Gemini primary model 404s or is throttled. Provider selection never comes from
+//   the browser, and DeepSeek never silently crosses over to Gemini.
 const FALLBACK_MODEL = 'gemini-2.5-flash-lite';
 const MODEL_CFG_PATH = path.join(__dirname, 'model.cfg');
 const MODEL_CFG_TTL_MS = 30_000;
-let _modelCfgCache = { value: 'gemini-3.1-flash-lite', readAt: 0 };
+
+function readInitialModel() {
+  try {
+    const configured = fs.readFileSync(MODEL_CFG_PATH, 'utf8').trim();
+    return isSupportedAIModel(configured) ? configured : DEFAULT_GEMINI_MODEL;
+  } catch {
+    return DEFAULT_GEMINI_MODEL;
+  }
+}
+
+let _modelCfgCache = { value: readInitialModel(), readAt: 0 };
 
 function getPrimaryModel() {
   const now = Date.now();
@@ -669,8 +760,10 @@ function getPrimaryModel() {
     fs.promises.readFile(MODEL_CFG_PATH, 'utf8')
       .then(modelConfig => {
         const cleaned = modelConfig.trim();
-        if (cleaned) {
+        if (isSupportedAIModel(cleaned)) {
           _modelCfgCache.value = cleaned;
+        } else if (cleaned) {
+          log.warn('ai.model.invalid', { model: cleaned.slice(0, 100) });
         }
       })
       .catch(() => {
@@ -682,7 +775,11 @@ function getPrimaryModel() {
 
 // Prime once at startup so the existing startup log is meaningful.
 const DEFAULT_MODEL_NAME = getPrimaryModel();
-log.info('gemini.startup', { primary: DEFAULT_MODEL_NAME, fallback: FALLBACK_MODEL });
+log.info('ai.startup', {
+  primary: DEFAULT_MODEL_NAME,
+  provider: getAIProviderForModel(DEFAULT_MODEL_NAME),
+  geminiFallback: FALLBACK_MODEL
+});
 
 // Recognise the error shapes Gemini returns when a model is missing / preview-pulled.
 function isModelUnavailableError(err) {
@@ -690,15 +787,225 @@ function isModelUnavailableError(err) {
   return /\bNOT_FOUND\b|\b404\b|is not found for API version|UNIMPLEMENTED/i.test(msg);
 }
 
-// Wrap any ai.models.generateContent(request) call so that if the configured primary
-// model is unavailable, we transparently retry against the stable fallback.
-async function generateWithFallback(request) {
+function normalizeAIResponse(response, cacheModel) {
+  return {
+    text: response?.text ?? '',
+    usageMetadata: response?.usageMetadata,
+    modelVersion: response?.modelVersion || cacheModel,
+    candidates: response?.candidates,
+    cacheModel
+  };
+}
+
+// Dispatch through the provider selected by model.cfg and normalize each provider
+// to the response shape already consumed by the rest of the application.
+// ---------------------------------------------------------------------------
+// OpenAI complimentary-token (free tier) routing helpers.
+// Three layers of quota detection: (1) per-response service_tier, (2) a Redis
+// UTC-day token tally, (3) an optional org-wide Usage API cross-check.
+// ---------------------------------------------------------------------------
+
+function openAIFreeDateKey(now = new Date()) {
+  return now.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function secondsUntilUtcMidnight(now = new Date()) {
+  const next = Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0
+  );
+  return Math.max(60, Math.ceil((next - now.getTime()) / 1000));
+}
+
+async function markOpenAIExhausted(reason) {
+  const key = `openai-exhausted:${openAIFreeDateKey()}`;
+  await setRuntimeValue(key, { reason, timestamp: Date.now() }, secondsUntilUtcMidnight());
+}
+
+let openaiUsageApi = { attemptedAt: 0, used: null };
+
+// Org-wide incentive-tier tokens used today via the Usage API. Returns null
+// when unavailable (no admin key, API error, throttled) so callers fall back
+// to the local tally. Errors are retried at most once per 5 minutes.
+async function fetchOpenAIIncentiveTokensUsed() {
+  if (!OPENAI_ADMIN_KEY) return null;
+  const now = Date.now();
+  if (now - openaiUsageApi.attemptedAt < 5 * 60 * 1000) return openaiUsageApi.used;
+  openaiUsageApi.attemptedAt = now;
+
   try {
-    return await withTimeout(
+    const startSeconds = Math.floor(Date.UTC(
+      new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()
+    ) / 1000);
+    const url = `${OPENAI_BASE_URL.replace(/\/+$/, '')}/organization/usage/completions`
+      + `?start_time=${startSeconds}&bucket_width=1d&group_by[]=service_tier`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    let payload;
+    try {
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${OPENAI_ADMIN_KEY}` },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      payload = await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+    let used = 0;
+    for (const bucket of payload?.data ?? []) {
+      if (isOpenAIFreeTier(bucket?.service_tier)) {
+        used += Number(bucket?.input_tokens ?? 0) + Number(bucket?.output_tokens ?? 0);
+      }
+    }
+    openaiUsageApi = { attemptedAt: now, used: Number.isFinite(used) ? used : null };
+    return openaiUsageApi.used;
+  } catch (error) {
+    log.warn('ai.openai.free.usage_api_failed', { message: error.message?.slice(0, 120) });
+    openaiUsageApi.used = null;
+    return null;
+  }
+}
+
+// Returns true when the free-tier path should be attempted for a request with
+// the given projected token usage.
+async function openAIFreeGate(estimatedTokens) {
+  if (!OPENAI_API_KEY || !isCacheEnabled()) return false;
+  const dateKey = openAIFreeDateKey();
+  if (await getRuntimeValue(`openai-exhausted:${dateKey}`)) return false;
+
+  const threshold = OPENAI_FREE_DAILY_TOKEN_CAP - OPENAI_FREE_SAFETY_BUFFER;
+  let used = await fetchOpenAIIncentiveTokensUsed();
+  if (used === null) {
+    used = Number(await getRuntimeValue(`openai-free:${dateKey}`)) || 0;
+  }
+  return used + estimatedTokens <= threshold;
+}
+
+async function generateAIContent(request) {
+  const provider = getAIProviderForModel(request.model);
+  if (!provider) {
+    throw new AIProviderError(`Unsupported AI model: ${request.model}`, {
+      code: 'UNSUPPORTED_AI_MODEL',
+      status: 500
+    });
+  }
+
+  if (provider === 'deepseek') {
+    // Free-tier-first: consume the OpenAI data-sharing incentive on
+    // gpt-5.6-luna before spending DeepSeek credits. Falls through to the
+    // normal chain when the daily quota is out or the attempt fails.
+    const configuredMaxOutput = Number(request.config?.maxOutputTokens);
+    const projectedTokens = Math.ceil(String(request.contents || '').length / 4)
+      + (Number.isFinite(configuredMaxOutput) ? configuredMaxOutput : 4096);
+    if (await openAIFreeGate(projectedTokens)) {
+      try {
+        const response = await withTimeout(
+          () => generateOpenAIContent(request, {
+            apiKey: OPENAI_API_KEY,
+            baseUrl: OPENAI_BASE_URL,
+            model: OPENAI_FREE_MODEL,
+            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          }),
+          DEEPSEEK_TIMEOUT_MS,
+          'OpenAI free request timed out'
+        );
+        const used = response.usageMetadata?.totalTokenCount || 0;
+        if (used > 0) {
+          await incrementRuntimeCounter(`openai-free:${openAIFreeDateKey()}`, 172800, used);
+        }
+        log.info('ai.openai.free', {
+          model: OPENAI_FREE_MODEL,
+          used,
+          serviceTier: response.serviceTier || null,
+          free: isOpenAIFreeTier(response.serviceTier)
+        });
+        if (response.serviceTier && !isOpenAIFreeTier(response.serviceTier)) {
+          // We expected complimentary tokens but got billed-tier traffic: the
+          // org quota was consumed elsewhere today. Stop routing here.
+          await markOpenAIExhausted('billed-service-tier');
+          log.warn('ai.openai.free.billed', { serviceTier: response.serviceTier });
+        }
+        return normalizeAIResponse(response, `openai:${OPENAI_FREE_MODEL}`);
+      } catch (error) {
+        const exhausted = error instanceof AIProviderError
+          && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
+        if (exhausted) await markOpenAIExhausted(error.code);
+        log.warn(exhausted ? 'ai.openai.free.exhausted' : 'ai.openai.free.error', {
+          message: error.message?.slice(0, 140)
+        });
+        // Fall through to DeepSeek -> OpenRouter.
+      }
+    }
+  }
+
+  if (provider === 'deepseek') {
+    try {
+      const response = await withTimeout(
+        () => generateDeepSeekContent(request, {
+          apiKey: process.env.DEEPSEEK_API_KEY,
+          baseUrl: DEEPSEEK_API_BASE_URL,
+          reasoningEffort: DEEPSEEK_REASONING_EFFORT,
+          thinkingEnabled: DEEPSEEK_THINKING_ENABLED,
+          signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+        }),
+        DEEPSEEK_TIMEOUT_MS,
+        'DeepSeek request timed out'
+      );
+      return normalizeAIResponse(response, request.model);
+    } catch (error) {
+      if (!error?.code && /timed out/i.test(error?.message || '')) {
+        throw new AIProviderError('DeepSeek request timed out', {
+          code: 'AI_TIMEOUT',
+          status: 504,
+          retryable: true
+        });
+      }
+
+      // DeepSeek account cannot serve requests ("Insufficient Balance",
+      // revoked key, billing hold): fail over to the OpenRouter free tier when
+      // configured so analyses keep working while credits are down.
+      const fatalDeepSeek = error instanceof AIProviderError && (
+        error.code === 'AI_AUTH_FAILED' ||
+        error.code === 'AI_NOT_CONFIGURED' ||
+        (error.code === 'AI_UPSTREAM_ERROR' && !error.retryable) ||
+        /insufficient balance|payment required|billing|quota exceeded/i.test(error.message || '')
+      );
+      if (fatalDeepSeek && OPENROUTER_API_KEY) {
+        log.warn('ai.provider.failover', {
+          from: request.model,
+          to: OPENROUTER_FREE_MODEL,
+          reason: error.message?.slice(0, 160)
+        });
+        const response = await withTimeout(
+          () => generateOpenRouterContent(request, {
+            apiKey: OPENROUTER_API_KEY,
+            baseUrl: OPENROUTER_BASE_URL,
+            model: OPENROUTER_FREE_MODEL,
+            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          }),
+          DEEPSEEK_TIMEOUT_MS,
+          'OpenRouter fallback request timed out'
+        );
+        return normalizeAIResponse(response, `openrouter:${OPENROUTER_FREE_MODEL}`);
+      }
+      throw error;
+    }
+  }
+
+  if (!genAI) {
+    throw new AIProviderError('GEMINI_API_KEY is not configured', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+
+  try {
+    const response = await withTimeout(
       () => genAI.models.generateContent(request),
       GEMINI_TIMEOUT_MS,
       'Gemini request timed out'
     );
+    return normalizeAIResponse(response, request.model);
   } catch (err) {
     if (!isModelUnavailableError(err) || request.model === FALLBACK_MODEL) throw err;
     log.warn('gemini.model.fallback', {
@@ -706,11 +1013,12 @@ async function generateWithFallback(request) {
       fallback: FALLBACK_MODEL,
       reason: err.message?.slice(0, 200)
     });
-    return await withTimeout(
+    const response = await withTimeout(
       () => genAI.models.generateContent({ ...request, model: FALLBACK_MODEL }),
       GEMINI_TIMEOUT_MS,
       'Gemini fallback request timed out'
     );
+    return normalizeAIResponse(response, FALLBACK_MODEL);
   }
 }
 
@@ -749,14 +1057,21 @@ const corsOptions = {
       allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()));
     }
     
-    // Default production origins
-    allowedOrigins.push('https://bsod.windowsforum.com');
+    // Default production origins (+ forum hosts that embed the stats widget)
+    allowedOrigins.push(
+      'https://bsod.windowsforum.com',
+      'https://windowsforum.com',
+      'https://www.windowsforum.com'
+    );
 
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      // Deny by omitting CORS headers instead of throwing: an error here used
+      // to surface as 500 INTERNAL_ERROR, polluting error alerting for what is
+      // a routine cross-origin denial. Browsers still block the read.
       console.warn(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
+      callback(null, false);
     }
   },
   credentials: true,
@@ -788,8 +1103,9 @@ const apiLimiter = makeLimiter({
   handler: jsonRateLimitHandler,
   name: 'api',
   skip: (req) => {
-    // Skip rate limiting for health check endpoint
-    return req.path === '/health';
+    // Skip rate limiting for health check and public stats endpoints
+    // (both get dedicated limiters or no limiter by design).
+    return req.path === '/health' || req.path === '/api/stats' || req.path === '/api/stats/insight';
   }
 });
 
@@ -808,6 +1124,8 @@ const externalAnalyzeLimiter = makeLimiter({
     return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
   }
 });
+// Public stats endpoint: generous per-IP budget for widget traffic.
+const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
 
 const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
@@ -821,39 +1139,13 @@ const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE
 // so unauthenticated requests are rejected before allocating a parse buffer.
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
-// Precompute CSP header string once at startup (avoids rebuilding on every request)
-const CSP_HEADER = [
-  "default-src 'self'",
-  // *.doubleclick.net + www.googleadservices.com cover Google Ads conversion
-  // tracking scripts (gtag loads viewthroughconversion/conversion_async from these).
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://adnxs.com https://www.paypalobjects.com",
-  // AdSense's adsbygoogle.js runtime injects a small container-sizing stylesheet
-  // as a data:text/css URL, so 'data:' is required here for ad slots to render.
-  "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://windowsforum.com https://challenges.cloudflare.com https://*.google https://*.google.com https://*.gstatic.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.googleadservices.com https://generativelanguage.googleapis.com https://www.paypal.com",
-  "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self' https://www.paypal.com",
-  "frame-ancestors 'self'",
-  "upgrade-insecure-requests"
-].join('; ');
-
-// Global security headers middleware
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  res.setHeader('Content-Security-Policy', CSP_HEADER);
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  next();
-});
+// Global security headers middleware (CSP strings + embeddable-path handling
+// live in server/securityHeaders.js).
+app.use(createSecurityHeadersMiddleware({
+  cspHeader: CSP_HEADER,
+  cspEmbedHeader: CSP_EMBED_HEADER,
+  embeddablePaths: EMBEDDABLE_PATHS
+}));
 
 // MIME type lookup for static assets
 const MIME_TYPES = {
@@ -958,14 +1250,22 @@ app.use(staticMiddleware(path.join(__dirname, 'dist'), {
   }
 }));
 
-// Validate Gemini API key at startup
-if (!process.env.GEMINI_API_KEY) {
-  console.error('WARNING: GEMINI_API_KEY not configured - AI analysis will not work');
-  // Don't exit in production - allow service to start but AI features will be disabled
+// Initialize provider clients with server-side credentials only. DeepSeek uses
+// the native fetch adapter in services/aiProvider.js, so it needs no SDK client.
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+
+function isAIProviderConfigured(model) {
+  const provider = getAIProviderForModel(model);
+  if (provider === 'deepseek') return Boolean(process.env.DEEPSEEK_API_KEY);
+  if (provider === 'gemini') return Boolean(genAI);
+  return false;
 }
 
-// Initialize Gemini AI with server-side API key
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
+  console.error('WARNING: No AI provider API key is configured - AI analysis will not work');
+} else if (!isAIProviderConfigured(DEFAULT_MODEL_NAME)) {
+  console.error(`WARNING: ${DEFAULT_MODEL_NAME} is selected but its provider API key is not configured`);
+}
 
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
@@ -1142,7 +1442,7 @@ async function validateSession(sessionId, sessionHash) {
   }
   
   // Verify hash
-  if (sessionData.hash !== sessionHash) {
+  if (!timingSafeEqualString(sessionData.hash, sessionHash)) {
     return { valid: false, reason: 'Invalid session hash' };
   }
 
@@ -1316,12 +1616,34 @@ const requireApiKey = (req, res, next) => {
 };
 
 // Health check endpoint for Cloud Run (not rate limited)
+// Redis health is probed (result cached briefly) so the load balancer stops
+// routing to an instance whose runtime store is down instead of serving 503s
+// from every /api route until the blip passes on its own.
+let lastRedisProbe = { at: 0, ok: true };
+async function probeRedisHealth() {
+  if (!isCacheEnabled()) return true;
+  const now = Date.now();
+  if (now - lastRedisProbe.at < 5000) return lastRedisProbe.ok;
+  try {
+    const ok = await Promise.race([
+      checkCacheConnection(),
+      new Promise(resolve => setTimeout(() => resolve(false), 1000))
+    ]);
+    lastRedisProbe = { at: now, ok: ok === true };
+  } catch {
+    lastRedisProbe = { at: now, ok: false };
+  }
+  return lastRedisProbe.ok;
+}
+
 app.get('/health', async (req, res) => {
   res.set({
     'Cache-Control': 'no-store, max-age=0'
   });
-  res.status(200).json({
-    status: 'ok',
+  const redisOk = await probeRedisHealth();
+  res.status(redisOk ? 200 : 503).json({
+    status: redisOk ? 'ok' : 'degraded',
+    redis: redisOk,
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -1330,6 +1652,38 @@ app.get('/health', async (req, res) => {
     packageManager: PACKAGE_MANAGER
   });
 });
+
+// Crash-statistics aggregation (public GET /api/stats; recording is
+// fire-and-forget from each analysis-completion site — see recordStats).
+const statsStore = createStatsStore({
+  // Lazy accessor: the Upstash client connects during startServer(), after
+  // module load, so a captured instance would be null forever.
+  getClient: () => getRedisCommandClient(),
+  isEnabled: () => isCacheEnabled() && process.env.STATS_ENABLED !== 'false',
+  snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
+  dailyWindowDays: readPositiveInt(process.env.STATS_DAILY_WINDOW_DAYS, DEFAULT_DAILY_WINDOW_DAYS)
+});
+registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
+
+// AI narrative over the aggregates (OpenRouter free tier, heavily cached).
+const statsInsightService = createStatsInsightService({
+  getClient: () => getRedisCommandClient(),
+  isEnabled: () =>
+    isCacheEnabled() &&
+    process.env.STATS_ENABLED !== 'false' &&
+    process.env.STATS_INSIGHT_ENABLED !== 'false',
+  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot(),
+  model: process.env.OPENROUTER_FREE_MODEL
+});
+registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
+
+// Best-effort stats recording; never affects the analysis response.
+function recordStats(input) {
+  if (!isCacheEnabled() || process.env.STATS_ENABLED === 'false') return;
+  const facts = extractStatsFacts(input);
+  if (!facts) return;
+  statsStore.recordAnalysis(facts).catch(() => {});
+}
 
 // Apply rate limiting to API endpoints
 app.use('/api/', apiLimiter);
@@ -1812,11 +2166,14 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
   required: ['summary', 'probableCause', 'culprit', 'recommendations']
 });
 
-// Proxy endpoint for Gemini API calls - now requires session
+// Browser compatibility endpoint. Provider/model selection remains server-owned.
 app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
   try {
-    // Check if Gemini AI is configured
-    if (!genAI) {
+    const modelName = getPrimaryModel();
+    const provider = getAIProviderForModel(modelName);
+
+    // The model/provider is selected only by server-side model.cfg.
+    if (!isAIProviderConfigured(modelName)) {
       return res.status(503).json({ 
         error: 'AI service not configured. Please try again later.' 
       });
@@ -1928,15 +2285,32 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
     }
-    const cacheKey = ownedFileHash ? fileHash : hashContent(requestText);
-    const cachedResponse = (await getCachedAnalysis(cacheKey))?.aiReport;
+    const cacheKey = ownedFileHash ? fileHash : getPromptCacheKey(hashContent(requestText));
+    const cachedAnalysis = await getCachedAnalysis(cacheKey);
+    const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
         ? cachedResponse.text
         : JSON.stringify(cachedResponse);
       const cachedValidation = parseAndValidateAnalysisReport(cachedText);
       if (cachedValidation.valid) {
-        log.info('gemini.cache.hit', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
+        log.info('ai.cache.hit', {
+          provider,
+          model: modelName,
+          keyed: ownedFileHash ? 'fileHash' : 'prompt',
+          fileHash: ownedFileHash ? fileHash : undefined
+        });
+        // Hook D (cache-hit): local-parser analyses served from cache still
+        // count once per file per day; windbg-prompt requests are excluded
+        // because hook A already counted them.
+        if (validation.promptType === 'local') {
+          recordStats({
+            source: 'ai-fallback',
+            fileHash: ownedFileHash ? fileHash : undefined,
+            aiReport: cachedValidation.report,
+            promptText: validation.promptText
+          });
+        }
         return res.json({
           ...cachedResponse,
           candidates: [{ content: { parts: [{ text: cachedValidation.text }] } }],
@@ -1944,19 +2318,20 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
           cached: true
         });
       }
-      log.warn('gemini.cache.invalid', { keyed: ownedFileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
+      log.warn('ai.cache.invalid', { provider, model: modelName, keyed: ownedFileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
     }
-    log.info('gemini.cache.miss', { keyed: ownedFileHash ? 'fileHash' : 'prompt', fileHash: ownedFileHash ? fileHash : undefined });
+    log.info('ai.cache.miss', {
+      provider,
+      model: modelName,
+      keyed: ownedFileHash ? 'fileHash' : 'prompt',
+      fileHash: ownedFileHash ? fileHash : undefined
+    });
 
     // Increment request count and token usage
     sessionTracking.count++;
     sessionTracking.totalTokens += estimatedInputTokens;
     await storeSessionTracking(quotaKey, sessionTracking);
     
-    // Always use the model from config file (re-read with 30s TTL so model.cfg can be
-    // swapped at runtime) — ignore any client-provided model for security.
-    const modelName = getPrimaryModel();
-
     // Accept only narrow generation controls from the browser. Tool use, response
     // schemas, stop sequences, model overrides, and sampling breadth are server-owned.
     const frontendConfig = config || generationConfig || {};
@@ -1979,15 +2354,14 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // implicit-cache namespace.
     sdkConfig.systemInstruction = SYSTEM_INSTRUCTION_ANALYSIS;
 
-    const response = await generateWithFallback({
+    const response = await generateAIContent({
       model: modelName,
       contents: serverPrompt,
       config: sdkConfig
     });
 
-    // Track real input + output tokens using Gemini's usageMetadata when available;
-    // fall back to char/4 only when the API didn't report counts. The new SDK exposes
-    // response.text as a getter (not a method).
+    // Track real input + output tokens using the provider-normalized metadata;
+    // fall back to char/4 only when the API did not report counts.
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
@@ -1998,8 +2372,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
     const reportValidation = parseAndValidateAnalysisReport(responseText);
 
-    log.info('gemini.request', {
+    log.info('ai.request', {
       sessionId: sessionId?.substring(0, 10) + '...',
+      provider,
       model: response.modelVersion || modelName,
       promptType: validation.promptType,
       inputTokens: actualInputTokens,
@@ -2018,8 +2393,10 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     });
 
     if (!reportValidation.valid) {
-      log.warn('gemini.response.invalid', {
+      log.warn('ai.response.invalid', {
         sessionId: sessionId?.substring(0, 10) + '...',
+        provider,
+        model: response.modelVersion || modelName,
         reason: reportValidation.reason,
         finishReason,
         responsePreview: responseText.substring(0, 200)
@@ -2039,12 +2416,59 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     };
 
     // Cache only a validated analysis response.
-    await setCachedAnalysis(cacheKey, { aiReport: responseData });
+    await setCachedAnalysis(cacheKey, {
+      aiReport: responseData,
+      aiModel: response.cacheModel || modelName
+    });
+
+    // Hook D (fresh): local-parser + AI fallback completed — record stats.
+    if (validation.promptType === 'local') {
+      recordStats({
+        source: 'ai-fallback',
+        fileHash: ownedFileHash ? fileHash : undefined,
+        aiReport: reportValidation.report,
+        promptText: validation.promptText
+      });
+    }
 
     res.json(responseData);
   } catch (error) {
-    log.error('gemini.error', { message: error.message, stack: error.stack?.split('\n').slice(0, 3).join(' | ') });
-    res.status(500).json({ error: 'AI analysis failed. Please try again later.' });
+    // Refund the request/token estimate committed before the provider call so
+    // provider outages do not burn the user's hourly tier quota. (The
+    // pre-commit still guards against concurrent TOCTOU overrun.)
+    try {
+      if (quotaKey && sessionTracking.count > 0) {
+        sessionTracking.count -= 1;
+        sessionTracking.totalTokens = Math.max(0, sessionTracking.totalTokens - estimatedInputTokens);
+        await storeSessionTracking(quotaKey, sessionTracking);
+      }
+    } catch (refundError) {
+      log.warn('ai.quota_refund_failed', { message: refundError.message });
+    }
+    log.error('ai.error', {
+      code: error.code,
+      status: error.status,
+      message: error.message,
+      stack: error.stack?.split('\n').slice(0, 3).join(' | ')
+    });
+    // @google/genai's ApiError carries a numeric .status but no string .code,
+    // and Gemini timeouts throw a plain Error - both must map to upstream
+    // statuses instead of masquerading as local 500s.
+    let status;
+    if (error.code === 'AI_NOT_CONFIGURED' || error.code === 'UNSUPPORTED_AI_MODEL') {
+      status = 503;
+    } else if (error.code === 'AI_TIMEOUT' || /timed out/i.test(error.message || '')) {
+      status = 504;
+    } else if (typeof error.status === 'number' && error.status >= 400) {
+      status = error.status === 429 || error.status >= 500 ? 503 : 502;
+    } else if (error.code === 'INVALID_AI_RESPONSE' || error.code === 'AI_AUTH_FAILED') {
+      status = 502;
+    } else if (error.code === 'AI_UPSTREAM_ERROR') {
+      status = error.retryable ? 503 : 502;
+    } else {
+      status = 500;
+    }
+    res.status(status).json({ error: 'AI analysis failed. Please try again later.', upstreamStatus: typeof error.status === 'number' ? error.status : undefined });
   }
 });
 
@@ -2093,10 +2517,24 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
       });
     }
 
+    // Ownership gate: cached analyses may only be read by the session that
+    // uploaded the dump. Un-owned hashes answer with the standard miss shape
+    // so callers learn nothing about other users' cache entries.
+    if (!(await sessionOwnsHash(req.sessionId, hash))) {
+      console.log(`[Cache] GET denied for unowned hash ${hash.substring(0, 12)}...`);
+      return res.json({
+        success: false,
+        cached: false,
+        error: 'Not found in cache'
+      });
+    }
+
     // Use the combined analysis cache.
     const cached = await getCachedAnalysis(hash);
+    const modelName = getPrimaryModel();
+    const cachedAiReport = getCachedAIReportForModel(cached, modelName);
 
-    if (cached && (cached.windbgOutput || cached.aiReport)) {
+    if (cached && (cached.windbgOutput || cachedAiReport)) {
       console.log(`[Cache] GET hit for hash ${hash.substring(0, 12)}...`);
       return res.json({
         success: true,
@@ -2104,7 +2542,8 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
         windbgAnalysis: cached.windbgOutput || null,
         analysisSignalText: cached.analysisSignalText || null,
         structured: cached.structured || null,
-        aiReport: cached.aiReport || null,
+        aiReport: cachedAiReport,
+        aiModel: cachedAiReport ? modelName : null,
         fileHash: hash
       });
     }
@@ -2146,14 +2585,16 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
       });
     }
 
-    // Limit number of hashes to check at once
-    const hashesToCheck = hashes.slice(0, 20);
+    // Validate first, then cap: slicing before filtering would let 20
+    // malformed entries crowd out every real hash in the same request.
+    const validHashes = (Array.isArray(hashes) ? hashes : [])
+      .filter(hash => typeof hash === 'string' && HASH_RE.test(hash));
+    const hashesToCheck = validHashes.slice(0, 20);
     const results = {};
 
     // Check each hash against the combined cache. The client uses this as a
     // hint before fetching cached results by hash.
     const checkPromises = hashesToCheck
-      .filter(hash => typeof hash === 'string' && HASH_RE.test(hash))
       .map(async (hash) => {
         const cached = await isAnalysisCached(hash);
         results[hash] = cached;
@@ -2218,6 +2659,19 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       });
     }
 
+    // The WinDBG server rejects uploads above its own 128 MB cap; failing here
+    // gives a clear size-specific 413 instead of flattening the upstream 413
+    // into a retry-inviting 502 later.
+    const WINDBG_UPSTREAM_MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
+    if (fileBuffer.length > WINDBG_UPSTREAM_MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        success: false,
+        error: `Dump exceeds the ${Math.floor(WINDBG_UPSTREAM_MAX_UPLOAD_BYTES / (1024 * 1024))} MB limit of the analysis service`,
+        code: 'WINDBG_FILE_TOO_LARGE',
+        max: WINDBG_UPSTREAM_MAX_UPLOAD_BYTES
+      });
+    }
+
     const serverHash = hashContent(fileBuffer);
     if (uid !== serverHash) {
       log.warn('windbg.uid_mismatch', {
@@ -2270,6 +2724,13 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
     });
     await markWinDbgJob(req.sessionId, uid, uid, submitResult.job_id);
+    // Hook B: stash the dump type for the stats recorder (buffer only
+    // exists here; the download hook can't classify minidump-vs-kernel).
+    if (isCacheEnabled() && process.env.STATS_ENABLED !== 'false') {
+      try {
+        statsStore.setDumpTypeHint(uid, detectDumpType(fileBuffer));
+      } catch { /* best-effort */ }
+    }
 
     console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id);
     res.json({
@@ -2408,6 +2869,19 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       structured,
     });
 
+    // Hook A: web WinDBG analysis completed — record crash stats.
+    // Dump-type hint comes from the upload-time meta (hook B); resolve it
+    // out-of-band so the response is never delayed.
+    statsStore.getDumpTypeHint(uid)
+      .then(dt => recordStats({
+        source: 'windbg',
+        fileHash: uid,
+        structured,
+        analysisText,
+        dumpType: dt
+      }))
+      .catch(() => {});
+
     res.json({
       success: true,
       analysisText,
@@ -2492,6 +2966,17 @@ app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SI
     res.send(zipBuffer);
   } catch (error) {
     console.error('[Archive] Extraction error:', error);
+    // Infrastructure failures (ENOSPC/EIO on tmp, missing 7z/bsdtar binary) are
+    // server faults, not client mistakes - report 5xx so alerting sees them.
+    const infraCode = ['ENOSPC', 'EIO', 'ENOENT', 'EACCES', 'EMFILE'].includes(error?.code);
+    if (infraCode) {
+      res.status(500).json({
+        success: false,
+        error: 'Archive extraction failed due to a temporary server issue. Please try again later.',
+        code: 'ARCHIVE_INFRASTRUCTURE_ERROR'
+      });
+      return;
+    }
     res.status(400).json({
       success: false,
       error: 'Failed to extract archive. Please ensure it is a valid format and is not password-protected.'
@@ -2684,9 +3169,12 @@ function persistCrashSignal(report, fileHash) {
 }
 
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
-  // Check cache first — prefer stable fileHash; fall back to hashing the analysis text
-  const cacheKey = fileHash || windbgAnalysis;
-  const cachedReport = (await getCachedAnalysis(cacheKey))?.aiReport;
+  const modelName = getPrimaryModel();
+  // Check cache first — prefer stable fileHash; fall back to a prompt-namespaced
+  // key over the analysis text (never addressable as a file hash).
+  const cacheKey = fileHash || getPromptCacheKey(hashContent(windbgAnalysis));
+  const cachedAnalysis = await getCachedAnalysis(cacheKey);
+  const cachedReport = getCachedAIReportForModel(cachedAnalysis, modelName);
   if (cachedReport) {
     const normalizedCachedReport = normalizeAnalysisReport(cachedReport);
     if (normalizedCachedReport) {
@@ -2717,7 +3205,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
   // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
-  // the tail so Gemini implicit caching can reuse the prefix across analyses.
+  // the tail so provider-side prefix caching can be reused across analyses.
   const evidence = `**File Information:**
 - Filename: ${fileName}
 - Dump Type: ${dumpType}
@@ -2731,8 +3219,8 @@ ${analysisForPrompt}
   const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
 
   try {
-    const response = await generateWithFallback({
-      model: getPrimaryModel(),
+    const response = await generateAIContent({
+      model: modelName,
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -2750,12 +3238,16 @@ ${analysisForPrompt}
     const report = reportValidation.report;
 
     // Cache the successful AI report under the stable file hash (or analysis text as fallback)
-    await setCachedAnalysis(cacheKey, { aiReport: report });
+    await setCachedAnalysis(cacheKey, {
+      aiReport: report,
+      aiModel: response.cacheModel || modelName
+    });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
     return report;
   } catch (error) {
     console.error('[API/AI] AI analysis error:', error);
-    // Return basic report if AI fails (don't cache failures)
+    // Return basic report if AI fails (don't cache failures). aiAvailable:false
+    // lets API consumers distinguish degraded output from a real AI report.
     return {
       summary: `Windows crash in ${fileName} analyzed by WinDBG`,
       probableCause: 'WinDBG analysis completed but AI interpretation failed.',
@@ -2764,7 +3256,9 @@ ${analysisForPrompt}
         'Review the raw WinDBG output manually',
         'Update drivers mentioned in the analysis',
         'Check Windows Event Viewer for related errors'
-      ]
+      ],
+      aiAvailable: false,
+      aiError: 'AI interpretation unavailable'
     };
   }
 }
@@ -3215,8 +3709,8 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       });
     }
 
-    // Check if Gemini AI is configured
-    if (!genAI) {
+    // Check the provider selected by the server-owned model configuration.
+    if (!isAIProviderConfigured(getPrimaryModel())) {
       return res.status(503).json({
         success: false,
         error: 'AI service not configured',
@@ -3276,6 +3770,15 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
             structured: windbgPackage.structured,
           });
 
+          // Hook C: external-API WinDBG analysis completed — record stats.
+          recordStats({
+            source: 'windbg',
+            fileHash,
+            structured: windbgPackage.structured,
+            analysisText: windbgAnalysis,
+            dumpType
+          });
+
           // Step 4: Generate AI report
           console.log(`[API/Analyze] Job ${uid} Step 4: Generating AI report...`);
           const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, {
@@ -3290,13 +3793,11 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
           };
         })();
 
-        analysisPromise.catch(() => {});
-        let result;
-        try {
-          result = await Promise.race([analysisPromise, timeoutPromise]);
-        } finally {
-          clearTimeout(timeoutHandle);
-        }
+        // Await the pipeline (bounded by the 5-minute timeout above) so the
+        // job status reflects the real outcome instead of throwing on an
+        // undefined `result`.
+        const result = await Promise.race([analysisPromise, timeoutPromise]);
+        clearTimeout(timeoutHandle);
 
         const processingTime = (Date.now() - runStartTime) / 1000;
         log.info('analyze.complete', {
@@ -3309,6 +3810,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         // Save complete status
         jobData.status = 'completed';
         jobData.data = result.report;
+        jobData.aiStatus = result.report?.aiAvailable === false ? 'unavailable' : 'ok';
         jobData.processingTime = processingTime;
         jobData.timestamp = Date.now();
         await storeJob(uid, jobData);
@@ -3470,7 +3972,9 @@ const KNOWN_SPA_ROUTES = new Set([
   '/analyzer',
   '/about',
   '/documentation',
-  '/donate'
+  '/donate',
+  '/stats',
+  '/stats/embed'
 ]);
 
 function getSpaStatus(pathname) {
@@ -3491,11 +3995,14 @@ app.use((req, res) => {
   }
 
   // Serve React app for all other routes (non-asset routes only)
-  // CDN caches 24h (purged on deploy), browser always revalidates
+  // CDN caches 24h (purged on deploy); the browser must always revalidate the
+  // document itself — max-age>0 here let browsers pair a cached prerendered
+  // page (with its baked build-stamp text) against a newer JS bundle, causing
+  // React hydration text mismatches (#418) after every deploy.
   const normalized = pathname.replace(/\/+$/, '') || '/';
   const isHome = normalized === '/';
   res.status(getSpaStatus(pathname));
-  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
+  res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate, s-maxage=86400');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Link header enables Cloudflare Early Hints (103) for critical assets
   if (earlyHintsLinkHeader) res.setHeader('Link', earlyHintsLinkHeader);
@@ -3532,12 +4039,19 @@ app.use((req, res) => {
   }
 
   // Production (in-memory): the route's prerendered HTML when present, else the
-  // client-rendered shell for dynamic/unknown routes.
-  if (isHome) {
-    res.send(cachedHomeHtml);
-  } else {
-    res.send(cachedRouteHtml[normalized] || cachedIndexHtml);
+  // client-rendered shell for dynamic/unknown routes. If-None-Match gets a 304
+  // so navigations cost ~200 bytes when the document is unchanged, while a new
+  // deploy always delivers fresh markup for hydration.
+  const html = isHome ? cachedHomeHtml : (cachedRouteHtml[normalized] || cachedIndexHtml);
+  const etag = isHome
+    ? htmlEtags['/']
+    : (htmlEtags[normalized] ?? htmlEtags.__fallback);
+  res.setHeader('ETag', etag);
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch && String(ifNoneMatch).split(',').map(s => s.trim()).includes(etag)) {
+    return res.status(304).end();
   }
+  res.send(html);
 });
 
 // Cache index.html in memory and ensure xxhash is ready before accepting requests
@@ -3549,6 +4063,10 @@ let cachedHomeHtml;
 let cachedRouteHtml = {};
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
+// Strong ETags per served HTML document: browsers revalidate each navigation,
+// unchanged documents answer with a ~200-byte 304 instead of the full page,
+// and a stale cached document can never pair with a newer bundle unnoticed.
+const htmlEtags = {};
 
 async function startServer() {
   // Initialize xxhash before accepting requests
@@ -3567,6 +4085,7 @@ async function startServer() {
     }
     log.warn('redis.health.failed', { runtimeRequired: false });
   }
+  await initCacheCompression();
 
   // Cache index.html in memory (~9KB, avoids disk read on every request)
   const indexPath = path.join(__dirname, 'dist', 'index.html');
@@ -3602,6 +4121,17 @@ async function startServer() {
         cachedRouteHtml[route] = injectSsoFlags(fs.readFileSync(path.join(prerenderedDir, file), 'utf-8'));
         console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(cachedRouteHtml[route])} bytes)`);
       }
+    }
+
+    // Compute strong ETags after SSO-flag injection so they cover the exact
+    // bytes served. Revalidation answers with 304 when the deploy is unchanged.
+    const etagOf = (html) => '"'
+      + crypto.createHash('sha256').update(html).digest('base64url').slice(0, 27)
+      + '"';
+    htmlEtags['/'] = etagOf(cachedHomeHtml);
+    htmlEtags.__fallback = etagOf(cachedIndexHtml);
+    for (const [route, html] of Object.entries(cachedRouteHtml)) {
+      htmlEtags[route] = etagOf(html);
     }
 
     if (WF_SSO_ENABLED) {
@@ -3650,7 +4180,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`h2c enabled: ${ENABLE_H2C ? 'Yes' : 'No'}`);
+    console.log(`Selected AI model: ${getPrimaryModel()}`);
     console.log(`Gemini API Key configured: ${process.env.GEMINI_API_KEY ? 'Yes' : 'No'}`);
+    console.log(`DeepSeek API Key configured: ${process.env.DEEPSEEK_API_KEY ? 'Yes' : 'No'}`);
     console.log(`Turnstile Secret Key configured: ${TURNSTILE_SECRET_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Key configured: ${WINDBG_API_KEY ? 'Yes' : 'No'}`);
     console.log(`WinDBG API Base URL: ${WINDBG_API_BASE_URL}`);

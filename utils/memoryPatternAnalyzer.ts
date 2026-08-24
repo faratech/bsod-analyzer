@@ -104,20 +104,25 @@ class MemoryPatternAnalyzer {
     }
     
     /**
-     * Detect buffer overflow patterns
+     * Detect buffer overflow patterns.
+     * Bounded: stride-sampled and result-capped so a dump saturated with guard
+     * bytes cannot produce millions of matches or a multi-second main-thread
+     * scan (the summary is informational only).
      */
     private detectBufferOverflow(): CorruptionIndicator[] {
         const indicators: CorruptionIndicator[] = [];
+        const MAX_INDICATORS = 100;
+        const STRIDE = 16;
         const uint8Array = new Uint8Array(this.buffer);
-        
+
         // Look for guard patterns that have been overwritten
         const guardPatterns = [
             [0xAB, 0xAB, 0xAB, 0xAB], // Heap guard
             [0xFD, 0xFD, 0xFD, 0xFD], // Guard bytes
             [0xCC, 0xCC, 0xCC, 0xCC], // Stack guard
         ];
-        
-        for (let i = 0; i < uint8Array.length - 64; i++) {
+
+        for (let i = 0; i < uint8Array.length - 64 && indicators.length < MAX_INDICATORS; i += STRIDE) {
             // Check for partial guard patterns (indicating overflow)
             for (const guard of guardPatterns) {
                 let matchCount = 0;
@@ -126,7 +131,7 @@ class MemoryPatternAnalyzer {
                         matchCount++;
                     }
                 }
-                
+
                 // If we have mostly guard bytes but some are different
                 if (matchCount >= 12 && matchCount < 16) {
                     indicators.push({
@@ -135,10 +140,11 @@ class MemoryPatternAnalyzer {
                         details: `Corrupted guard pattern detected, possible buffer overflow`,
                         confidence: 70
                     });
+                    break;
                 }
             }
         }
-        
+
         return indicators;
     }
     
@@ -326,8 +332,11 @@ class MemoryPatternAnalyzer {
             },
         ];
         
-        // Search for patterns
-        for (let i = 0; i < uint8Array.length - 32; i++) {
+        // Search for patterns. Bounded like the corruption scan: stride-sampled
+        // with a result cap so hostile/pathological dumps cannot balloon memory.
+        const MAX_PATTERNS = 100;
+        const STRIDE = 8;
+        for (let i = 0; i < uint8Array.length - 32 && patterns.length < MAX_PATTERNS; i += STRIDE) {
             for (const pattern of suspiciousPatterns) {
                 let match = true;
                 for (let j = 0; j < pattern.bytes.length; j++) {
@@ -336,7 +345,7 @@ class MemoryPatternAnalyzer {
                         break;
                     }
                 }
-                
+
                 if (match) {
                     patterns.push({
                         offset: i,
@@ -345,10 +354,11 @@ class MemoryPatternAnalyzer {
                         description: pattern.description,
                         severity: pattern.severity
                     });
+                    break;
                 }
             }
         }
-        
+
         return patterns;
     }
 }

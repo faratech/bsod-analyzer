@@ -32,12 +32,14 @@ const Analyzer: React.FC = () => {
         initializeSession().then(success => {
             setSessionReady(success);
             if (success) {
-                startSessionRefresh();
+                startSessionRefresh('analyzer-page');
             }
         });
 
         return () => {
-            stopSessionRefresh();
+            // Reference-counted: releasing here no longer kills the timer for
+            // AuthProvider/FileUploader owners elsewhere in the app.
+            stopSessionRefresh('analyzer-page');
         };
     }, []);
 
@@ -255,7 +257,10 @@ const Analyzer: React.FC = () => {
                 minWidth={320}
             />
         </div>
-        <div style={{ textAlign: 'center', padding: '0.5rem 0', opacity: 0.3, fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>
+        <div
+            suppressHydrationWarning
+            style={{ textAlign: 'center', padding: '0.5rem 0', opacity: 0.3, fontSize: '0.65rem', color: 'var(--text-tertiary)' }}
+        >
             {__BUILD_VERSION__}
         </div>
         </>

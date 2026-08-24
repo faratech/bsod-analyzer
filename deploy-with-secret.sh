@@ -9,11 +9,67 @@ PROJECT_ID=${PROJECT_ID:-"project-bigfoot"}
 REGION=${REGION:-"us-east1"}
 SERVICE_NAME=${SERVICE_NAME:-"bsod-analyzer"}
 RUNTIME_SERVICE_ACCOUNT=${RUNTIME_SERVICE_ACCOUNT:-"bsod-analyzer-runtime@${PROJECT_ID}.iam.gserviceaccount.com"}
+CACHE_ZSTD_DICTIONARY_SECRET="redis-zstd-dictionary"
+CACHE_ZSTD_DICTIONARY_PATH="/secrets/redis-zstd/dictionary"
+CACHE_ZSTD_DICTIONARY_VERSION=${CACHE_ZSTD_DICTIONARY_VERSION:-"1"}
+CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED:-"true"}
 
 echo "🚀 Deploying BSOD Analyzer to Google Cloud Run"
 echo "Project: ${PROJECT_ID}"
 echo "Region: ${REGION}"
 echo "Service: ${SERVICE_NAME}"
+
+if [[ ! "${CACHE_ZSTD_DICTIONARY_VERSION}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "CACHE_ZSTD_DICTIONARY_VERSION must be a pinned numeric Secret Manager version (for example, 1)."
+  exit 1
+fi
+
+if [[ "${CACHE_ZSTD_WRITES_ENABLED}" != "true" && "${CACHE_ZSTD_WRITES_ENABLED}" != "false" ]]; then
+  echo "CACHE_ZSTD_WRITES_ENABLED must be exactly 'true' or 'false'."
+  exit 1
+fi
+
+CACHE_ZSTD_DICTIONARY_STATE=$(gcloud secrets versions describe "${CACHE_ZSTD_DICTIONARY_VERSION}" \
+  --secret "${CACHE_ZSTD_DICTIONARY_SECRET}" \
+  --project="${PROJECT_ID}" \
+  --format='value(state)' 2>/dev/null || true)
+if [[ "${CACHE_ZSTD_DICTIONARY_STATE}" != "ENABLED" ]]; then
+  echo "Secret ${CACHE_ZSTD_DICTIONARY_SECRET} version ${CACHE_ZSTD_DICTIONARY_VERSION} is not enabled or accessible."
+  echo "Train and upload the dictionary before deploying; never use the mutable 'latest' alias."
+  exit 1
+fi
+
+echo "Cache dictionary: ${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}"
+echo "Compressed cache writes: ${CACHE_ZSTD_WRITES_ENABLED}"
+
+SELECTED_AI_MODEL=$(tr -d '[:space:]' < model.cfg)
+RUNTIME_SECRETS="TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest"
+
+if gcloud secrets describe gemini-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="GEMINI_API_KEY=gemini-api-key:latest,${RUNTIME_SECRETS}"
+fi
+if gcloud secrets describe deepseek-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="DEEPSEEK_API_KEY=deepseek-api-key:latest,${RUNTIME_SECRETS}"
+fi
+# Optional: powers the AI narrative on /stats (free-tier OpenRouter model).
+if gcloud secrets describe openrouter-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  RUNTIME_SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,${RUNTIME_SECRETS}"
+fi
+
+if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
+  REQUIRED_AI_SECRET="deepseek-api-key"
+elif [[ "${SELECTED_AI_MODEL}" == gemini-* ]]; then
+  REQUIRED_AI_SECRET="gemini-api-key"
+else
+  echo "Unsupported model.cfg value: ${SELECTED_AI_MODEL}"
+  exit 1
+fi
+
+if ! gcloud secrets describe "${REQUIRED_AI_SECRET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  echo "Selected model ${SELECTED_AI_MODEL} requires Secret Manager secret ${REQUIRED_AI_SECRET}"
+  exit 1
+fi
+echo "Selected AI model: ${SELECTED_AI_MODEL}"
 
 # Deploy directly from source
 echo "☁️  Deploying to Cloud Run from source..."
@@ -31,8 +87,8 @@ gcloud run deploy ${SERVICE_NAME} \
   --min-instances 0 \
   --memory 1Gi \
   --cpu 1 \
-  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest \
+  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED} \
+  --update-secrets "${RUNTIME_SECRETS},${CACHE_ZSTD_DICTIONARY_PATH}=${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}" \
   --project ${PROJECT_ID}
 
 # Get the service URL

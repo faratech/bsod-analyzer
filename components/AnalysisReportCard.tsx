@@ -148,20 +148,22 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
 
                         <div className="report-actions">
                             <button
-                                className={`action-btn ${copySuccess ? 'copied' : ''}`}
+                                className={`action-btn labeled ${copySuccess ? "copied" : ""}`}
                                 onClick={handleCopy}
                                 title={copySuccess ? "Copied!" : "Copy Report to Clipboard"}
                                 aria-label={copySuccess ? "Copied report to clipboard" : "Copy report to clipboard"}
                             >
                                 {copySuccess ? <CheckIcon /> : <ClipboardIcon />}
+                                <span>Copy Report</span>
                             </button>
                             <button
-                                className={`action-btn ${forumCopySuccess ? 'copied' : ''}`}
+                                className={`action-btn labeled ${forumCopySuccess ? "copied" : ""}`}
                                 onClick={handleCopyForum}
                                 title={forumCopySuccess ? "Copied!" : "Copy forum-safe summary"}
                                 aria-label={forumCopySuccess ? "Copied forum-safe summary to clipboard" : "Copy forum-safe summary to clipboard"}
                             >
                                 {forumCopySuccess ? <CheckIcon /> : <ClipboardIcon />}
+                                <span>Copy for Forum</span>
                             </button>
                             <button className="action-btn" onClick={handleExport} title="Export as Markdown (.md)" aria-label="Export report as markdown file">
                                 <DownloadIcon />

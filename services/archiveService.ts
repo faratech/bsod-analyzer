@@ -42,19 +42,21 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
   const files: File[] = [];
   const entries = Object.entries(zip.files).filter(([, entry]) => !entry.dir);
 
-  await Promise.all(entries.map(async ([sourcePath, entry]) => {
-      const blob = await entry.async('blob');
-      const fileName = sourcePath.split('/').pop() || 'dump.dmp';
-      const file = new File([blob], fileName, {
-        type: 'application/octet-stream',
-        lastModified: entry.date?.getTime?.() || Date.now()
-      }) as File & { sourcePath?: string };
-      Object.defineProperty(file, 'sourcePath', {
-        value: sourcePath,
-        enumerable: false
-      });
-      files.push(file);
-  }));
+  // Extract sequentially: materializing every entry simultaneously can hold
+  // the whole archive's uncompressed size (up to ~100 MB) in memory at once.
+  for (const [sourcePath, entry] of entries) {
+    const blob = await entry.async('blob');
+    const fileName = sourcePath.split('/').pop() || 'dump.dmp';
+    const file = new File([blob], fileName, {
+      type: 'application/octet-stream',
+      lastModified: entry.date?.getTime?.() || Date.now()
+    }) as File & { sourcePath?: string };
+    Object.defineProperty(file, 'sourcePath', {
+      value: sourcePath,
+      enumerable: false
+    });
+    files.push(file);
+  }
 
   return files;
 }

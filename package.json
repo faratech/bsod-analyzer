@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "npm@11.17.0",
   "engines": {
-    "node": ">=22.0.0",
+    "node": "^22.19.0 || >=24.6.0",
     "npm": ">=11.0.0 <12.0.0"
   },
   "scripts": {
@@ -22,6 +22,7 @@
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "check": "npm test && npm run typecheck && npm run build",
+    "cache:zstd:dictionary": "node scripts/cache-zstd-dictionary.mjs",
     "analyze-css": "node scripts/purge-css.js",
     "optimize-css": "node scripts/purge-css.js --apply"
   },
@@ -46,6 +47,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "autoprefixer": "^10.5.4",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.26",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.3.3",

@@ -31,6 +31,14 @@
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
+
+  <!-- Crash Statistics -->
+  <url>
+    <loc>https://bsod.windowsforum.com/stats</loc>
+    <lastmod>2026-08-23</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
   
   <!-- Donate Page -->
   <url>
