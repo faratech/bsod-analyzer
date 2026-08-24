@@ -1,5 +1,5 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
-import { DumpFile, AnalysisReportData, FileStatus, StackFrame, SystemInfo } from '../types';
+import { DumpFile, AnalysisReportData, FileStatus } from '../types';
 import { sanitizeExtractedContent, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
@@ -12,11 +12,14 @@ import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParse
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, getCachedAnalysisByHash, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
-import { extractFullAnalyzeOutput } from '../shared/windbgApiClient.js';
+import {
+    mapStructuredSignalToReport,
+    mergeReportWithWinDbgFields,
+    parseWinDbgOutput
+} from '../shared/windbgReportFields.js';
 import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
 import { isPremiumTier } from './tierState';
 import { SSO_ENABLED } from './featureFlags';
-import { extractWinDbgWindowsVersion } from '../shared/windowsVersion.js';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -346,17 +349,6 @@ function normalizeCachedAIReport(value: unknown): AnalysisReportData | null {
     }
 
     return null;
-}
-
-function compactWindowsBuild(version: unknown): string | undefined {
-    if (typeof version !== 'string') return undefined;
-    const text = version.trim();
-    const match = /^10\.0\.(\d{5}\.\d+)$/i.exec(text);
-    return match ? match[1] : text || undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 // --- Binary Processing Helpers ---
@@ -904,133 +896,6 @@ function extractCrashSignal(raw: string, maxBytes = 16384): string {
     return slice;
 }
 
-function normalizeBugCheckParameterValues(parameters: unknown): string[] {
-    return Array.isArray(parameters)
-        ? parameters
-            .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-            .map(value => value.trim())
-        : [];
-}
-
-function parseHexBigInt(value: string): bigint {
-    const hex = value.replace(/^0x/i, '').replace(/`/g, '').trim();
-    return /^[0-9a-f]+$/i.test(hex) ? BigInt(`0x${hex}`) : 0n;
-}
-
-function mapStructuredSignalToReport(structured: Record<string, unknown> | undefined): Partial<AnalysisReportData> {
-    if (!structured || typeof structured !== 'object') return {};
-
-    const bugcheck = structured.bugcheck && typeof structured.bugcheck === 'object'
-        ? structured.bugcheck as Record<string, unknown>
-        : {};
-    const crash = structured.crash && typeof structured.crash === 'object'
-        ? structured.crash as Record<string, unknown>
-        : {};
-    const target = structured.target && typeof structured.target === 'object'
-        ? structured.target as Record<string, unknown>
-        : {};
-    const process = structured.process && typeof structured.process === 'object'
-        ? structured.process as Record<string, unknown>
-        : {};
-    const execution = structured.execution && typeof structured.execution === 'object'
-        ? structured.execution as Record<string, unknown>
-        : {};
-
-    const result: Partial<AnalysisReportData> = {};
-    const bugCode = stringValue(bugcheck.code);
-    const bugName = stringValue(bugcheck.name);
-    const parameters = normalizeBugCheckParameterValues(bugcheck.parameters);
-    if (bugCode || bugName || parameters.length > 0) {
-        result.bugCheck = {
-            code: bugCode || 'Unknown',
-            name: bugName || 'UNKNOWN',
-            parameters: parameters.map((value, index) => ({
-                value,
-                meaning: getParameterExplanation(
-                    Number.parseInt((bugCode || '').replace(/^0x/i, ''), 16) || 0,
-                    (index + 1) as 1 | 2 | 3 | 4,
-                    parseHexBigInt(value)
-                )
-            }))
-        };
-    }
-
-    result.failureBucketId = stringValue(crash.failureBucketId);
-    result.symbolName = stringValue(crash.symbolName);
-    result.moduleName = stringValue(crash.moduleName);
-    result.imageName = stringValue(crash.imageName);
-    result.imageVersion = stringValue(crash.imageVersion);
-    result.imageBuild = compactWindowsBuild(result.imageVersion);
-    result.faultAddress = stringValue(crash.readAddress);
-
-    const systemInfo: SystemInfo = {};
-    const osVersion = stringValue(target.os_version) || stringValue(target.osVersion);
-    const uptime = stringValue(target.system_uptime) || stringValue(target.systemUptime);
-    const processName = stringValue(crash.processName) || stringValue(process.name) || stringValue(process.imageName);
-    if (osVersion) systemInfo.windowsVersion = osVersion;
-    if (uptime) systemInfo.systemUptime = uptime;
-    if (processName) systemInfo.processName = processName;
-    if (result.imageName && /^nt(?:krnlmp|oskrnl)\.exe$/i.test(result.imageName) && result.imageVersion) {
-        systemInfo.kernelImageVersion = result.imageVersion;
-        systemInfo.kernelBuild = compactWindowsBuild(result.imageVersion);
-    }
-    if (Object.keys(systemInfo).length > 0) result.systemInfo = systemInfo;
-
-    if (structured.registers && typeof structured.registers === 'object') {
-        result.registers = structured.registers as AnalysisReportData['registers'];
-    }
-
-    if (Array.isArray(structured.stackFrames)) {
-        result.callStack = structured.stackFrames
-            .filter((frame): frame is Record<string, unknown> => !!frame && typeof frame === 'object')
-            .map(frame => {
-                const symbol = stringValue(frame.symbol);
-                const match = symbol?.match(/^([^!]+)!([^+]+)(?:\+(.+))?$/);
-                return {
-                    address: stringValue(frame.sp) || stringValue(frame.ret_addr) || stringValue(frame.address) || 'unknown',
-                    module: match?.[1] || stringValue(frame.module) || 'unknown',
-                    function: match?.[2] || stringValue(frame.function),
-                    offset: match?.[3] || stringValue(frame.offset)
-                };
-            })
-            .slice(0, 20);
-    }
-
-    if (Array.isArray(structured.notableModules)) {
-        const mappedModules = structured.notableModules
-            .filter((mod): mod is Record<string, unknown> => !!mod && typeof mod === 'object')
-            .map(mod => {
-                const details = mod.details && typeof mod.details === 'object' ? mod.details as Record<string, unknown> : {};
-                const name = stringValue(mod.name) || stringValue(details.imageName) || 'unknown';
-                const imageName = stringValue(details.imageName);
-                const version = stringValue(details.fileVersion) || stringValue(details.productVersion);
-                if (/^nt(?:krnlmp|oskrnl)?$/i.test(name) && imageName && /^nt(?:krnlmp|oskrnl)\.exe$/i.test(imageName) && version) {
-                    systemInfo.kernelImageVersion = version;
-                    systemInfo.kernelBuild = compactWindowsBuild(version);
-                    result.imageName = result.imageName || imageName;
-                    result.imageVersion = result.imageVersion || version;
-                    result.imageBuild = result.imageBuild || compactWindowsBuild(version);
-                }
-                return {
-                    name,
-                    base: stringValue(mod.base),
-                    version,
-                    timestamp: stringValue(details.timestamp),
-                    isCulprit: name.toLowerCase() === stringValue(result.moduleName)?.toLowerCase()
-                };
-            })
-            .slice(0, 30);
-        result.loadedModules = mappedModules;
-        if (Object.keys(systemInfo).length > 0) result.systemInfo = systemInfo;
-    }
-
-    if (execution.timedOut === true && !result.summary) {
-        result.summary = 'WinDbg analysis timed out before all evidence could be collected.';
-    }
-
-    return result;
-}
-
 /**
  * Generate an AI report from WinDBG server analysis output.
  * This function takes the raw WinDBG analysis text and asks the AI to
@@ -1051,8 +916,11 @@ async function generateReportFromWinDBG(
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
 
     // Parse structured fields directly from WinDBG output (more reliable than AI extraction)
-    const parsedFields = parseWinDbgOutput(windbgAnalysis);
-    const structuredFields = mapStructuredSignalToReport(options.structured);
+    const parsedFields = parseWinDbgOutput(windbgAnalysis) as Partial<AnalysisReportData>;
+    const structuredFields = mapStructuredSignalToReport(options.structured, {
+        explainBugCheckParameter: (code: number, parameter: number, value: bigint) =>
+            getParameterExplanation(code, parameter as 1 | 2 | 3 | 4, value)
+    }) as Partial<AnalysisReportData>;
     console.log('[Analyzer] Parsed WinDBG fields:', {
         failureBucketId: parsedFields.failureBucketId ? 'present' : 'missing',
         symbolName: parsedFields.symbolName ? 'present' : 'missing',
@@ -1104,13 +972,7 @@ ${analysisForPrompt}
             const aiReport = normalizeAnalysisReportData(JSON.parse(responseText));
             console.log('[Analyzer] Successfully parsed WinDBG-based report');
             // Merge AI report with directly parsed fields (parsed fields take precedence for structured data)
-            const mergedReport = {
-                ...aiReport,
-                ...structuredFields,
-                ...parsedFields,
-                // Preserve AI's systemInfo but merge with parsed
-                systemInfo: { ...aiReport.systemInfo, ...structuredFields.systemInfo, ...parsedFields.systemInfo }
-            };
+            const mergedReport = mergeReportWithWinDbgFields(aiReport, structuredFields, parsedFields);
             console.log('[Analyzer] Merged report has:', {
                 failureBucketId: mergedReport.failureBucketId || 'missing',
                 symbolName: mergedReport.symbolName || 'missing',
@@ -1128,19 +990,16 @@ ${analysisForPrompt}
                 try {
                     const aiReport = normalizeAnalysisReportData(JSON.parse(jsonMatch[0]));
                     console.log('[Analyzer] Extracted JSON from WinDBG response');
-                    return normalizeAnalysisReportData({
-                        ...aiReport,
-                        ...structuredFields,
-                        ...parsedFields,
-                        systemInfo: { ...aiReport.systemInfo, ...structuredFields.systemInfo, ...parsedFields.systemInfo }
-                    });
+                    return normalizeAnalysisReportData(
+                        mergeReportWithWinDbgFields(aiReport, structuredFields, parsedFields)
+                    );
                 } catch {
                     // Continue to fallback
                 }
             }
 
             // Return a basic report from WinDBG output with parsed fields
-            return {
+            return mergeReportWithWinDbgFields({
                 summary: `Windows crash analyzed via WinDBG for ${fileName}`,
                 probableCause: 'Analysis completed by WinDBG server. See raw output for details.',
                 culprit: extractCulpritFromWinDBG(windbgAnalysis),
@@ -1149,16 +1008,14 @@ ${analysisForPrompt}
                     'Update the identified driver if applicable',
                     'Check for Windows updates',
                     'Run system file checker (sfc /scannow)'
-                ],
-                ...structuredFields,
-                ...parsedFields
-            };
+                ]
+            }, structuredFields, parsedFields) as AnalysisReportData;
         }
     } catch (error) {
         console.error('[Analyzer] WinDBG AI analysis error:', error);
 
         // Return a basic report if AI fails, still include parsed fields
-        return {
+        return mergeReportWithWinDbgFields({
             summary: `Windows crash in ${fileName} analyzed by WinDBG`,
             probableCause: 'WinDBG analysis completed but AI interpretation failed.',
             culprit: extractCulpritFromWinDBG(windbgAnalysis),
@@ -1166,10 +1023,8 @@ ${analysisForPrompt}
                 'Review the raw WinDBG output manually',
                 'Update drivers mentioned in the analysis',
                 'Check Windows Event Viewer for related errors'
-            ],
-            ...structuredFields,
-            ...parsedFields
-        };
+            ]
+        }, structuredFields, parsedFields) as AnalysisReportData;
     }
 }
 
@@ -1205,185 +1060,6 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
     }
 
     return 'Unknown';
-}
-
-function extractVersionFromModuleBlock(block: string): string | undefined {
-    const patterns = [
-        /^\s*File version:\s*(10\.0\.\d{5}\.\d+)\b/im,
-        /^\s*ProductVersion:\s*(10\.0\.\d{5}\.\d+)\b/im,
-        /^\s*FileVersion:\s*(10\.0\.\d{5}\.\d+)\b/im,
-        /^\s*IMAGE_VERSION:\s*(10\.0\.\d{5}\.\d+)\b/im
-    ];
-    for (const pattern of patterns) {
-        const match = block.match(pattern);
-        if (match) return match[1];
-    }
-    return undefined;
-}
-
-function extractKernelImageVersion(output: string): string | undefined {
-    const blocks = output.split(/(?=^[0-9a-f`]+\s+[0-9a-f`]+\s+\S+\s)/gim);
-    for (const block of blocks) {
-        if (!/^[0-9a-f`]+\s+[0-9a-f`]+\s+(?:nt|ntkrnlmp|ntoskrnl)\s/im.test(block)) continue;
-        if (!/\b(?:Loaded symbol image file|Image name):\s+nt(?:krnlmp|oskrnl)\.exe\b/i.test(block)) continue;
-        const version = extractVersionFromModuleBlock(block);
-        if (version) return version;
-    }
-
-    const imageName = output.match(/^\s*IMAGE_NAME:\s*(\S+)/im)?.[1];
-    if (imageName && /^nt(?:krnlmp|oskrnl)\.exe$/i.test(imageName)) {
-        return output.match(/^\s*IMAGE_VERSION:\s*(10\.0\.\d{5}\.\d+)\b/im)?.[1];
-    }
-    return undefined;
-}
-
-/**
- * Parse additional structured data from WinDBG raw output.
- * This extracts fields that the AI might miss or misinterpret.
- */
-function parseWinDbgOutput(output: string): Partial<AnalysisReportData> {
-    const result: Partial<AnalysisReportData> = {};
-
-    console.log('[WinDBG Parser] Parsing output of length:', output.length);
-    console.log('[WinDBG Parser] First 500 chars:', output.substring(0, 500));
-
-    // Extract FAILURE_BUCKET_ID - highly searchable crash signature
-    const bucketMatch = output.match(/FAILURE_BUCKET_ID:\s*(.+)/i);
-    if (bucketMatch) {
-        result.failureBucketId = bucketMatch[1].trim();
-        console.log('[WinDBG Parser] Found failureBucketId:', result.failureBucketId);
-    } else {
-        console.log('[WinDBG Parser] No FAILURE_BUCKET_ID found');
-    }
-
-    // Extract SYMBOL_NAME - precise crash location
-    const symbolMatch = output.match(/SYMBOL_NAME:\s*(.+)/i);
-    if (symbolMatch) {
-        result.symbolName = symbolMatch[1].trim();
-        console.log('[WinDBG Parser] Found symbolName:', result.symbolName);
-    }
-
-    const moduleMatch = output.match(/MODULE_NAME:\s*(\S+)/i);
-    if (moduleMatch) {
-        result.moduleName = moduleMatch[1].trim();
-    }
-
-    const imageMatch = output.match(/IMAGE_NAME:\s*(\S+)/i);
-    if (imageMatch) {
-        result.imageName = imageMatch[1].trim();
-    }
-
-    const imageVersionMatch = output.match(/IMAGE_VERSION:\s*(.+)/i);
-    if (imageVersionMatch) {
-        result.imageVersion = imageVersionMatch[1].trim();
-        result.imageBuild = compactWindowsBuild(result.imageVersion);
-    }
-
-    // Extract fault address from various sources
-    const faultAddrMatch = output.match(/TRAP_FRAME:.*Rip\s*=\s*([0-9a-fA-F`]+)/i) ||
-                           output.match(/FAULTING_IP:\s*\S+\s*([0-9a-fA-F`]+)/i) ||
-                           output.match(/READ_ADDRESS:\s*([0-9a-fA-F`]+)/i) ||
-                           output.match(/WRITE_ADDRESS:\s*([0-9a-fA-F`]+)/i);
-    if (faultAddrMatch) {
-        result.faultAddress = faultAddrMatch[1].trim();
-    }
-
-    // Extract system info
-    const systemInfo: SystemInfo = {};
-
-    // PROCESS_NAME
-    const processMatch = output.match(/PROCESS_NAME:\s*(\S+)/i);
-    if (processMatch) {
-        systemInfo.processName = processMatch[1];
-    }
-
-    // Windows version from OS-specific WinDBG fields. Avoid arbitrary module
-    // ProductVersion values from lm kv output, which can look like 103.4.x.
-    const windowsVersion = extractWinDbgWindowsVersion(output);
-    if (windowsVersion) {
-        systemInfo.windowsVersion = windowsVersion;
-    }
-
-    const kernelImageVersion = extractKernelImageVersion(output);
-    if (kernelImageVersion) {
-        systemInfo.kernelImageVersion = kernelImageVersion;
-        systemInfo.kernelBuild = compactWindowsBuild(kernelImageVersion);
-    } else if (result.imageName && /^nt(?:krnlmp|oskrnl)\.exe$/i.test(result.imageName) && result.imageVersion) {
-        systemInfo.kernelImageVersion = result.imageVersion;
-        systemInfo.kernelBuild = compactWindowsBuild(result.imageVersion);
-    }
-
-    // System uptime
-    const uptimeMatch = output.match(/SYSTEM_UPTIME:\s*(.+)/i);
-    if (uptimeMatch) {
-        systemInfo.systemUptime = uptimeMatch[1].trim();
-    }
-
-    if (Object.keys(systemInfo).length > 0) {
-        result.systemInfo = systemInfo;
-    }
-
-    // Parse STACK_TEXT for call stack
-    const stackMatch = output.match(/STACK_TEXT:\s*([\s\S]*?)(?=\n\n[A-Z_]+:|CHKIMG_EXTENSION|SYMBOL_NAME|\n\nFOLLOWUP|$)/i);
-    if (stackMatch) {
-        result.callStack = parseStackText(stackMatch[1]);
-    }
-
-    // Expose the complete !analyze -v output for advanced users. Fall back to
-    // the aggregated WinDBG text only for older server responses that do not
-    // preserve command sections.
-    result.rawWinDbgOutput = extractFullAnalyzeOutput(output) || output;
-
-    console.log('[WinDBG Parser] Parse result summary:', {
-        hasFailureBucketId: !!result.failureBucketId,
-        hasSymbolName: !!result.symbolName,
-        hasFaultAddress: !!result.faultAddress,
-        hasSystemInfo: !!result.systemInfo,
-        callStackFrames: result.callStack?.length || 0,
-        rawOutputLength: result.rawWinDbgOutput?.length || 0
-    });
-
-    return result;
-}
-
-/**
- * Parse the STACK_TEXT section from WinDBG output into structured frames.
- */
-function parseStackText(stackText: string): StackFrame[] {
-    const frames: StackFrame[] = [];
-    const lines = stackText.split('\n');
-
-    for (const line of lines) {
-        // WinDBG stack format: "fffff807`12345678 nt!KeBugCheckEx+0x0"
-        // Or: "00000000`12345678 module!Function+0x123"
-        const match = line.match(/^\s*([0-9a-fA-F`]+)\s+(\S+?)!([^+\s]+)(?:\+0x([0-9a-fA-F]+))?/);
-        if (match) {
-            frames.push({
-                address: match[1],
-                module: match[2],
-                function: match[3],
-                offset: match[4] ? `0x${match[4]}` : undefined
-            });
-        } else {
-            // Try simpler format: "fffff807`12345678 00000000`00000000 : args"
-            // This captures stack frames without symbols
-            const addrMatch = line.match(/^\s*([0-9a-fA-F`]{16,17})\s+([0-9a-fA-F`]+)/);
-            if (addrMatch && !line.includes('Args to Child')) {
-                // Only add if we don't have a function name - less useful but still data
-                frames.push({
-                    address: addrMatch[1],
-                    module: 'unknown',
-                    function: undefined,
-                    offset: undefined
-                });
-            }
-        }
-
-        // Limit to reasonable number of frames
-        if (frames.length >= 20) break;
-    }
-
-    return frames;
 }
 
 export const analyzeDumpFiles = async (
