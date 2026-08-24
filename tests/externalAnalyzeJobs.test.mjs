@@ -581,6 +581,46 @@ test('completed mapped result remains reusable when the disposable evidence cach
   });
 });
 
+test('sequential cached completions publish once and return the first durable UID', async () => {
+  const harness = createSubmissionHarness();
+  const fileHash = 'cccccccccccccccc';
+  const firstUid = 'API-1800000000000-565656565656';
+  const secondUid = 'API-1800000000000-787878787878';
+  const firstJob = processingJob({
+    uid: firstUid,
+    fileHash,
+    status: 'completed',
+    phase: 'completed',
+    data: { summary: 'Cached report' }
+  });
+
+  const first = await harness.createCoordinator().publish({
+    fileHash,
+    uid: firstUid,
+    job: firstJob
+  });
+  const second = await harness.createCoordinator().publish({
+    fileHash,
+    uid: secondUid,
+    job: processingJob({
+      uid: secondUid,
+      fileHash,
+      status: 'completed',
+      phase: 'completed',
+      data: { summary: 'Duplicate cached report' }
+    })
+  });
+
+  assert.equal(first.reused, false);
+  assert.equal(first.uid, firstUid);
+  assert.equal(second.reused, true);
+  assert.equal(second.uid, firstUid);
+  assert.equal(second.job.data.summary, 'Cached report');
+  assert.equal(harness.mappings.get(fileHash), firstUid);
+  assert.equal(harness.jobs.size, 1);
+  assert.equal(harness.jobs.has(secondUid), false);
+});
+
 test('reusable submission response preserves only active durable job statuses', () => {
   const processingUid = 'API-1800000000000-121212121212';
   assert.deepEqual(reusableSubmissionResponse({

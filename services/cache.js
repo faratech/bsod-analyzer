@@ -393,6 +393,36 @@ export async function getRuntimeValueStrict(key) {
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
 
+function decodeRuntimeString(value) {
+  if (typeof value !== 'string') return value;
+  // @upstash/redis automatically deserializes JSON by default, so a Redis
+  // value stored as `"uid"` may already arrive as the bare `uid` string.
+  return value.startsWith('"') ? JSON.parse(value) : value;
+}
+
+export async function getRuntimeStringValue(key) {
+  if (!isCacheEnabled()) return null;
+
+  try {
+    const value = await redis.get(getRuntimeKey(key));
+    if (value === null || value === undefined) return null;
+    return decodeRuntimeString(value);
+  } catch (error) {
+    console.error('[Cache] Error getting runtime string value:', error.message);
+    return null;
+  }
+}
+
+export async function getRuntimeStringValueStrict(key) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+
+  const value = await redis.get(getRuntimeKey(key));
+  if (value === null || value === undefined) return null;
+  return decodeRuntimeString(value);
+}
+
 /**
  * Acquire a short Redis lease. The caller supplies an opaque random token and
  * must use the token-checked renew/release helpers below.

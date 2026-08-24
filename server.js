@@ -101,6 +101,8 @@ import {
   isAnalysisCached,
   getRuntimeValue,
   getRuntimeValueStrict,
+  getRuntimeStringValue,
+  getRuntimeStringValueStrict,
   setRuntimeValue,
   createRuntimeJobWithMapping,
   transitionRuntimeJobWithLease,
@@ -633,8 +635,8 @@ async function releaseExternalJobLease(uid, token) {
 async function loadExternalInflightJob(fileHash) {
   if (isCacheEnabled()) {
     return REQUIRE_REDIS_RUNTIME
-      ? await getRuntimeValueStrict(externalInflightKey(fileHash))
-      : await getRuntimeValue(externalInflightKey(fileHash));
+      ? await getRuntimeStringValueStrict(externalInflightKey(fileHash))
+      : await getRuntimeStringValue(externalInflightKey(fileHash));
   }
   if (REQUIRE_REDIS_RUNTIME) {
     throw new Error('Runtime store required but Redis cache is not configured');
@@ -4016,8 +4018,6 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       );
 
       const processingTime = (Date.now() - startTime) / 1000;
-      log.info('analyze.complete', { processingTime, analysisMethod: 'windbg', cached: true, dumpType, fileSize });
-
       const jobData = {
         schemaVersion: 2,
         version: 1,
@@ -4037,14 +4037,23 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
         completedAt: Date.now(),
         timestamp: Date.now()
       };
-      await storeJob(uid, jobData);
-
-      return res.status(202).json({
-        success: true,
-        status: 'completed',
+      const published = await externalAnalyzeSubmissions.publish({
+        fileHash,
         uid,
-        checkStatusUrl: `/api/analyze/status/${uid}`
+        job: jobData
       });
+      const publishedResponse = reusableSubmissionResponse(published);
+      log.info(published.reused ? 'analyze.cached_job_reused' : 'analyze.complete', {
+        uid: published.uid,
+        status: published.job.status,
+        processingTime,
+        analysisMethod: 'windbg',
+        cached: true,
+        dumpType,
+        fileSize
+      });
+
+      return res.status(202).json(publishedResponse);
     }
 
     console.log('[API/Analyze] Cache MISS - handing dump to durable WinDBG job');

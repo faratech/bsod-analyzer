@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createRuntimeJobWithMapping,
   deleteRuntimeValueIfEquals,
+  getRuntimeStringValueStrict,
   getRuntimeValueStrict,
   initCache,
   releaseRuntimeLease,
@@ -12,7 +13,7 @@ import {
   tryAcquireRuntimeLease
 } from '../services/cache.js';
 
-function createFakeRedis() {
+function createFakeRedis({ automaticDeserialization = false } = {}) {
   const values = new Map();
   const ttls = new Map();
   let clockSeconds = 0;
@@ -31,7 +32,13 @@ function createFakeRedis() {
     },
     async get(key) {
       expireIfNeeded(key);
-      return values.get(key) ?? null;
+      const value = values.get(key) ?? null;
+      if (!automaticDeserialization || typeof value !== 'string') return value;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
     },
     async set(key, value, options = {}) {
       expireIfNeeded(key);
@@ -201,4 +208,34 @@ test('accepted job and in-flight hash mapping publish atomically under the submi
   assert.equal(await deleteRuntimeValueIfEquals(mappingKey, 'different-uid'), false);
   assert.equal(await deleteRuntimeValueIfEquals(mappingKey, uid), true);
   assert.equal(await getRuntimeValueStrict(mappingKey), null);
+});
+
+test('runtime UID mappings survive Upstash automatic JSON deserialization', async () => {
+  const redisClient = createFakeRedis({ automaticDeserialization: true });
+  initCache({ redisClient, analysisClient: {} });
+
+  const uid = 'API-1800000000000-upstashdecoded';
+  const jobKey = `job:${uid}`;
+  const mappingKey = 'inflight-job:upstashdecoded';
+  const leaseKey = 'submission-lease:upstashdecoded';
+  const job = {
+    schemaVersion: 2,
+    version: 1,
+    uid,
+    status: 'completed',
+    phase: 'completed'
+  };
+
+  assert.equal(await tryAcquireRuntimeLease(leaseKey, 'submit-owner', 60), true);
+  assert.equal(await createRuntimeJobWithMapping(
+    jobKey,
+    mappingKey,
+    leaseKey,
+    'submit-owner',
+    uid,
+    job,
+    3600
+  ), true);
+  assert.deepEqual(await getRuntimeValueStrict(jobKey), job);
+  assert.equal(await getRuntimeStringValueStrict(mappingKey), uid);
 });
