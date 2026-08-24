@@ -5,6 +5,7 @@ import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
 import { useActiveSection } from '../hooks/useActiveSection';
 import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
+import BsodAnalyzerFlow from '../components/flow/BsodAnalyzerFlow';
 
 const About: React.FC = () => {
     const activeSection = useActiveSection('.about-section');
@@ -132,6 +133,13 @@ const About: React.FC = () => {
 
                     <section id="how-it-works" className="about-section content-section">
                         <h2>How It Works</h2>
+                        <p>
+                            Follow a crash dump end to end — from the blue screen on your PC, through the analysis
+                            server and a real Windows debugger, to the plain-English report in your browser:
+                        </p>
+
+                        <BsodAnalyzerFlow />
+
                         <p>
                             Our analyzer combines real WinDBG debugging, Google's Gemini AI, and validated
                             fallback analysis to deliver professional-grade crash reports. When you upload a dump file:
