@@ -75,6 +75,20 @@ else
     echo "  ⚠️  .env is not in .gitignore!"
 fi
 
+# A trained zstd dictionary can retain literal fragments from production
+# samples. It is not a credential, but it is still private data and must never
+# be tracked in the public repository.
+echo ""
+echo "Checking for tracked cache dictionaries..."
+TRACKED_DICTIONARIES=$(git ls-files '*.dict' '*.zdict' '*.zstd-dict' 'dictionary.zstd' 'redis-zstd-dictionary*' 'cache-zstd-dictionary*')
+if [ -n "$TRACKED_DICTIONARIES" ]; then
+    echo "  ❌ Private dictionary artifact(s) are tracked:"
+    echo "$TRACKED_DICTIONARIES" | sed 's/^/     /'
+    FOUND_ISSUES=$((FOUND_ISSUES + 1))
+else
+    echo "  ✅ No private dictionary artifacts are tracked"
+fi
+
 # Check for internal project references
 echo ""
 echo "Checking for internal project references..."

@@ -19,11 +19,14 @@ const hasherReady = xxhash().then(h => {
     return h;
 });
 
-// Polling configuration - increased intervals to reduce server load
+// Polling configuration - increased intervals to reduce server load.
+// The upstream API allows MAX_JOB_DURATION=360s per job on top of unbounded
+// queue wait, so a 5-minute budget used to abandon jobs that were still going
+// to complete successfully (and cache their results).
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
-const MAX_POLL_ATTEMPTS = 30; // Max 5 minutes of polling (30 * 10s = 300s), then fallback to local analysis
+const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s = 600s), then fallback to local analysis
 const UPLOAD_TIMEOUT_MS = 240000; // 4 minute upload timeout for slow proxy/origin submits
-const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout for entire WinDBG process
+const WINDBG_TOTAL_TIMEOUT_MS = 660000; // 11 minute hard timeout: upload window + poll budget + margin
 
 export interface WinDBGUploadResponse {
     success: boolean;
@@ -139,13 +142,14 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
         return results;
     }
 
+    let fileHashes: Array<{ file: File; hash: string }> = [];
     try {
         // Generate hashes for all files in parallel
         const hashPromises = files.map(async (file) => ({
             file,
             hash: await generateFileHash(file)
         }));
-        const fileHashes = await Promise.all(hashPromises);
+        fileHashes = await Promise.all(hashPromises);
 
         // Create a map of hash -> filename for lookup
         const hashes: string[] = [];
@@ -193,7 +197,11 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
         return results;
     } catch (error) {
         console.error('[WinDBG] Error checking cache status:', error);
-        // Return empty map on error - will just proceed without cache info
+        // Keep the hash-complete map on thrown errors too, so callers still
+        // get fileHash attached and downstream hash-keyed flows keep working.
+        for (const { file, hash } of fileHashes) {
+            if (!results.has(file)) results.set(file, { hash, cached: false });
+        }
         return results;
     }
 }
@@ -364,10 +372,15 @@ export async function analyzeWithWinDBG(
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'complete', message: string) => void,
     onUploadProgress?: (percent: number) => void
 ): Promise<WinDBGAnalysisResult> {
-    // Hard timeout wrapper - 5 minute max for entire WinDBG process
+    // Hard timeout wrapper - WINDBG_TOTAL_TIMEOUT_MS max for entire WinDBG process.
+    // The handle is cleared once the race settles, and timedOut lets the
+    // abandoned pipeline notice it lost and stop polling cooperatively.
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<WinDBGAnalysisResult>((_, reject) => {
-        setTimeout(() => {
-            reject(new Error('WinDBG analysis timed out after 5 minutes'));
+        timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            reject(new Error('WinDBG analysis timed out - falling back to local analysis'));
         }, WINDBG_TOTAL_TIMEOUT_MS);
     });
 
@@ -419,10 +432,14 @@ export async function analyzeWithWinDBG(
         let lastStatus = 'pending';
         let statusResult: WinDBGStatusResponse | null = null;
         let attempts = 0;
-        let authRefreshRetries = 0;
+        let authRefreshes = 0;
+        const MAX_AUTH_REFRESHES = 2; // hard cap that never replenishes
 
         while (attempts < MAX_POLL_ATTEMPTS) {
             attempts++;
+            if (timedOut) {
+                throw new Error('WinDBG analysis timed out - stopping background polling');
+            }
             console.log(`[WinDBG] Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
 
             // Add cache-busting timestamp to prevent browser/CDN caching
@@ -435,16 +452,14 @@ export async function analyzeWithWinDBG(
             console.log(`[WinDBG] Poll response status: ${response.status}`);
 
             if (!response.ok) {
-                if (response.status === 401 && authRefreshRetries < 1) {
+                if (response.status === 401 && authRefreshes < MAX_AUTH_REFRESHES) {
                     let errorData: any = {};
                     try { errorData = await response.json(); } catch {}
                     if (handleSessionError(errorData)) {
                         console.log('[WinDBG] Session expired during poll, re-initializing...');
                         const refreshed = await initializeSession(true);
                         if (refreshed) {
-                            authRefreshRetries++;
-                            // Don't count this as a poll attempt, retry immediately
-                            attempts--;
+                            authRefreshes++;
                             continue;
                         }
                     }
@@ -453,7 +468,6 @@ export async function analyzeWithWinDBG(
             }
 
             const result: WinDBGStatusResponse = await response.json();
-            authRefreshRetries = 0;
             console.log(`[WinDBG] Poll result:`, result.data?.status);
 
             if (!result.success) {
@@ -502,6 +516,9 @@ export async function analyzeWithWinDBG(
         }
 
         // Stage 3: Download the analysis
+        if (timedOut) {
+            throw new Error('WinDBG analysis timed out - stopping background download');
+        }
         onProgress?.('downloading', 'Downloading WinDBG analysis...');
         const downloadedAnalysis = await downloadAnalysis(uid);
 
@@ -532,15 +549,17 @@ export async function analyzeWithWinDBG(
     // Race between analysis and timeout
     try {
         return await Promise.race([analysisPromise, timeoutPromise]);
-	    } catch (error) {
-	        console.error('[WinDBG] Analysis timed out or failed:', error);
-	        const err = error as Error & { code?: string; errorCategory?: string };
-	        return {
-	            success: false,
-	            analysisText: '',
-	            error: err.message,
-	            errorCode: err.code,
-	            errorCategory: err.errorCategory
-	        };
-	    }
+    } catch (error) {
+        console.error('[WinDBG] Analysis timed out or failed:', error);
+        const err = error as Error & { code?: string; errorCategory?: string };
+        return {
+            success: false,
+            analysisText: '',
+            error: err.message,
+            errorCode: err.code,
+            errorCategory: err.errorCategory
+        };
+    } finally {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
 }

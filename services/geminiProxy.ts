@@ -120,7 +120,9 @@ const createGeminiProxy = () => {
 
                     // Check for specific error codes
                     if (response.status === 500) {
-                        errorMessage = 'Server error - the Gemini API key may not be configured';
+                        errorMessage = errorData?.error || 'Server error while analyzing - please try again shortly';
+                    } else if (response.status === 502 || response.status === 503 || response.status === 504) {
+                        errorMessage = 'The analysis service is busy or temporarily unavailable - please try again shortly';
                     } else if (response.status === 413) {
                         errorMessage = 'Request too large - the dump file may be too big';
                     } else if (response.status === 429) {
@@ -512,115 +514,6 @@ function extractWindowsVersion(strings: string): string | null {
     return null;
 }
 
-function isKnownBugCheck(code: number): boolean {
-    // List of known valid Windows bug check codes
-    const knownBugChecks = [
-        0x00000001, 0x00000002, 0x00000003, 0x00000004, 0x00000005,
-        0x00000007, 0x0000000A, 0x0000000B, 0x0000000C, 0x0000000D,
-        0x0000000E, 0x0000000F, 0x00000010, 0x00000012, 0x00000013,
-        0x00000014, 0x00000018, 0x00000019, 0x0000001A, 0x0000001C,
-        0x0000001D, 0x0000001E, 0x00000020, 0x00000021, 0x00000022,
-        0x00000023, 0x00000024, 0x00000025, 0x00000026, 0x00000027,
-        0x00000028, 0x00000029, 0x0000002A, 0x0000002B, 0x0000002C,
-        0x0000002D, 0x0000002E, 0x0000002F, 0x00000030, 0x00000031,
-        0x00000032, 0x00000033, 0x00000034, 0x00000035, 0x00000036,
-        0x00000037, 0x00000039, 0x0000003A, 0x0000003B, 0x0000003C,
-        0x0000003D, 0x0000003E, 0x0000003F, 0x00000040, 0x00000041,
-        0x00000042, 0x00000044, 0x00000045, 0x00000046, 0x00000047,
-        0x00000048, 0x0000004A, 0x0000004B, 0x0000004C, 0x0000004D,
-        0x0000004E, 0x00000050, 0x00000051, 0x00000052, 0x00000053,
-        0x00000054, 0x00000055, 0x00000056, 0x00000057, 0x00000058,
-        0x00000059, 0x0000005A, 0x0000005C, 0x0000005D, 0x0000005E,
-        0x0000005F, 0x00000060, 0x00000061, 0x00000062, 0x00000063,
-        0x00000064, 0x00000065, 0x00000066, 0x00000067, 0x00000068,
-        0x00000069, 0x0000006A, 0x0000006B, 0x0000006C, 0x0000006D,
-        0x0000006E, 0x0000006F, 0x00000070, 0x00000071, 0x00000072,
-        0x00000073, 0x00000074, 0x00000075, 0x00000076, 0x00000077,
-        0x00000078, 0x00000079, 0x0000007A, 0x0000007B, 0x0000007C,
-        0x0000007D, 0x0000007E, 0x0000007F, 0x00000080, 0x00000081,
-        0x00000082, 0x00000085, 0x00000086, 0x0000008B, 0x0000008E,
-        0x0000008F, 0x00000090, 0x00000092, 0x00000093, 0x00000094,
-        0x00000096, 0x00000097, 0x00000098, 0x00000099, 0x0000009A,
-        0x0000009B, 0x0000009C, 0x0000009E, 0x0000009F, 0x000000A0,
-        0x000000A1, 0x000000A2, 0x000000A3, 0x000000A4, 0x000000A5,
-        0x000000A7, 0x000000AB, 0x000000AC, 0x000000AD, 0x000000B1,
-        0x000000B4, 0x000000B8, 0x000000B9, 0x000000BA, 0x000000BB,
-        0x000000BC, 0x000000BD, 0x000000BE, 0x000000BF, 0x000000C1,
-        0x000000C2, 0x000000C4, 0x000000C5, 0x000000C6, 0x000000C7,
-        0x000000C8, 0x000000C9, 0x000000CA, 0x000000CB, 0x000000CC,
-        0x000000CD, 0x000000CE, 0x000000CF, 0x000000D0, 0x000000D1,
-        0x000000D2, 0x000000D3, 0x000000D4, 0x000000D5, 0x000000D6,
-        0x000000D7, 0x000000D8, 0x000000D9, 0x000000DA, 0x000000DB,
-        0x000000DC, 0x000000DD, 0x000000DE, 0x000000DF, 0x000000E0,
-        0x000000E1, 0x000000E2, 0x000000E3, 0x000000E4, 0x000000E6,
-        0x000000E7, 0x000000E8, 0x000000E9, 0x000000EA, 0x000000EB,
-        0x000000EC, 0x000000ED, 0x000000EF, 0x000000F0, 0x000000F1,
-        0x000000F2, 0x000000F3, 0x000000F4, 0x000000F5, 0x000000F6,
-        0x000000F7, 0x000000F8, 0x000000F9, 0x000000FA, 0x000000FB,
-        0x000000FC, 0x000000FD, 0x000000FE, 0x000000FF, 0x00000100,
-        0x00000101, 0x00000102, 0x00000103, 0x00000104, 0x00000105,
-        0x00000106, 0x00000107, 0x00000108, 0x00000109, 0x0000010A,
-        0x0000010C, 0x0000010D, 0x0000010E, 0x0000010F, 0x00000111,
-        0x00000112, 0x00000113, 0x00000114, 0x00000115, 0x00000116,
-        0x00000117, 0x00000119, 0x0000011A, 0x0000011B, 0x0000011C,
-        0x0000011D, 0x00000121, 0x00000122, 0x00000124, 0x00000125,
-        0x00000126, 0x00000127, 0x00000128, 0x00000129, 0x0000012A,
-        0x0000012B, 0x0000012C, 0x0000012D, 0x0000012E, 0x0000012F,
-        0x00000130, 0x00000131, 0x00000132, 0x00000133, 0x00000134,
-        0x00000135, 0x00000136, 0x00000137, 0x00000138, 0x00000139,
-        0x0000013A, 0x0000013B, 0x0000013C, 0x0000013D, 0x0000013E,
-        0x0000013F, 0x00000140, 0x00000141, 0x00000142, 0x00000143,
-        0x00000144, 0x00000145, 0x00000146, 0x00000147, 0x00000148,
-        0x00000149, 0x0000014A, 0x0000014B, 0x0000014C, 0x0000014D,
-        0x0000014E, 0x0000014F, 0x00000150, 0x00000151, 0x00000152,
-        0x00000153, 0x00000154, 0x00000155, 0x00000156, 0x00000157,
-        0x00000158, 0x00000159, 0x0000015A, 0x0000015B, 0x0000015C,
-        0x0000015D, 0x0000015E, 0x0000015F, 0x00000160, 0x00000161,
-        0x00000162, 0x00000163, 0x00000164, 0x00000165, 0x00000166,
-        0x00000167, 0x00000168, 0x00000169, 0x0000016A, 0x0000016B,
-        0x0000016C, 0x0000016D, 0x0000016E, 0x0000016F, 0x00000170,
-        0x00000171, 0x00000172, 0x00000173, 0x00000174, 0x00000175,
-        0x00000176, 0x00000177, 0x00000178, 0x00000179, 0x0000017A,
-        0x0000017B, 0x0000017C, 0x0000017D, 0x0000017E, 0x0000017F,
-        0x00000180, 0x00000181, 0x00000182, 0x00000183, 0x00000184,
-        0x00000185, 0x00000186, 0x00000187, 0x00000188, 0x00000189,
-        0x0000018A, 0x0000018B, 0x0000018C, 0x0000018D, 0x0000018E,
-        0x0000018F, 0x00000190, 0x00000191, 0x00000192, 0x00000193,
-        0x00000194, 0x00000195, 0x00000196, 0x00000197, 0x00000198,
-        0x00000199, 0x0000019A, 0x0000019B, 0x0000019C, 0x0000019D,
-        0x0000019E, 0x0000019F, 0x000001A0, 0x000001A1, 0x000001A2,
-        0x000001A3, 0x000001A4, 0x000001A5, 0x000001A6, 0x000001A7,
-        0x000001A8, 0x000001AA, 0x000001AB, 0x000001AC, 0x000001AD,
-        0x000001AE, 0x000001AF, 0x000001B0, 0x000001B1, 0x000001B2,
-        0x000001B3, 0x000001B4, 0x000001B5, 0x000001B6, 0x000001B7,
-        0x000001B8, 0x000001B9, 0x000001BA, 0x000001BB, 0x000001BC,
-        0x000001BD, 0x000001BE, 0x000001BF, 0x000001C0, 0x000001C1,
-        0x000001C2, 0x000001C3, 0x000001C4, 0x000001C5, 0x000001C6,
-        0x000001C7, 0x000001C8, 0x000001C9, 0x000001CA, 0x000001CB,
-        0x000001CC, 0x000001CD, 0x000001CE, 0x000001CF, 0x000001D0,
-        0x000001D1, 0x000001D2, 0x000001D3, 0x000001D4, 0x000001D5,
-        0x000001D6, 0x000001D7, 0x000001D8, 0x000001D9, 0x000001DA,
-        0x000001DB, 0x000001DC, 0x000001DD, 0x000001DE, 0x000001DF,
-        0x000001E0, 0x000001E1, 0x000001E2, 0x000001E3, 0x000001E4,
-        0x000001E5, 0x000001E6, 0x000001E7, 0x000001E8, 0x000001E9,
-        0x000001EA, 0x000001EB, 0x000001EC, 0x000001ED, 0x000001EE,
-        0x000001EF, 0x000001F0, 0x000001F1, 0x000001F2, 0x000001F3,
-        0x000001F4, 0x000001F5, 0x000001F6, 0x000001F7, 0x000001F8,
-        0x000001F9, 0x000001FA, 0x000001FB, 0x000001FC, 0x000001FD,
-        0x000001FE, 0x000001FF, 0x00000200, 0x00000201, 0x00000202,
-        0x00000203, 0x00000204, 0x00000205, 0x00000206, 0x00000207,
-        0x00000208, 0x00000209, 0x0000020A, 0x0000020B, 0x0000020C,
-        0x0000020D, 0x0000020E, 0x0000020F, 0x00000210, 0x00000211,
-        0x00000212, 0x00000213, 0x00000214, 0x00000215, 0x00000216,
-        0x00000217, 0x00000218, 0x00000219, 0x0000021A, 0x0000021B,
-        0x00000356, 0x00000357, 0x00000358, 0x00000359, 0x00000BFE,
-        0x00020001, 0x1000007E, 0x1000007F, 0x1000008E, 0x100000EA,
-        0xC0000218, 0xC0000221, 0xC000021A, 0xC0000420, 0xC0000421,
-        0xDEADDEAD
-    ];
-    
-    return knownBugChecks.includes(code);
-}
 
 function getBugCheckDescription(code: number): string {
     const descriptions: Record<number, string> = {
@@ -1959,44 +1852,29 @@ ${legitimateModules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
                 stringTokensAvailable * 4 // Convert tokens to characters
             );
             
-            // CRITICAL: Remove potentially confusing hex patterns from strings
+            // CRITICAL: Remove potentially confusing bug-check-like values from
+            // strings WITHOUT the old blanket rewrite: redacting every 4-8 digit
+            // hex run mangled version numbers, timestamps and memory addresses.
             let adjustedStrings = extractedStrings.substring(0, maxStringLength);
-            
-            // Remove patterns that look like bug check codes but aren't the real one
+
             const realBugCheckHex = structuredInfo.bugCheckInfo ?
                 formatBugCheckHex(structuredInfo.bugCheckInfo.code).slice(2) : '';
-            
-            // Pattern to match hex values that could be confused as bug check codes
-            // This will match things like "65F4", "0x65F4", etc.
-            const confusingHexPattern = /\b(0x)?([0-9A-Fa-f]{4,8})\b/g;
-            
-            adjustedStrings = adjustedStrings.replace(confusingHexPattern, (match, _prefix, hex) => {
-                // Keep the real bug check code
-                if (hex.toUpperCase() === realBugCheckHex || 
-                    hex.toUpperCase() === realBugCheckHex.substring(4)) { // Last 4 digits
-                    return match;
+
+            // Redact hex only where it sits in an explicit bug-check context
+            // (e.g. "BUGCHECK_CODE: 000000D1") and conflicts with the real code.
+            const bugcheckContextPattern = /\b(bugcheck(?:_code)?\s*[:=]?\s*)(?:0x)?([0-9A-Fa-f]{4,8})\b/gi;
+            adjustedStrings = adjustedStrings.replace(bugcheckContextPattern, (match, prefix: string, hex: string) => {
+                const normalized = hex.toUpperCase().replace(/^0+/, '');
+                const realNormalized = realBugCheckHex ? realBugCheckHex.toUpperCase().replace(/^0+/, '') : '';
+                if (!realBugCheckHex || normalized === realNormalized) {
+                    return match; // keep the genuine bug check evidence
                 }
-                
-                // Remove potentially confusing hex patterns
-                const hexValue = parseInt(hex, 16);
-                
-                // Known patterns to remove:
-                // - 65F4 and variations
-                // - Any 4-digit hex that could be confused as a bug check
-                if (hex.length === 4 && (hex.toUpperCase() === '65F4' || 
-                    hexValue > 0x1000 && hexValue < 0xFFFF)) {
-                    console.log(`[Analyzer] Removing confusing hex pattern: ${match}`);
-                    return '[REDACTED_HEX]';
-                }
-                
-                // Remove 8-digit hex that doesn't match known bug checks
-                if (hex.length === 8 && !isKnownBugCheck(hexValue)) {
-                    console.log(`[Analyzer] Removing potential fake bug check: ${match}`);
-                    return '[REDACTED_CODE]';
-                }
-                
-                return match;
+                console.log(`[Analyzer] Removing conflicting bug check code in context: ${hex}`);
+                return `${prefix}[REDACTED_CODE]`;
             });
+
+            // Known hallucinated token from earlier prompt-injection findings.
+            adjustedStrings = adjustedStrings.replace(/\b65F4\b/gi, '[REDACTED_HEX]');
             
             // Also remove fake driver names that AI hallucinates
             adjustedStrings = adjustedStrings.replace(FAKE_DRIVER_PATTERN, '[REDACTED_DRIVER].sys');
@@ -2055,8 +1933,10 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
             const finalTokens = estimateTokens(prompt);
             console.log(`[Analyzer] Final prompt size: ${prompt.length} chars, ~${finalTokens} tokens (${(finalTokens / MAX_TOKENS * 100).toFixed(1)}% of limit)`);
             
-            // Generate the analysis
-	            let report = await generateInitialAnalysis(fileLabel, prompt);
+            // Generate the analysis — pass the file hash so server-side caching
+            // keys on dump content (enabling the hash fast path) instead of the
+            // prompt text alone.
+            let report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash);
 
             // If AI failed but we have accurate structured data, generate a basic analysis
             if (report.summary.includes('malformed response') && (accurateModuleInfo || structuredInfo.bugCheckInfo)) {
