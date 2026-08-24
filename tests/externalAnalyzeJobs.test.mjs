@@ -4,7 +4,9 @@ import {
   ExternalAnalyzeCheckpointError,
   ExternalAnalyzeLeaseLostError,
   createExternalAnalyzeJobCoordinator,
-  handoffExternalAnalyzeJob
+  createExternalAnalyzeSubmissionCoordinator,
+  handoffExternalAnalyzeJob,
+  reusableSubmissionResponse
 } from '../services/externalAnalyzeJobs.js';
 
 function clone(value) {
@@ -108,6 +110,54 @@ function processingJob(overrides = {}) {
     startedAt: 1_799_999_990_000,
     timestamp: 1_799_999_990_000,
     ...overrides
+  };
+}
+
+function createSubmissionHarness() {
+  const jobs = new Map();
+  const mappings = new Map();
+  const leases = new Map();
+  let tokenNumber = 0;
+  const dependencies = {
+    loadMapping: async fileHash => mappings.get(fileHash) ?? null,
+    loadJob: async uid => clone(jobs.get(uid)),
+    removeMapping: async (fileHash, expectedUid) => {
+      if (mappings.get(fileHash) !== expectedUid) return false;
+      mappings.delete(fileHash);
+      return true;
+    },
+    acquireLease: async fileHash => {
+      if (leases.has(fileHash)) return null;
+      const token = `submission-${++tokenNumber}`;
+      leases.set(fileHash, token);
+      return token;
+    },
+    renewLease: async (fileHash, token) => leases.get(fileHash) === token,
+    releaseLease: async (fileHash, token) => {
+      if (leases.get(fileHash) !== token) return false;
+      leases.delete(fileHash);
+      return true;
+    },
+    storeAcceptedJobWithMapping: async (fileHash, uid, job, token) => {
+      if (leases.get(fileHash) !== token) return false;
+      const existing = mappings.get(fileHash);
+      if (existing && existing !== uid) return false;
+      jobs.set(uid, clone(job));
+      mappings.set(fileHash, uid);
+      return true;
+    },
+    wait: async () => await new Promise(resolve => setImmediate(resolve)),
+    waitIntervalMs: 1,
+    waitTimeoutMs: 1000,
+    leaseRefreshMs: 0,
+    logger: { warn() {} }
+  };
+  return {
+    jobs,
+    mappings,
+    leases,
+    dependencies,
+    createCoordinator: () => createExternalAnalyzeSubmissionCoordinator(dependencies)
   };
 }
 
@@ -424,4 +474,185 @@ test('a cached AI report can be reused after a terminal CAS failure', async () =
   assert.equal(completed.job.data.cached, true);
   assert.equal(aiCalls, 1);
   assert.equal(harness.calls.report, 2);
+});
+
+test('concurrent identical submissions upload once and return the same durable UID', async () => {
+  const harness = createSubmissionHarness();
+  const coordinator = harness.createCoordinator();
+  const fileHash = '0123456789abcdef';
+  let uploadCalls = 0;
+  let announceUpload;
+  let releaseUpload;
+  const uploadStarted = new Promise(resolve => { announceUpload = resolve; });
+  const uploadReleased = new Promise(resolve => { releaseUpload = resolve; });
+  const uploadDump = async () => {
+    uploadCalls++;
+    announceUpload();
+    await uploadReleased;
+    return { success: true, jobId: 'windbg-shared' };
+  };
+  const makeJob = uid => ({ upstreamJobId }) => processingJob({
+    uid,
+    fileHash,
+    upstreamJobId
+  });
+
+  const owner = coordinator.accept({
+    fileHash,
+    uid: 'API-1800000000000-111111111111',
+    uploadDump,
+    createJob: makeJob('API-1800000000000-111111111111')
+  });
+  await uploadStarted;
+  const contender = coordinator.accept({
+    fileHash,
+    uid: 'API-1800000000000-222222222222',
+    uploadDump,
+    createJob: makeJob('API-1800000000000-222222222222')
+  });
+  releaseUpload();
+
+  const [accepted, reused] = await Promise.all([owner, contender]);
+  assert.equal(uploadCalls, 1);
+  assert.equal(accepted.uid, 'API-1800000000000-111111111111');
+  assert.equal(accepted.reused, false);
+  assert.equal(reused.uid, accepted.uid);
+  assert.equal(reused.reused, true);
+  assert.equal(harness.mappings.get(fileHash), accepted.uid);
+  assert.equal(harness.jobs.size, 1);
+});
+
+test('fresh process coordinator reuses an accepted in-flight job without upload', async () => {
+  const harness = createSubmissionHarness();
+  const fileHash = '0123456789abcdef';
+  const existingUid = 'API-1800000000000-333333333333';
+  harness.mappings.set(fileHash, existingUid);
+  harness.jobs.set(existingUid, processingJob({
+    uid: existingUid,
+    fileHash,
+    upstreamJobId: 'windbg-existing'
+  }));
+  let uploadCalls = 0;
+
+  const result = await harness.createCoordinator().accept({
+    fileHash,
+    uid: 'API-1800000000000-444444444444',
+    uploadDump: async () => {
+      uploadCalls++;
+      return { success: true, jobId: 'windbg-duplicate' };
+    },
+    createJob: () => { throw new Error('must not create a duplicate job'); }
+  });
+
+  assert.equal(result.reused, true);
+  assert.equal(result.uid, existingUid);
+  assert.equal(uploadCalls, 0);
+  assert.equal(harness.jobs.size, 1);
+});
+
+test('completed mapped result remains reusable when the disposable evidence cache is missing', async () => {
+  const harness = createSubmissionHarness();
+  const fileHash = '9999999999999999';
+  const existingUid = 'API-1800000000000-999999999999';
+  harness.mappings.set(fileHash, existingUid);
+  harness.jobs.set(existingUid, processingJob({
+    uid: existingUid,
+    fileHash,
+    status: 'completed',
+    phase: 'completed',
+    data: { summary: 'Durable completed report' }
+  }));
+
+  const result = await harness.createCoordinator().accept({
+    fileHash,
+    uid: 'API-1800000000000-000000000000',
+    uploadDump: async () => { throw new Error('must not upload'); },
+    createJob: () => { throw new Error('must not create'); }
+  });
+
+  assert.equal(result.reused, true);
+  assert.equal(result.uid, existingUid);
+  assert.equal(result.job.data.summary, 'Durable completed report');
+  assert.deepEqual(reusableSubmissionResponse(result), {
+    success: true,
+    status: 'completed',
+    uid: existingUid,
+    checkStatusUrl: `/api/analyze/status/${existingUid}`
+  });
+});
+
+test('reusable submission response preserves only active durable job statuses', () => {
+  const processingUid = 'API-1800000000000-121212121212';
+  assert.deepEqual(reusableSubmissionResponse({
+    uid: processingUid,
+    job: { status: 'processing' }
+  }), {
+    success: true,
+    status: 'processing',
+    uid: processingUid,
+    checkStatusUrl: `/api/analyze/status/${processingUid}`
+  });
+  assert.equal(reusableSubmissionResponse({
+    uid: 'API-1800000000000-343434343434',
+    job: { status: 'failed' }
+  }), null);
+  assert.equal(reusableSubmissionResponse(null), null);
+});
+
+test('failed mapped job is cleared so a resubmission can create a new job', async () => {
+  const harness = createSubmissionHarness();
+  const fileHash = 'fedcba9876543210';
+  const failedUid = 'API-1800000000000-555555555555';
+  const replacementUid = 'API-1800000000000-666666666666';
+  harness.mappings.set(fileHash, failedUid);
+  harness.jobs.set(failedUid, processingJob({
+    uid: failedUid,
+    fileHash,
+    status: 'failed',
+    phase: 'failed'
+  }));
+  let uploadCalls = 0;
+
+  const result = await harness.createCoordinator().accept({
+    fileHash,
+    uid: replacementUid,
+    uploadDump: async () => {
+      uploadCalls++;
+      return { success: true, jobId: 'windbg-retry' };
+    },
+    createJob: ({ upstreamJobId }) => processingJob({
+      uid: replacementUid,
+      fileHash,
+      upstreamJobId
+    })
+  });
+
+  assert.equal(result.reused, false);
+  assert.equal(result.uid, replacementUid);
+  assert.equal(uploadCalls, 1);
+  assert.equal(harness.mappings.get(fileHash), replacementUid);
+  assert.equal(harness.jobs.get(failedUid).status, 'failed');
+});
+
+test('accepted-before-checkpoint failure remains explicit and leaves no false mapping', async () => {
+  const harness = createSubmissionHarness();
+  const fileHash = 'aaaaaaaaaaaaaaaa';
+  harness.dependencies.storeAcceptedJobWithMapping = async () => false;
+
+  await assert.rejects(
+    harness.createCoordinator().accept({
+      fileHash,
+      uid: 'API-1800000000000-777777777777',
+      uploadDump: async () => ({ success: true, jobId: 'windbg-orphan-window' }),
+      createJob: ({ upstreamJobId }) => processingJob({
+        uid: 'API-1800000000000-777777777777',
+        fileHash,
+        upstreamJobId
+      })
+    }),
+    error => error instanceof ExternalAnalyzeCheckpointError
+      && error.upstreamJobId === 'windbg-orphan-window'
+  );
+  assert.equal(harness.mappings.has(fileHash), false);
+  assert.equal(harness.jobs.size, 0);
 });

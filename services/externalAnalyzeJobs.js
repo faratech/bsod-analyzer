@@ -22,8 +22,35 @@ class ExternalAnalyzeCheckpointError extends Error {
   }
 }
 
+class ExternalAnalyzeSubmissionBusyError extends Error {
+  constructor() {
+    super('Another submission for this dump is still being accepted');
+    this.name = 'ExternalAnalyzeSubmissionBusyError';
+    this.code = 'ANALYSIS_SUBMISSION_BUSY';
+  }
+}
+
 function terminalJob(job) {
   return job?.status === 'completed' || job?.status === 'failed';
+}
+
+function reusableSubmissionResponse(mapped) {
+  const uid = mapped?.uid;
+  const status = mapped?.job?.status;
+  if (
+    typeof uid !== 'string'
+    || !uid
+    || (status !== 'processing' && status !== 'completed')
+  ) {
+    return null;
+  }
+
+  return {
+    success: true,
+    status,
+    uid,
+    checkStatusUrl: `/api/analyze/status/${uid}`
+  };
 }
 
 function upstreamFailureMessage(upstream) {
@@ -71,6 +98,138 @@ async function handoffExternalAnalyzeJob({ uploadDump, persistJob, createJob }) 
   }
 
   return { job, upstreamJobId, uploadResult };
+}
+
+function createExternalAnalyzeSubmissionCoordinator({
+  loadMapping,
+  loadJob,
+  removeMapping,
+  acquireLease,
+  renewLease,
+  releaseLease,
+  storeAcceptedJobWithMapping,
+  now = Date.now,
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  waitIntervalMs = 250,
+  waitTimeoutMs = 245_000,
+  leaseRefreshMs = 15_000,
+  logger = console
+}) {
+  const required = {
+    loadMapping,
+    loadJob,
+    removeMapping,
+    acquireLease,
+    renewLease,
+    releaseLease,
+    storeAcceptedJobWithMapping
+  };
+  for (const [name, value] of Object.entries(required)) {
+    if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  }
+  for (const [name, value] of Object.entries({ waitIntervalMs, waitTimeoutMs })) {
+    if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be positive`);
+  }
+
+  async function findReusable(fileHash) {
+    if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
+    const mappedUid = await loadMapping(fileHash);
+    if (typeof mappedUid !== 'string' || !mappedUid) {
+      if (mappedUid !== null && mappedUid !== undefined) {
+        await removeMapping(fileHash, mappedUid);
+      }
+      return null;
+    }
+
+    const mappedJob = await loadJob(mappedUid);
+    if (mappedJob && (mappedJob.status === 'processing' || mappedJob.status === 'completed')) {
+      return { job: mappedJob, uid: mappedUid, reused: true };
+    }
+
+    // Missing/failed jobs must not pin the content hash forever. The delete is
+    // compare-and-delete, so it cannot remove a newer owner's mapping.
+    await removeMapping(fileHash, mappedUid);
+    return null;
+  }
+
+  async function accept({ fileHash, uid, uploadDump, createJob }) {
+    if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
+    if (typeof uid !== 'string' || !uid) throw new TypeError('uid is required');
+    if (typeof uploadDump !== 'function') throw new TypeError('uploadDump must be a function');
+    if (typeof createJob !== 'function') throw new TypeError('createJob must be a function');
+
+    const waitDeadline = now() + waitTimeoutMs;
+    while (true) {
+      const reusable = await findReusable(fileHash);
+      if (reusable) return reusable;
+
+      const leaseToken = await acquireLease(fileHash);
+      if (!leaseToken) {
+        if (now() >= waitDeadline) throw new ExternalAnalyzeSubmissionBusyError();
+        await wait(waitIntervalMs);
+        continue;
+      }
+
+      let leaseLost = false;
+      let renewalInFlight = null;
+      const refreshLease = () => {
+        if (leaseLost || renewalInFlight) return;
+        renewalInFlight = Promise.resolve(renewLease(fileHash, leaseToken))
+          .then(renewed => {
+            if (!renewed) leaseLost = true;
+          })
+          .catch(error => {
+            leaseLost = true;
+            logger.warn?.('analyze.submission_lease.renew_failed', {
+              fileHash: fileHash.slice(0, 12),
+              message: errorMessage(error)
+            });
+          })
+          .finally(() => {
+            renewalInFlight = null;
+          });
+      };
+      const refreshTimer = leaseRefreshMs > 0
+        ? setInterval(refreshLease, leaseRefreshMs)
+        : null;
+      refreshTimer?.unref?.();
+
+      try {
+        // The previous owner may have published between our first lookup and
+        // this lease acquisition. Always re-check before uploading bytes.
+        const afterAcquire = await findReusable(fileHash);
+        if (afterAcquire) return afterAcquire;
+
+        const handoff = await handoffExternalAnalyzeJob({
+          uploadDump,
+          createJob,
+          persistJob: async job => {
+            if (leaseLost) return false;
+            return await storeAcceptedJobWithMapping(
+              fileHash,
+              uid,
+              job,
+              leaseToken
+            );
+          }
+        });
+        return { ...handoff, uid, reused: false };
+      } finally {
+        if (refreshTimer) clearInterval(refreshTimer);
+        if (renewalInFlight) await renewalInFlight.catch(() => {});
+        try {
+          await releaseLease(fileHash, leaseToken);
+        } catch (error) {
+          logger.warn?.('analyze.submission_lease.release_failed', {
+            fileHash: fileHash.slice(0, 12),
+            message: errorMessage(error)
+          });
+        }
+      }
+    }
+  }
+
+  return { accept, findReusable };
 }
 
 function createExternalAnalyzeJobCoordinator({
@@ -391,7 +550,10 @@ function createExternalAnalyzeJobCoordinator({
 export {
   ExternalAnalyzeCheckpointError,
   ExternalAnalyzeLeaseLostError,
+  ExternalAnalyzeSubmissionBusyError,
   createExternalAnalyzeJobCoordinator,
+  createExternalAnalyzeSubmissionCoordinator,
   handoffExternalAnalyzeJob,
+  reusableSubmissionResponse,
   terminalJob
 };
