@@ -40,6 +40,40 @@ const CACHE_PREFIX = {
   ZSTD_DICTIONARY: 'cachemeta:zstd:dictionary',
 };
 
+const RELEASE_RUNTIME_LEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+const RENEW_RUNTIME_LEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
+const TRANSITION_RUNTIME_JOB_WITH_LEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  local current = redis.call('GET', KEYS[2])
+  if not current then
+    return 0
+  end
+  local decoded = cjson.decode(current)
+  local version = tonumber(decoded.version) or 0
+  if version ~= tonumber(ARGV[2]) then
+    return 0
+  end
+  if decoded.status == 'completed' or decoded.status == 'failed' then
+    return 0
+  end
+  redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
+  return 1
+end
+return 0
+`;
+
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
@@ -275,6 +309,16 @@ async function decodeAnalysisValue(value) {
   return parseCachedValue(value);
 }
 
+function isDisposableAnalysisDecodeError(error) {
+  return error instanceof SyntaxError || [
+    'INVALID_ANALYSIS_CACHE_VALUE',
+    'ANALYSIS_CACHE_VALUE_TOO_LARGE',
+    'INVALID_ZSTD_ENVELOPE',
+    'UNSUPPORTED_ZSTD_ENVELOPE_VERSION',
+    'ZSTD_DECOMPRESSION_FAILED'
+  ].includes(error?.code);
+}
+
 async function encodeAnalysisValue(value) {
   if (analysisCodec) {
     return analysisCodec.encode(value, { compress: cacheZstdWritesEnabled });
@@ -312,6 +356,94 @@ export async function getRuntimeValue(key) {
     console.error('[Cache] Error getting runtime value:', error.message);
     return null;
   }
+}
+
+/**
+ * Read runtime state without collapsing a Redis outage into a cache miss.
+ * Durable job/status paths use this variant so callers can return a retryable
+ * service error instead of incorrectly reporting that an accepted job vanished.
+ */
+export async function getRuntimeValueStrict(key) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+
+  const value = await redis.get(getRuntimeKey(key));
+  if (!value) return null;
+  return typeof value === 'string' ? JSON.parse(value) : value;
+}
+
+/**
+ * Acquire a short Redis lease. The caller supplies an opaque random token and
+ * must use the token-checked renew/release helpers below.
+ */
+export async function tryAcquireRuntimeLease(key, token, ttlSeconds) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+  if (!token || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new TypeError('Runtime lease requires a token and positive TTL');
+  }
+
+  const result = await redis.set(getRuntimeKey(key), token, {
+    nx: true,
+    ex: Math.ceil(ttlSeconds)
+  });
+  return result === 'OK';
+}
+
+export async function renewRuntimeLease(key, token, ttlSeconds) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+  if (!token || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new TypeError('Runtime lease requires a token and positive TTL');
+  }
+
+  const renewed = await redis.eval(
+    RENEW_RUNTIME_LEASE_SCRIPT,
+    [getRuntimeKey(key)],
+    [token, String(Math.ceil(ttlSeconds))]
+  );
+  return Number(renewed) === 1;
+}
+
+export async function releaseRuntimeLease(key, token) {
+  if (!isCacheEnabled()) return false;
+  if (!token) return false;
+
+  try {
+    const released = await redis.eval(
+      RELEASE_RUNTIME_LEASE_SCRIPT,
+      [getRuntimeKey(key)],
+      [token]
+    );
+    return Number(released) === 1;
+  } catch (error) {
+    console.error('[Cache] Error releasing runtime lease:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Atomically transition a non-terminal versioned job only while the caller
+ * still owns its lease. This closes the expiry race between a separate lease
+ * check and a Redis SET and rejects stale/terminal writers.
+ */
+export async function transitionRuntimeJobWithLease(key, leaseKey, token, expectedVersion, value, ttlSeconds) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+  if (!token || !Number.isInteger(expectedVersion) || expectedVersion < 0 || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new TypeError('Leased runtime write requires a token, version, and positive TTL');
+  }
+
+  const stored = await redis.eval(
+    TRANSITION_RUNTIME_JOB_WITH_LEASE_SCRIPT,
+    [getRuntimeKey(leaseKey), getRuntimeKey(key)],
+    [token, String(expectedVersion), JSON.stringify(value), String(Math.ceil(ttlSeconds))]
+  );
+  return Number(stored) === 1;
 }
 
 export async function deleteRuntimeValue(key) {
@@ -442,6 +574,39 @@ export async function getCachedAnalysis(fileHash) {
         error.message
       );
     }
+    return null;
+  }
+}
+
+/**
+ * Strict analysis-cache read for resumable workflows. Dependency/configuration
+ * failures propagate; values proven corrupt are deleted and become real misses.
+ */
+export async function getCachedAnalysisStrict(fileHash) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis analysis cache is not configured');
+  }
+
+  const key = getAnalysisKey(fileHash);
+  const cached = await analysisRedis.get(key);
+  if (!cached) return null;
+  if (isZstdEnvelope(cached) && !analysisCodec) {
+    const error = new Error('Zstandard analysis cache value cannot be decoded by this revision');
+    error.code = 'ANALYSIS_CACHE_DECODER_UNAVAILABLE';
+    throw error;
+  }
+  try {
+    return await decodeAnalysisValue(cached);
+  } catch (error) {
+    // A fetched value that is provably malformed is disposable cache state.
+    // Remove it so a valid dump can be recomputed instead of deterministically
+    // failing every POST. Dictionary/config/transport failures are deliberately
+    // not classified here and continue to propagate to the caller.
+    if (!isDisposableAnalysisDecodeError(error)) throw error;
+    console.warn(
+      `[Cache] Removing corrupt analysis value for hash ${fileHash.substring(0, 12)}...: ${error.message}`
+    );
+    await analysisRedis.del(key);
     return null;
   }
 }

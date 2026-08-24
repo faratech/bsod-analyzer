@@ -104,6 +104,7 @@ async function submitWinDbgJob({
   fileBuffer,
   fileName,
   priority,
+  maxAttempts = 2,
   fetchImpl = fetch,
   signal
 }) {
@@ -111,7 +112,9 @@ async function submitWinDbgJob({
     throw new Error('WINDBG_API_KEY is required');
   }
 
-  const maxAttempts = 2;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
+    throw new TypeError('maxAttempts must be an integer between 1 and 3');
+  }
   let lastError;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

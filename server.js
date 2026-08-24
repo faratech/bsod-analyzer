@@ -33,7 +33,16 @@ import {
   submitWinDbgJob,
   toLegacyWinDbgStatusResponse
 } from './shared/windbgApiClient.js';
+import {
+  mapStructuredSignalToReport,
+  mergeReportWithWinDbgFields,
+  parseWinDbgOutput
+} from './shared/windbgReportFields.js';
 import { isForumIdentityEnabled, resolveForumIdentityFromCookies } from './services/forumIdentity.js';
+import {
+  createExternalAnalyzeJobCoordinator,
+  handoffExternalAnalyzeJob
+} from './services/externalAnalyzeJobs.js';
 import {
   createFastifyCompatApp,
   jsonParser,
@@ -86,11 +95,17 @@ import {
   hashContent,
   getPromptCacheKey,
   getCachedAnalysis,
+  getCachedAnalysisStrict,
   setCachedAnalysis,
   isAnalysisCached,
   getRuntimeValue,
+  getRuntimeValueStrict,
   setRuntimeValue,
+  transitionRuntimeJobWithLease,
   deleteRuntimeValue,
+  tryAcquireRuntimeLease,
+  renewRuntimeLease,
+  releaseRuntimeLease,
   isCacheEnabled,
   getRedisCommandClient,
   checkCacheConnection,
@@ -163,6 +178,7 @@ const MAX_EXTRACTED_ARCHIVE_SIZE = SECURITY_CONFIG.api.maxExtractedArchiveSize;
 const MAX_ARCHIVE_FILE_COUNT = FILE_LIMITS.maxArchiveFileCount;
 const MAX_ARCHIVE_COMPRESSION_RATIO = FILE_LIMITS.maxCompressionRatio;
 const HASH_RE = /^[a-f0-9]{8,16}$/i;
+const EXTERNAL_JOB_UID_RE = /^API-\d{10,17}-[a-f0-9]{12}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
@@ -359,23 +375,6 @@ function createConcurrencyLimiter(max, code) {
   };
 }
 
-function createWorkloadLimiter(max) {
-  let active = 0;
-  return {
-    tryAcquire() {
-      if (active >= max) return null;
-      active++;
-      let released = false;
-      return () => {
-        if (!released) {
-          released = true;
-          active = Math.max(0, active - 1);
-        }
-      };
-    }
-  };
-}
-
 function rejectLargeBody(limitBytes) {
   return (req, res, next) => {
     const contentLength = Number.parseInt(req.headers['content-length'] || '0', 10);
@@ -513,7 +512,26 @@ const OWNERSHIP_EXPIRY_SECONDS = Math.ceil(OWNERSHIP_EXPIRY / 1000);
 
 // Track external asynchronous analysis jobs (fallback when Redis is not enabled)
 const externalJobs = new Map(); // uid -> jobData
-const JOB_EXPIRY_SECONDS = 30 * 60; // 30 minutes
+const externalJobLeases = new Map(); // uid -> { token, expiresAt }
+const externalJobAnalysisCache = new Map(); // fileHash -> WinDBG evidence (development fallback)
+const JOB_EXPIRY_SECONDS = readPositiveInt(process.env.EXTERNAL_JOB_TTL_SECONDS, 2 * 60 * 60);
+const EXTERNAL_JOB_DEADLINE_SECONDS = readPositiveInt(
+  process.env.EXTERNAL_JOB_DEADLINE_SECONDS,
+  15 * 60
+);
+const EXTERNAL_JOB_MAX_PHASE_ATTEMPTS = readPositiveInt(
+  process.env.EXTERNAL_JOB_MAX_PHASE_ATTEMPTS,
+  6
+);
+const EXTERNAL_JOB_LEASE_SECONDS = readPositiveInt(process.env.EXTERNAL_JOB_LEASE_SECONDS, 60);
+const EXTERNAL_JOB_LEASE_REFRESH_MS = readPositiveInt(
+  process.env.EXTERNAL_JOB_LEASE_REFRESH_MS,
+  15_000
+);
+
+function externalJobLeaseKey(uid) {
+  return `job-lease:${uid}`;
+}
 
 async function storeJob(uid, jobData) {
   if (isCacheEnabled()) {
@@ -531,9 +549,105 @@ async function storeJob(uid, jobData) {
 
 async function loadJob(uid) {
   if (isCacheEnabled()) {
-    return await getRuntimeValue(`job:${uid}`);
+    return REQUIRE_REDIS_RUNTIME
+      ? await getRuntimeValueStrict(`job:${uid}`)
+      : await getRuntimeValue(`job:${uid}`);
   }
   return externalJobs.get(uid);
+}
+
+async function acquireExternalJobLease(uid) {
+  const token = crypto.randomUUID();
+  if (isCacheEnabled()) {
+    const acquired = await tryAcquireRuntimeLease(
+      externalJobLeaseKey(uid),
+      token,
+      EXTERNAL_JOB_LEASE_SECONDS
+    );
+    return acquired ? token : null;
+  }
+  if (REQUIRE_REDIS_RUNTIME) {
+    throw new Error('Runtime store required but Redis cache is not configured');
+  }
+
+  const existing = externalJobLeases.get(uid);
+  if (existing && existing.expiresAt > Date.now()) return null;
+  externalJobLeases.set(uid, {
+    token,
+    expiresAt: Date.now() + EXTERNAL_JOB_LEASE_SECONDS * 1000
+  });
+  return token;
+}
+
+async function renewExternalJobLease(uid, token) {
+  if (isCacheEnabled()) {
+    return await renewRuntimeLease(
+      externalJobLeaseKey(uid),
+      token,
+      EXTERNAL_JOB_LEASE_SECONDS
+    );
+  }
+
+  const existing = externalJobLeases.get(uid);
+  if (!existing || existing.token !== token || existing.expiresAt <= Date.now()) return false;
+  existing.expiresAt = Date.now() + EXTERNAL_JOB_LEASE_SECONDS * 1000;
+  return true;
+}
+
+async function releaseExternalJobLease(uid, token) {
+  if (isCacheEnabled()) {
+    return await releaseRuntimeLease(externalJobLeaseKey(uid), token);
+  }
+
+  const existing = externalJobLeases.get(uid);
+  if (!existing || existing.token !== token) return false;
+  externalJobLeases.delete(uid);
+  return true;
+}
+
+async function storeLeasedJob(uid, jobData, token, expectedVersion) {
+  if (isCacheEnabled()) {
+    return await transitionRuntimeJobWithLease(
+      `job:${uid}`,
+      externalJobLeaseKey(uid),
+      token,
+      expectedVersion,
+      jobData,
+      JOB_EXPIRY_SECONDS
+    );
+  }
+  if (REQUIRE_REDIS_RUNTIME) {
+    throw new Error('Runtime store required but Redis cache is not configured');
+  }
+
+  const lease = externalJobLeases.get(uid);
+  const current = externalJobs.get(uid);
+  const currentVersion = Number.isInteger(current?.version) ? current.version : 0;
+  if (!lease || lease.token !== token || lease.expiresAt <= Date.now()) return false;
+  if (!current || currentVersion !== expectedVersion || current.status === 'completed' || current.status === 'failed') {
+    return false;
+  }
+  externalJobs.set(uid, jobData);
+  return true;
+}
+
+async function cacheExternalWinDbgAnalysis(fileHash, analysis) {
+  const value = {
+    windbgOutput: analysis.analysisText,
+    analysisSignalText: analysis.analysisSignalText,
+    structured: analysis.structured,
+    timestamp: Date.now()
+  };
+  if (isCacheEnabled()) {
+    return await setCachedAnalysis(fileHash, value);
+  }
+  externalJobAnalysisCache.set(fileHash, value);
+  return true;
+}
+
+async function loadExternalWinDbgAnalysis(fileHash) {
+  if (isCacheEnabled()) return await getCachedAnalysisStrict(fileHash);
+  return externalJobAnalysisCache.get(fileHash) || null;
 }
 
 function runtimeSessionKey(sessionId) {
@@ -735,6 +849,14 @@ setInterval(() => {
   for (const [uid, job] of externalJobs.entries()) {
     if (now - job.timestamp > JOB_EXPIRY_SECONDS * 1000) {
       externalJobs.delete(uid);
+    }
+  }
+  for (const [uid, lease] of externalJobLeases.entries()) {
+    if (lease.expiresAt <= now) externalJobLeases.delete(uid);
+  }
+  for (const [fileHash, analysis] of externalJobAnalysisCache.entries()) {
+    if (now - analysis.timestamp > JOB_EXPIRY_SECONDS * 1000) {
+      externalJobAnalysisCache.delete(fileHash);
     }
   }
   for (const [sessionId, hashes] of sessionHashOwnership.entries()) {
@@ -1166,7 +1288,6 @@ const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
-const externalAnalyzeBackgroundWork = createWorkloadLimiter(2);
 
 // Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
 const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
@@ -3027,11 +3148,6 @@ app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SI
 // Authentication: X-API-Key header with BSOD_API_KEY
 // Used by external services (e.g., XenForo integration)
 
-// Constants for WinDBG analysis
-const WINDBG_POLL_INTERVAL_MS = 10000; // 10 seconds between polls
-const WINDBG_MAX_POLL_ATTEMPTS = 30; // 5 minutes max (30 * 10s)
-const WINDBG_TOTAL_TIMEOUT_MS = 300000; // 5 minute hard timeout
-
 /**
  * Generate a unique UID for WinDBG uploads
  */
@@ -3050,6 +3166,9 @@ async function uploadBufferToWinDBG(fileBuffer, fileName) {
     apiKey: WINDBG_API_KEY,
     fileBuffer,
     fileName,
+    // The upstream API exposes no caller idempotency key. Do not hide a
+    // second non-idempotent submit inside this durable external handoff.
+    maxAttempts: 1,
     signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
   });
 
@@ -3061,36 +3180,17 @@ async function uploadBufferToWinDBG(fileBuffer, fileName) {
 }
 
 /**
- * Poll WinDBG server for analysis completion
+ * Read one WinDBG status snapshot. External API clients drive the durable
+ * state machine with their existing status polls, so this must never retain a
+ * multi-minute loop inside a Cloud Run request or detached promise.
  */
-async function pollWinDBGStatus(jobId) {
-  let attempts = 0;
-
-  while (attempts < WINDBG_MAX_POLL_ATTEMPTS) {
-    attempts++;
-    console.log(`[API/WinDBG] Polling status (attempt ${attempts}/${WINDBG_MAX_POLL_ATTEMPTS})...`);
-
-    const result = await getWinDbgJob({
-      baseUrl: WINDBG_API_BASE_URL,
-      apiKey: WINDBG_API_KEY,
-      jobId,
-      signal: timeoutSignal(WINDBG_POLL_TIMEOUT_MS)
-    });
-
-    console.log(`[API/WinDBG] Status: ${result.status}`);
-
-    if (result.status === 'complete' || result.status === 'completed') {
-      return result;
-    }
-
-    if (result.status === 'failed' || result.status === 'timed_out' || result.status === 'cancelled') {
-      throw new Error(result.error || 'WinDBG analysis failed');
-    }
-
-    await new Promise(resolve => setTimeout(resolve, WINDBG_POLL_INTERVAL_MS));
-  }
-
-  throw new Error('WinDBG analysis timed out');
+async function getWinDBGStatusOnce(jobId) {
+  return await getWinDbgJob({
+    baseUrl: WINDBG_API_BASE_URL,
+    apiKey: WINDBG_API_KEY,
+    jobId,
+    signal: timeoutSignal(WINDBG_POLL_TIMEOUT_MS)
+  });
 }
 
 /**
@@ -3206,6 +3306,19 @@ function persistCrashSignal(report, fileHash) {
 
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
   const modelName = getPrimaryModel();
+  const parsedFields = parseWinDbgOutput(windbgAnalysis);
+  const structuredFields = mapStructuredSignalToReport(options.structured);
+  const enrichReport = (report) => {
+    const merged = mergeReportWithWinDbgFields(report, structuredFields, parsedFields);
+    return normalizeAnalysisReport(merged) || merged;
+  };
+  log.info('api_ai.windbg_fields', {
+    failureBucketId: !!(parsedFields.failureBucketId || structuredFields.failureBucketId),
+    symbolName: !!(parsedFields.symbolName || structuredFields.symbolName),
+    callStackFrames: parsedFields.callStack?.length || structuredFields.callStack?.length || 0,
+    processName: parsedFields.systemInfo?.processName || structuredFields.systemInfo?.processName || null,
+    kernelBuild: parsedFields.systemInfo?.kernelBuild || structuredFields.systemInfo?.kernelBuild || null
+  });
   // Check cache first — prefer stable fileHash; fall back to a prompt-namespaced
   // key over the analysis text (never addressable as a file hash).
   const cacheKey = fileHash || getPromptCacheKey(hashContent(windbgAnalysis));
@@ -3215,8 +3328,9 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     const normalizedCachedReport = normalizeAnalysisReport(cachedReport);
     if (normalizedCachedReport) {
       console.log('[API/AI] Using cached AI report');
-      persistCrashSignal(normalizedCachedReport, fileHash);  // idempotent — captures pre-hook analyses
-      return { ...normalizedCachedReport, cached: true };
+      const report = enrichReport(normalizedCachedReport);
+      persistCrashSignal(report, fileHash);  // idempotent — captures pre-hook analyses
+      return { ...report, cached: true };
     }
     const cachedText = typeof cachedReport.text === 'string'
       ? cachedReport.text
@@ -3224,8 +3338,9 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     const cachedValidation = parseAndValidateAnalysisReport(cachedText);
     if (cachedValidation.valid) {
       console.log('[API/AI] Using cached AI report');
-      persistCrashSignal(cachedValidation.report, fileHash);  // idempotent — captures pre-hook analyses
-      return { ...cachedValidation.report, cached: true };
+      const report = enrichReport(cachedValidation.report);
+      persistCrashSignal(report, fileHash);  // idempotent — captures pre-hook analyses
+      return { ...report, cached: true };
     }
     log.warn('api_ai.cache.invalid', { reason: cachedValidation.reason });
   }
@@ -3271,11 +3386,13 @@ ${analysisForPrompt}
     if (!reportValidation.valid) {
       throw new Error(reportValidation.reason);
     }
-    const report = reportValidation.report;
+    const aiReport = reportValidation.report;
+    const report = enrichReport(aiReport);
 
-    // Cache the successful AI report under the stable file hash (or analysis text as fallback)
+    // Cache the compact AI response; deterministic WinDBG fields are rebuilt from
+    // the separately cached raw/structured evidence on every return path.
     await setCachedAnalysis(cacheKey, {
-      aiReport: report,
+      aiReport,
       aiModel: response.cacheModel || modelName
     });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
@@ -3284,7 +3401,7 @@ ${analysisForPrompt}
     console.error('[API/AI] AI analysis error:', error);
     // Return basic report if AI fails (don't cache failures). aiAvailable:false
     // lets API consumers distinguish degraded output from a real AI report.
-    return {
+    return enrichReport({
       summary: `Windows crash in ${fileName} analyzed by WinDBG`,
       probableCause: 'WinDBG analysis completed but AI interpretation failed.',
       culprit: extractCulpritFromWinDBG(windbgAnalysis),
@@ -3295,9 +3412,43 @@ ${analysisForPrompt}
       ],
       aiAvailable: false,
       aiError: 'AI interpretation unavailable'
-    };
+    });
   }
 }
+
+const externalAnalyzeJobs = createExternalAnalyzeJobCoordinator({
+  loadJob,
+  storeLeasedJob,
+  acquireLease: acquireExternalJobLease,
+  renewLease: renewExternalJobLease,
+  releaseLease: releaseExternalJobLease,
+  getUpstreamJob: getWinDBGStatusOnce,
+  downloadAnalysis: downloadWinDBGAnalysis,
+  cacheAnalysis: cacheExternalWinDbgAnalysis,
+  loadCachedAnalysis: loadExternalWinDbgAnalysis,
+  generateReport: async (job, cachedAnalysis) => await generateAIReportFromWinDBG(
+    job.fileName,
+    job.dumpType,
+    job.fileSize,
+    cachedAnalysis.windbgOutput,
+    job.fileHash,
+    {
+      analysisSignalText: cachedAnalysis.analysisSignalText,
+      structured: cachedAnalysis.structured
+    }
+  ),
+  recordWinDbgStats: (job, analysis) => recordStats({
+    source: 'windbg',
+    fileHash: job.fileHash,
+    structured: analysis.structured,
+    analysisText: analysis.analysisText,
+    dumpType: job.dumpType
+  }),
+  leaseRefreshMs: EXTERNAL_JOB_LEASE_REFRESH_MS,
+  jobDeadlineMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
+  maxPhaseAttempts: EXTERNAL_JOB_MAX_PHASE_ATTEMPTS,
+  logger: log
+});
 
 /**
  * Determine dump type from file content
@@ -3691,7 +3842,9 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     const uid = generateWinDBGUID();
 
     // Check cache for previous WinDBG analysis of this exact file
-    const cachedAnalysis = await getCachedAnalysis(fileHash);
+    const cachedAnalysis = isCacheEnabled()
+      ? await getCachedAnalysisStrict(fileHash)
+      : await getCachedAnalysis(fileHash);
     if (cachedAnalysis?.windbgOutput) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
 
@@ -3712,16 +3865,22 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       log.info('analyze.complete', { processingTime, analysisMethod: 'windbg', cached: true, dumpType, fileSize });
 
       const jobData = {
+        schemaVersion: 2,
+        version: 1,
         status: 'completed',
+        phase: 'completed',
         fileName,
         dumpType,
         fileSize,
+        fileHash,
         uid,
         originalZip: originalZip || undefined,
         error: null,
         data: report,
         analysisMethod: 'windbg',
         processingTime,
+        startedAt: startTime,
+        completedAt: Date.now(),
         timestamp: Date.now()
       };
       await storeJob(uid, jobData);
@@ -3734,7 +3893,7 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       });
     }
 
-    console.log('[API/Analyze] Cache MISS - setting up background WinDBG analysis');
+    console.log('[API/Analyze] Cache MISS - handing dump to durable WinDBG job');
 
     // Check if WinDBG is configured
     if (!WINDBG_API_KEY) {
@@ -3754,143 +3913,60 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       });
     }
 
-    // Request concurrency ends with the 202 response, but the file buffer and
-    // WinDBG work live on afterward. Hold a separate slot for the full job so
-    // one 1Gi instance cannot accept an unbounded number of background dumps.
-    const releaseBackgroundSlot = externalAnalyzeBackgroundWork.tryAcquire();
-    if (!releaseBackgroundSlot) {
-      return res.status(429).json({
-        success: false,
-        error: 'Server is busy. Please retry shortly.',
-        code: 'ANALYSIS_BUSY'
-      });
-    }
-
-    // Create job state
-    const jobData = {
-      status: 'processing',
-      fileName,
-      dumpType,
-      fileSize,
-      uid,
-      originalZip: originalZip || undefined,
-      error: null,
-      data: null,
-      analysisMethod: 'windbg',
-      processingTime: null,
-      timestamp: Date.now()
-    };
+    // A 202 is returned only after the upstream service has durably accepted
+    // the dump and its job ID is checkpointed in Redis. No raw file buffer is
+    // retained in a post-response closure.
+    console.log(`[API/Analyze] Job ${uid}: Uploading to WinDBG before acceptance...`);
+    let handoff;
     try {
-      await storeJob(uid, jobData);
+      handoff = await handoffExternalAnalyzeJob({
+        uploadDump: async () => await uploadBufferToWinDBG(fileBuffer, fileName),
+        persistJob: async job => await storeJob(uid, job),
+        createJob: ({ upstreamJobId, uploadResult }) => {
+          const acceptedAt = Date.now();
+          return {
+            schemaVersion: 2,
+            version: 1,
+            status: 'processing',
+            phase: 'polling',
+            fileName,
+            dumpType,
+            fileSize,
+            fileHash,
+            uid,
+            upstreamJobId,
+            upstreamStatus: uploadResult.data?.status || 'submitted',
+            originalZip: originalZip || undefined,
+            error: null,
+            data: null,
+            analysisMethod: 'windbg',
+            processingTime: null,
+            startedAt: startTime,
+            acceptedAt,
+            deadlineAt: acceptedAt + EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
+            timestamp: acceptedAt
+          };
+        }
+      });
     } catch (error) {
-      releaseBackgroundSlot();
+      if (error?.upstreamJobId) {
+        log.error('analyze.accept_checkpoint_failed', {
+          uid,
+          upstreamJobId: error.upstreamJobId,
+          message: error?.cause?.message || error?.message || String(error)
+        });
+      }
       throw error;
     }
+    const { upstreamJobId } = handoff;
+    log.info('analyze.accepted', {
+      uid,
+      dumpType,
+      fileSize,
+      upstreamJobId
+    });
 
-    // Run the analysis pipeline asynchronously in the background
-    (async () => {
-      let analysisPromise = null;
-      let timeoutHandle;
-      try {
-        const runStartTime = Date.now();
-        const timeoutPromise = new Promise((_, reject) => {
-          timeoutHandle = setTimeout(() => {
-            reject(new Error('Analysis timed out after 5 minutes'));
-          }, WINDBG_TOTAL_TIMEOUT_MS);
-        });
-
-        analysisPromise = (async () => {
-          // Step 1: Upload to WinDBG
-          console.log(`[API/Analyze] Job ${uid} Step 1: Uploading to WinDBG server...`);
-          const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName);
-          if (!uploadResult.success) {
-            throw new Error(uploadResult.error || 'WinDBG upload failed');
-          }
-          const upstreamJobId = uploadResult.jobId;
-
-          // Step 2: Poll for completion
-          console.log(`[API/Analyze] Job ${uid} Step 2: Polling for completion...`);
-          await pollWinDBGStatus(upstreamJobId);
-
-          // Step 3: Download results
-          console.log(`[API/Analyze] Job ${uid} Step 3: Downloading analysis...`);
-          const windbgPackage = await downloadWinDBGAnalysis(upstreamJobId);
-          const windbgAnalysis = windbgPackage.analysisText;
-
-          // Cache the WinDBG analysis for future requests with same file
-          await setCachedAnalysis(fileHash, {
-            windbgOutput: windbgAnalysis,
-            analysisSignalText: windbgPackage.analysisSignalText,
-            structured: windbgPackage.structured,
-          });
-
-          // Hook C: external-API WinDBG analysis completed — record stats.
-          recordStats({
-            source: 'windbg',
-            fileHash,
-            structured: windbgPackage.structured,
-            analysisText: windbgAnalysis,
-            dumpType
-          });
-
-          // Step 4: Generate AI report
-          console.log(`[API/Analyze] Job ${uid} Step 4: Generating AI report...`);
-          const report = await generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, {
-            analysisSignalText: windbgPackage.analysisSignalText,
-            structured: windbgPackage.structured
-          });
-
-          return {
-            report,
-            windbgAnalysis,
-            analysisMethod: 'windbg'
-          };
-        })();
-
-        // Await the pipeline (bounded by the 5-minute timeout above) so the
-        // job status reflects the real outcome instead of throwing on an
-        // undefined `result`.
-        const result = await Promise.race([analysisPromise, timeoutPromise]);
-        const processingTime = (Date.now() - runStartTime) / 1000;
-        log.info('analyze.complete', {
-          processingTime,
-          analysisMethod: result.analysisMethod,
-          dumpType,
-          fileSize
-        });
-
-        // Save complete status
-        jobData.status = 'completed';
-        jobData.data = result.report;
-        jobData.aiStatus = result.report?.aiAvailable === false ? 'unavailable' : 'ok';
-        jobData.processingTime = processingTime;
-        jobData.timestamp = Date.now();
-        await storeJob(uid, jobData);
-
-      } catch (err) {
-        console.error(`[API/Analyze] Job ${uid} failed:`, err);
-        log.error('analyze.fail', {
-          message: err.message,
-          uid
-        });
-
-        jobData.status = 'failed';
-        jobData.error = 'Analysis failed. Please ensure the uploaded file is a valid Windows crash dump.';
-        jobData.timestamp = Date.now();
-        await storeJob(uid, jobData);
-      } finally {
-        clearTimeout(timeoutHandle);
-        // Promise.race does not cancel the losing pipeline. Retain the slot
-        // until its own bounded upstream operations actually settle so timed-
-        // out work cannot escape the two-job memory/concurrency ceiling.
-        if (analysisPromise) {
-          await analysisPromise.catch(() => {});
-        }
-        releaseBackgroundSlot();
-      }
-    })();
-
-    // Respond immediately with 202 Accepted
+    // Respond only after both durable handoff and Redis checkpoint succeed.
     return res.status(202).json({
       success: true,
       status: 'processing',
@@ -3926,21 +4002,50 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
     Pragma: 'no-cache',
     Expires: '0'
   });
-  if (!uid || typeof uid !== 'string') {
+  if (typeof uid !== 'string' || !EXTERNAL_JOB_UID_RE.test(uid)) {
     return res.status(400).json({ success: false, error: 'Invalid UID parameter' });
   }
 
   try {
-    const job = await loadJob(uid);
+    let job = await loadJob(uid);
     if (!job) {
       return res.status(404).json({ success: false, error: 'Job not found' });
     }
 
     if (job.status === 'processing') {
-      return res.json({
-        success: true,
-        status: 'processing'
-      });
+      try {
+        const advancement = await externalAnalyzeJobs.advance(uid);
+        job = advancement.job || await loadJob(uid);
+        if (advancement.advanced && job?.status === 'completed') {
+          log.info('analyze.complete', {
+            uid,
+            processingTime: job.processingTime,
+            analysisMethod: job.analysisMethod,
+            dumpType: job.dumpType,
+            fileSize: job.fileSize
+          });
+        }
+      } catch (error) {
+        log.warn('analyze.advance.deferred', {
+          uid,
+          code: error?.code || null,
+          message: error?.message || String(error)
+        });
+        // Checkpointed phases are retryable. Preserve the existing polling
+        // contract and let the next authenticated status request resume.
+        job = await loadJob(uid);
+      }
+
+      if (job?.status === 'processing') {
+        res.set('Retry-After', '10');
+        return res.json({
+          success: true,
+          status: 'processing'
+        });
+      }
+      if (!job) {
+        throw new Error('Accepted analysis job disappeared during advancement');
+      }
     }
 
     if (job.status === 'failed') {
@@ -3969,10 +4074,11 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
     });
 
   } catch (error) {
-    console.error('[API/Analyze/Status] Error loading job:', error);
-    return res.status(500).json({
+    console.error('[API/Analyze/Status] Error loading or advancing job:', error);
+    return res.status(503).json({
       success: false,
-      error: 'An internal error occurred while retrieving job status. Please try again later.'
+      error: 'Analysis status is temporarily unavailable. Please try again later.',
+      code: 'ANALYSIS_STATUS_UNAVAILABLE'
     });
   }
 });

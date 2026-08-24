@@ -89,6 +89,30 @@ test('WinDBG submit retries transient Cloudflare upstream failures', async () =>
   assert.notEqual(calls[0].options.headers['Content-Type'], calls[1].options.headers['Content-Type']);
 });
 
+test('WinDBG submit can disable retries for a non-idempotent durable handoff', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    return new Response('<html>origin timeout</html>', {
+      status: 524,
+      headers: { 'Content-Type': 'text/html' }
+    });
+  };
+
+  await assert.rejects(
+    submitWinDbgJob({
+      baseUrl: 'https://windbg-api.stack-tech.net/',
+      apiKey: 'test-token',
+      fileBuffer: Buffer.from('MDMP'),
+      fileName: 'mini.dmp',
+      maxAttempts: 1,
+      fetchImpl
+    }),
+    error => error?.code === 'WINDBG_UPSTREAM_ERROR' && error?.upstreamStatus === 524
+  );
+  assert.equal(calls, 1);
+});
+
 test('WinDBG job status maps to the legacy browser contract', () => {
   assert.equal(mapWinDbgJobStatus('queued'), 'pending');
   assert.equal(mapWinDbgJobStatus('validating'), 'processing');
