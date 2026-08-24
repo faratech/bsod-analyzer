@@ -130,6 +130,7 @@ function createExternalAnalyzeSubmissionCoordinator({
   for (const [name, value] of Object.entries({ waitIntervalMs, waitTimeoutMs })) {
     if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be positive`);
   }
+  const retryPublication = Symbol('retry-publication');
 
   async function findReusable(fileHash) {
     if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
@@ -152,12 +153,7 @@ function createExternalAnalyzeSubmissionCoordinator({
     return null;
   }
 
-  async function accept({ fileHash, uid, uploadDump, createJob }) {
-    if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
-    if (typeof uid !== 'string' || !uid) throw new TypeError('uid is required');
-    if (typeof uploadDump !== 'function') throw new TypeError('uploadDump must be a function');
-    if (typeof createJob !== 'function') throw new TypeError('createJob must be a function');
-
+  async function coordinatePublication(fileHash, publish) {
     const waitDeadline = now() + waitTimeoutMs;
     while (true) {
       const reusable = await findReusable(fileHash);
@@ -194,26 +190,17 @@ function createExternalAnalyzeSubmissionCoordinator({
         : null;
       refreshTimer?.unref?.();
 
+      let publication;
       try {
         // The previous owner may have published between our first lookup and
-        // this lease acquisition. Always re-check before uploading bytes.
+        // this lease acquisition. Always re-check before doing side effects.
         const afterAcquire = await findReusable(fileHash);
         if (afterAcquire) return afterAcquire;
-
-        const handoff = await handoffExternalAnalyzeJob({
-          uploadDump,
-          createJob,
-          persistJob: async job => {
-            if (leaseLost) return false;
-            return await storeAcceptedJobWithMapping(
-              fileHash,
-              uid,
-              job,
-              leaseToken
-            );
-          }
+        publication = await publish({
+          isLeaseLost: () => leaseLost,
+          leaseToken,
+          retryPublication
         });
-        return { ...handoff, uid, reused: false };
       } finally {
         if (refreshTimer) clearInterval(refreshTimer);
         if (renewalInFlight) await renewalInFlight.catch(() => {});
@@ -226,10 +213,67 @@ function createExternalAnalyzeSubmissionCoordinator({
           });
         }
       }
+
+      if (publication !== retryPublication) return publication;
+      if (now() >= waitDeadline) throw new ExternalAnalyzeSubmissionBusyError();
+      await wait(waitIntervalMs);
     }
   }
 
-  return { accept, findReusable };
+  async function accept({ fileHash, uid, uploadDump, createJob }) {
+    if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
+    if (typeof uid !== 'string' || !uid) throw new TypeError('uid is required');
+    if (typeof uploadDump !== 'function') throw new TypeError('uploadDump must be a function');
+    if (typeof createJob !== 'function') throw new TypeError('createJob must be a function');
+
+    return await coordinatePublication(fileHash, async ({ isLeaseLost, leaseToken }) => {
+      const handoff = await handoffExternalAnalyzeJob({
+        uploadDump,
+        createJob,
+        persistJob: async job => {
+          if (isLeaseLost()) return false;
+          return await storeAcceptedJobWithMapping(
+            fileHash,
+            uid,
+            job,
+            leaseToken
+          );
+        }
+      });
+      return { ...handoff, uid, reused: false };
+    });
+  }
+
+  async function publish({ fileHash, uid, job }) {
+    if (typeof fileHash !== 'string' || !fileHash) throw new TypeError('fileHash is required');
+    if (typeof uid !== 'string' || !uid) throw new TypeError('uid is required');
+    if (!job || typeof job !== 'object' || Array.isArray(job)) {
+      throw new TypeError('job must be an object');
+    }
+    if ((job.uid && job.uid !== uid) || (job.fileHash && job.fileHash !== fileHash)) {
+      throw new TypeError('Published job identity must match its UID and file hash');
+    }
+    if (job.status !== 'processing' && job.status !== 'completed') {
+      throw new TypeError('Only processing or completed jobs may be published for reuse');
+    }
+
+    return await coordinatePublication(fileHash, async ({
+      isLeaseLost,
+      leaseToken,
+      retryPublication: retry
+    }) => {
+      if (isLeaseLost()) return retry;
+      const stored = await storeAcceptedJobWithMapping(
+        fileHash,
+        uid,
+        job,
+        leaseToken
+      );
+      return stored ? { job, uid, reused: false } : retry;
+    });
+  }
+
+  return { accept, findReusable, publish };
 }
 
 function createExternalAnalyzeJobCoordinator({
