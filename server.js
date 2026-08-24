@@ -3789,16 +3789,17 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
 
     // Run the analysis pipeline asynchronously in the background
     (async () => {
+      let analysisPromise = null;
+      let timeoutHandle;
       try {
         const runStartTime = Date.now();
-        let timeoutHandle;
         const timeoutPromise = new Promise((_, reject) => {
           timeoutHandle = setTimeout(() => {
             reject(new Error('Analysis timed out after 5 minutes'));
           }, WINDBG_TOTAL_TIMEOUT_MS);
         });
 
-        const analysisPromise = (async () => {
+        analysisPromise = (async () => {
           // Step 1: Upload to WinDBG
           console.log(`[API/Analyze] Job ${uid} Step 1: Uploading to WinDBG server...`);
           const uploadResult = await uploadBufferToWinDBG(fileBuffer, fileName);
@@ -3850,8 +3851,6 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
         // job status reflects the real outcome instead of throwing on an
         // undefined `result`.
         const result = await Promise.race([analysisPromise, timeoutPromise]);
-        clearTimeout(timeoutHandle);
-
         const processingTime = (Date.now() - runStartTime) / 1000;
         log.info('analyze.complete', {
           processingTime,
@@ -3880,6 +3879,13 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
         jobData.timestamp = Date.now();
         await storeJob(uid, jobData);
       } finally {
+        clearTimeout(timeoutHandle);
+        // Promise.race does not cancel the losing pipeline. Retain the slot
+        // until its own bounded upstream operations actually settle so timed-
+        // out work cannot escape the two-job memory/concurrency ceiling.
+        if (analysisPromise) {
+          await analysisPromise.catch(() => {});
+        }
         releaseBackgroundSlot();
       }
     })();
