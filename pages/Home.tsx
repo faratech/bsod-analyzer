@@ -163,8 +163,17 @@ const Home: React.FC = () => {
                                 <li>Potential hardware or software conflicts</li>
                             </ul>
                             <p>
-                                Using advanced pattern recognition, we provide targeted solutions based on 
+                                Using advanced pattern recognition, we provide targeted solutions based on
                                 millions of analyzed crash scenarios.
+                            </p>
+                            <p>
+                                <Link
+                                    to="/about#how-it-works"
+                                    style={{ color: 'var(--link-color)', textDecoration: 'underline' }}
+                                >
+                                    Watch the whole pipeline, step by step
+                                </Link>
+                                {' '}- an animated walkthrough from blue screen to finished report.
                             </p>
                         </div>
                     </div>

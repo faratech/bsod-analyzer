@@ -3609,3 +3609,298 @@ body.mobile-menu-open {
   line-height: 1.4;
 }
 .stats-embed .bar-list-desc { display: none; } /* keep the widget compact */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Pipeline flow diagram (components/flow/*)
+   The stage is a fixed 1920x1080 WindowsForum-styled artboard scaled to fit
+   the column and the viewport; only the chrome around it follows the site
+   theme. Frame width/height are set inline from the measured fit.
+   ───────────────────────────────────────────────────────────────────────── */
+.flow-figure {
+  margin: 0 0 2rem;
+}
+
+.flow-frame-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+.flow-frame {
+  position: relative;
+  width: 100%;
+  /* Placeholder ratio until the fit is measured; the inline width/height that
+     lands on first paint supersedes it. */
+  aspect-ratio: 16 / 9;
+  margin-inline: auto;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #eff5f6;
+  border: 1px solid var(--border-primary);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  contain: layout paint;
+}
+
+.flow-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* Narration lifted out of the artboard when it renders too small to read. */
+.flow-live-caption {
+  margin: 0.75rem 0 0;
+  min-height: 2.75em;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--text-primary);
+  text-wrap: pretty;
+}
+
+/* Fullscreen variant: rides over the artboard so the frame keeps the height. */
+.flow-live-caption.is-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 3%;
+  transform: translateX(-50%);
+  z-index: 1;
+  max-width: 92%;
+  margin: 0;
+  min-height: 0;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  border-radius: 6px;
+  text-align: center;
+  color: #1a1b1b;
+  background: rgba(255, 255, 255, 0.93);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.flow-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.flow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.flow-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-secondary);
+}
+
+.flow-btn:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+.flow-btn-play {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: #ffffff;
+  min-width: 6.25rem;
+}
+
+.flow-btn-play:hover {
+  background: var(--brand-secondary);
+  border-color: var(--brand-secondary);
+}
+
+.flow-btn-toggle.is-on {
+  border-color: var(--brand-primary);
+  color: var(--brand-accent);
+}
+
+.flow-btn-icon {
+  padding: 0.5rem;
+  width: 2.25rem;
+}
+
+.flow-scrub {
+  flex: 1 1 10rem;
+  min-width: 6rem;
+  height: 1.5rem;
+  accent-color: var(--brand-primary);
+  cursor: pointer;
+}
+
+.flow-scrub:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+.flow-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  min-width: 5.5rem;
+  text-align: right;
+}
+
+.flow-chapters {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.5rem;
+}
+
+.flow-chapter {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--bg-secondary);
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.flow-chapter:hover {
+  background: var(--bg-hover);
+}
+
+.flow-chapter:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+.flow-chapter.is-active {
+  border-color: var(--brand-primary);
+  background: var(--bg-tertiary);
+}
+
+.flow-chapter-name {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.flow-chapter-desc {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.flow-caption {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.flow-transcript {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.flow-transcript > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 0.35rem 0;
+}
+
+.flow-transcript ol {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+  line-height: 1.7;
+}
+
+/* Fullscreen: the artboard is the point, so the reading material around it
+   steps aside and the frame takes the whole screen. */
+.flow-figure:fullscreen {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 1rem;
+  background: var(--bg-primary);
+}
+
+.flow-figure:fullscreen .flow-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-figure:fullscreen .flow-chapters,
+.flow-figure:fullscreen .flow-caption,
+.flow-figure:fullscreen .flow-transcript {
+  display: none;
+}
+
+/* Touch: meet the 44px minimum hit target the design system asks for. */
+@media (pointer: coarse) {
+  .flow-btn {
+    min-height: 44px;
+  }
+
+  .flow-scrub {
+    height: 44px;
+  }
+
+  .flow-chapter {
+    padding: 0.75rem;
+  }
+
+  .flow-transcript > summary {
+    padding: 0.6rem 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .flow-time {
+    display: none;
+  }
+
+  .flow-scrub {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .flow-btn-play {
+    flex: 1 1 auto;
+  }
+
+  .flow-chapters {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Reduced motion: the stage is parked on a still, so drop the transitions on
+   the chrome too. */
+@media (prefers-reduced-motion: reduce) {
+  .flow-btn,
+  .flow-chapter {
+    transition: none;
+  }
+}
