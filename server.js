@@ -3917,6 +3917,15 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
 // Poll status of external API analyze jobs
 app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKey, externalAnalyzeStatusLimiter, async (req, res) => {
   const { uid } = req.params;
+  // Job state changes between polls. Prevent browsers and intermediary CDNs
+  // from pinning the first `processing` response after WinDBG has completed.
+  res.set({
+    'Cache-Control': 'private, no-store, no-cache, max-age=0, must-revalidate',
+    'CDN-Cache-Control': 'no-store',
+    'Cloudflare-CDN-Cache-Control': 'no-store',
+    Pragma: 'no-cache',
+    Expires: '0'
+  });
   if (!uid || typeof uid !== 'string') {
     return res.status(400).json({ success: false, error: 'Invalid UID parameter' });
   }
