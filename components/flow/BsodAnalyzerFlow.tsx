@@ -57,6 +57,7 @@ const BsodAnalyzerFlow: React.FC<BsodAnalyzerFlowProps> = ({ className = '', aut
     const [reducedMotion, setReducedMotion] = useState(false);
     const [fullscreen, setFullscreen] = useState(false);
     const [canFullscreen, setCanFullscreen] = useState(false);
+    const [shareLabel, setShareLabel] = useState('Share');
     const autoStarted = useRef(false);
 
     // Fit the 1920x1080 frame to the column AND to the viewport height, so a
@@ -167,6 +168,38 @@ const BsodAnalyzerFlow: React.FC<BsodAnalyzerFlowProps> = ({ className = '', aut
         }
     }, [finished]);
 
+    const shareDemo = useCallback(async () => {
+        const url = new URL(window.location.href);
+        url.hash = 'bsod-analysis-flow';
+        const shareUrl = url.toString();
+        const shareData = {
+            title: 'How the BSOD AI Analyzer works',
+            text: 'Watch how a Windows crash dump moves through the BSOD AI Analyzer.',
+            url: shareUrl,
+        };
+
+        const copyLink = async () => {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(shareUrl);
+                setShareLabel('Link copied');
+                window.setTimeout(() => setShareLabel('Share'), 2000);
+                return;
+            }
+            window.prompt('Copy this link to share the demo:', shareUrl);
+        };
+
+        try {
+            if (navigator.share) {
+                await navigator.share(shareData);
+            } else {
+                await copyLink();
+            }
+        } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') return;
+            await copyLink();
+        }
+    }, []);
+
     const seek = useCallback((t: number) => setTime(t), []);
 
     const frameW = scale === null ? 0 : FRAME.w * scale;
@@ -176,6 +209,7 @@ const BsodAnalyzerFlow: React.FC<BsodAnalyzerFlowProps> = ({ className = '', aut
 
     return (
         <figure
+            id="bsod-analysis-flow"
             ref={figureRef}
             className={`flow-figure ${fullscreen ? 'is-fullscreen' : ''} ${className}`.replace(/\s+/g, ' ').trim()}
         >
@@ -260,6 +294,21 @@ const BsodAnalyzerFlow: React.FC<BsodAnalyzerFlowProps> = ({ className = '', aut
                     aria-pressed={captions}
                 >
                     Captions
+                </button>
+
+                <button
+                    type="button"
+                    className="flow-btn"
+                    onClick={shareDemo}
+                    aria-label="Share this BSOD Analyzer demo"
+                >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <circle cx="18" cy="5" r="3" />
+                        <circle cx="6" cy="12" r="3" />
+                        <circle cx="18" cy="19" r="3" />
+                        <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
+                    </svg>
+                    <span aria-live="polite">{shareLabel}</span>
                 </button>
 
                 {canFullscreen && (
