@@ -50,15 +50,22 @@ test('shared policy rejects unsafe paths and keeps safe nested dump paths', () =
   assert.equal(validatePathEntry('a/./crash.dmp'), false);
 });
 
-test('shared policy detects archive magic and rejects extension mismatch', () => {
-  const zip = Buffer.from([0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0]);
+test('shared policy detects archive magic and accepts supported extension mismatch', () => {
+  const zip = Buffer.alloc(FILE_LIMITS.minArchiveSize);
+  Buffer.from([0x50, 0x4B, 0x03, 0x04]).copy(zip);
   const sevenZip = Buffer.from([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 0]);
-  const rar = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00]);
+  const rar = Buffer.alloc(FILE_LIMITS.minArchiveSize);
+  Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00]).copy(rar);
 
   assert.equal(detectArchiveType(zip), 'zip');
   assert.equal(detectArchiveType(sevenZip), '7z');
   assert.equal(detectArchiveType(rar), 'rar');
-  assert.equal(validateUploadedBuffer(zip, 'archive.7z').valid, false);
+  const result = validateUploadedBuffer(zip, 'archive.7z');
+  assert.equal(result.valid, true);
+  assert.equal(result.archiveType, 'zip');
+  const mislabeledRar = validateUploadedBuffer(rar, 'Mini Dump.zip');
+  assert.equal(mislabeledRar.valid, true);
+  assert.equal(mislabeledRar.archiveType, 'rar');
 });
 
 test('filename helpers normalize dangerous upload names', () => {

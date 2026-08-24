@@ -359,6 +359,23 @@ function createConcurrencyLimiter(max, code) {
   };
 }
 
+function createWorkloadLimiter(max) {
+  let active = 0;
+  return {
+    tryAcquire() {
+      if (active >= max) return null;
+      active++;
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          active = Math.max(0, active - 1);
+        }
+      };
+    }
+  };
+}
+
 function rejectLargeBody(limitBytes) {
   return (req, res, next) => {
     const contentLength = Number.parseInt(req.headers['content-length'] || '0', 10);
@@ -1105,7 +1122,10 @@ const apiLimiter = makeLimiter({
   skip: (req) => {
     // Skip rate limiting for health check and public stats endpoints
     // (both get dedicated limiters or no limiter by design).
-    return req.path === '/health' || req.path === '/api/stats' || req.path === '/api/stats/insight';
+    return req.path === '/health' ||
+      req.path === '/api/stats' ||
+      req.path === '/api/stats/insight' ||
+      /^\/api\/analyze\/status\/[^/]+\/?$/.test(req.path);
   }
 });
 
@@ -1115,14 +1135,29 @@ const geminiLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 40, name: 'ge
 const windbgUploadLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 20, name: 'windbg-upload' });
 const windbgPollLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'windbg-poll' });
 const archiveLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 10, name: 'archive' });
-const externalAnalyzeLimiter = makeLimiter({
+const externalAnalyzeSubmitLimiter = makeLimiter({
   windowMs: 60 * 60 * 1000,
   max: 60,
-  name: 'external-analyze',
+  name: 'external-analyze-submit',
   keyGenerator: (req) => {
     const apiKey = req.headers['x-api-key'];
     return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
   }
+});
+const externalAnalyzeStatusLimiter = makeLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 1200,
+  name: 'external-analyze-status',
+  keyGenerator: (req) => {
+    const apiKey = req.headers['x-api-key'];
+    return apiKey ? `api:${safeToken(apiKey)}` : `ip:${rateLimitKey(req)}`;
+  }
+});
+const externalAnalyzeStatusIpLimiter = makeLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 1200,
+  name: 'external-analyze-status-ip',
+  keyGenerator: rateLimitKey
 });
 // Public stats endpoint: generous per-IP budget for widget traffic.
 const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
@@ -1131,6 +1166,7 @@ const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
+const externalAnalyzeBackgroundWork = createWorkloadLimiter(2);
 
 // Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
 const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
@@ -3575,7 +3611,7 @@ async function extractDumpsFromArchive(buffer, originalName, archiveType) {
 
 // Main external API endpoint
 // Main external API endpoint
-app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
+app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -3718,6 +3754,18 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       });
     }
 
+    // Request concurrency ends with the 202 response, but the file buffer and
+    // WinDBG work live on afterward. Hold a separate slot for the full job so
+    // one 1Gi instance cannot accept an unbounded number of background dumps.
+    const releaseBackgroundSlot = externalAnalyzeBackgroundWork.tryAcquire();
+    if (!releaseBackgroundSlot) {
+      return res.status(429).json({
+        success: false,
+        error: 'Server is busy. Please retry shortly.',
+        code: 'ANALYSIS_BUSY'
+      });
+    }
+
     // Create job state
     const jobData = {
       status: 'processing',
@@ -3732,7 +3780,12 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
       processingTime: null,
       timestamp: Date.now()
     };
-    await storeJob(uid, jobData);
+    try {
+      await storeJob(uid, jobData);
+    } catch (error) {
+      releaseBackgroundSlot();
+      throw error;
+    }
 
     // Run the analysis pipeline asynchronously in the background
     (async () => {
@@ -3826,6 +3879,8 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
         jobData.error = 'Analysis failed. Please ensure the uploaded file is a valid Windows crash dump.';
         jobData.timestamp = Date.now();
         await storeJob(uid, jobData);
+      } finally {
+        releaseBackgroundSlot();
       }
     })();
 
@@ -3854,7 +3909,7 @@ app.post('/api/analyze', externalAnalyzeLimiter, requireApiKey, rejectLargeBody(
 });
 
 // Poll status of external API analyze jobs
-app.get('/api/analyze/status/:uid', externalAnalyzeLimiter, requireApiKey, async (req, res) => {
+app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKey, externalAnalyzeStatusLimiter, async (req, res) => {
   const { uid } = req.params;
   if (!uid || typeof uid !== 'string') {
     return res.status(400).json({ success: false, error: 'Invalid UID parameter' });

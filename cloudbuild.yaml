@@ -51,7 +51,7 @@ steps:
       - '1'
       - '--memory'
       - '1Gi'
-      - '--cpu-throttling'
+      - '--no-cpu-throttling'
       - '--cpu-boost'
       - '--update-env-vars'
       - 'NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED}'

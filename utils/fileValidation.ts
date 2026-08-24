@@ -1,6 +1,7 @@
 import { SECURITY_CONFIG } from '../config/security';
 import {
   ARCHIVE_EXTENSIONS,
+  detectArchiveType,
   formatBytes,
   getFileExtension,
   hasAnyMagic,
@@ -49,31 +50,21 @@ export function validateFileExtension(file: File): ValidationResult {
 
 export async function validateFileMagicBytes(file: File): Promise<ValidationResult> {
   const extension = getFileExtension(file.name);
-  let magicBytesConfig;
-  switch (extension) {
-    case '.zip':
-      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.zipMagic;
-      break;
-    case '.7z':
-      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.sevenZipMagic;
-      break;
-    case '.rar':
-      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.rarMagic;
-      break;
-    default:
-      magicBytesConfig = MAGIC_SIGNATURES.fileValidation.dmpMagic;
-      break;
-  }
   
   try {
     const headerBytes = await readFileHeader(file, 8);
-    
-    const isValidMagic = hasAnyMagic(headerBytes, magicBytesConfig);
+
+    const isArchive = ARCHIVE_EXTENSIONS.includes(extension);
+    const isValidMagic = isArchive
+      ? Boolean(detectArchiveType(headerBytes))
+      : hasAnyMagic(headerBytes, MAGIC_SIGNATURES.fileValidation.dmpMagic);
     
     if (!isValidMagic) {
       return {
         valid: false,
-        error: `File "${file.name}" does not appear to be a valid ${extension} file.`
+        error: isArchive
+          ? `File "${file.name}" does not appear to be a valid supported archive.`
+          : `File "${file.name}" does not appear to be a valid ${extension} file.`
       };
     }
     
