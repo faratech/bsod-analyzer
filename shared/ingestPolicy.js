@@ -191,9 +191,6 @@ function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } =
     if (!archiveType) {
       return { valid: false, error: 'Archive extension does not match archive signature' };
     }
-    if (archiveType !== ext.slice(1)) {
-      return { valid: false, error: 'Archive extension does not match archive signature' };
-    }
     return { valid: true, archiveType };
   }
 

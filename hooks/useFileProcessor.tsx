@@ -6,8 +6,8 @@ import { validateDumpFile } from '../utils/dumpParser';
 import { useError } from './useError';
 import { FILE_SIZE_THRESHOLDS } from '../constants';
 import { checkCacheStatus } from '../services/windbgService';
-import { isServerSideArchive, extractArchiveServerSide } from '../services/archiveService';
-import { isDumpFileName } from '../shared/ingestPolicy.js';
+import { extractArchiveServerSide } from '../services/archiveService';
+import { detectArchiveType, isArchiveFileName, isDumpFileName } from '../shared/ingestPolicy.js';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP;
 
@@ -73,7 +73,13 @@ export const useFileProcessor = () => {
                 }
             };
 
-            if (file.name.toLowerCase().endsWith('.zip')) {
+            let archiveType: string | null = null;
+            if (isArchiveFileName(file.name)) {
+                const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+                archiveType = detectArchiveType(header);
+            }
+
+            if (archiveType === 'zip') {
                 try {
                     const { files: extractedFiles, errors } = await extractZipSafely(file);
 
@@ -96,7 +102,7 @@ export const useFileProcessor = () => {
                     console.error("Error processing zip file:", e);
                     setError(`Error processing ZIP file: ${file.name}`);
                 }
-            } else if (isServerSideArchive(file.name)) {
+            } else if (archiveType === '7z' || archiveType === 'rar') {
                 try {
                     const extractedFiles = await extractArchiveServerSide(file);
 
@@ -118,6 +124,8 @@ export const useFileProcessor = () => {
                     console.error("Error processing archive:", e);
                     setError(e instanceof Error ? e.message : `Error processing archive: ${file.name}`);
                 }
+            } else if (isArchiveFileName(file.name)) {
+                setError(`Invalid or unsupported archive format: ${file.name}`);
             } else if (isDumpFileName(file.name)) {
                 await processFile(file);
             } else {
