@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createRuntimeJobWithMapping,
+  deleteRuntimeValueIfEquals,
   getRuntimeValueStrict,
   initCache,
   releaseRuntimeLease,
@@ -42,6 +44,16 @@ function createFakeRedis() {
       for (const key of keys) expireIfNeeded(key);
       const leaseValue = values.get(keys[0]);
       if (leaseValue !== args[0]) return 0;
+
+      if (script.includes('KEYS[3]')) {
+        const existing = values.get(keys[2]);
+        if (existing && existing !== args[1]) return -1;
+        values.set(keys[1], args[2]);
+        values.set(keys[2], args[1]);
+        ttls.set(keys[1], clockSeconds + Number(args[3]));
+        ttls.set(keys[2], clockSeconds + Number(args[3]));
+        return 1;
+      }
 
       if (script.includes("redis.call('DEL'")) {
         values.delete(keys[0]);
@@ -155,4 +167,38 @@ test('an expired owner cannot checkpoint or release after lease takeover', async
     phase: 'completed'
   }, 3600), true);
   assert.equal((await getRuntimeValueStrict(jobKey)).status, 'completed');
+});
+
+test('accepted job and in-flight hash mapping publish atomically under the submission lease', async () => {
+  const redisClient = createFakeRedis();
+  initCache({ redisClient, analysisClient: {} });
+
+  const uid = 'API-1800000000000-aabbccddeeff';
+  const jobKey = `job:${uid}`;
+  const mappingKey = 'inflight-job:0123456789abcdef';
+  const leaseKey = 'submission-lease:0123456789abcdef';
+  const job = {
+    schemaVersion: 2,
+    version: 1,
+    uid,
+    status: 'processing',
+    phase: 'polling',
+    upstreamJobId: 'windbg-one'
+  };
+
+  assert.equal(await tryAcquireRuntimeLease(leaseKey, 'submit-owner', 60), true);
+  assert.equal(await createRuntimeJobWithMapping(
+    jobKey,
+    mappingKey,
+    leaseKey,
+    'submit-owner',
+    uid,
+    job,
+    3600
+  ), true);
+  assert.deepEqual(await getRuntimeValueStrict(jobKey), job);
+  assert.equal(await getRuntimeValueStrict(mappingKey), uid);
+  assert.equal(await deleteRuntimeValueIfEquals(mappingKey, 'different-uid'), false);
+  assert.equal(await deleteRuntimeValueIfEquals(mappingKey, uid), true);
+  assert.equal(await getRuntimeValueStrict(mappingKey), null);
 });

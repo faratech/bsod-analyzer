@@ -74,6 +74,26 @@ end
 return 0
 `;
 
+const CREATE_RUNTIME_JOB_WITH_MAPPING_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  local existing = redis.call('GET', KEYS[3])
+  if existing and existing ~= ARGV[2] then
+    return -1
+  end
+  redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
+  redis.call('SET', KEYS[3], ARGV[2], 'EX', ARGV[4])
+  return 1
+end
+return 0
+`;
+
+const DELETE_RUNTIME_VALUE_IF_EQUALS_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
@@ -444,6 +464,50 @@ export async function transitionRuntimeJobWithLease(key, leaseKey, token, expect
     [token, String(expectedVersion), JSON.stringify(value), String(Math.ceil(ttlSeconds))]
   );
   return Number(stored) === 1;
+}
+
+/**
+ * Atomically publish an accepted job and its file-hash -> UID reuse mapping
+ * while the caller owns the per-file submission lease.
+ */
+export async function createRuntimeJobWithMapping(
+  key,
+  mappingKey,
+  leaseKey,
+  token,
+  mappingValue,
+  value,
+  ttlSeconds
+) {
+  if (!isCacheEnabled()) {
+    throw new Error('Redis runtime store is not configured');
+  }
+  if (!token || mappingValue === undefined || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new TypeError('Mapped runtime job requires a token, mapping value, and positive TTL');
+  }
+
+  const stored = await redis.eval(
+    CREATE_RUNTIME_JOB_WITH_MAPPING_SCRIPT,
+    [getRuntimeKey(leaseKey), getRuntimeKey(key), getRuntimeKey(mappingKey)],
+    [
+      token,
+      JSON.stringify(mappingValue),
+      JSON.stringify(value),
+      String(Math.ceil(ttlSeconds))
+    ]
+  );
+  return Number(stored) === 1;
+}
+
+/** Delete a JSON runtime value only if it still equals the expected value. */
+export async function deleteRuntimeValueIfEquals(key, expectedValue) {
+  if (!isCacheEnabled()) return false;
+  const deleted = await redis.eval(
+    DELETE_RUNTIME_VALUE_IF_EQUALS_SCRIPT,
+    [getRuntimeKey(key)],
+    [JSON.stringify(expectedValue)]
+  );
+  return Number(deleted) === 1;
 }
 
 export async function deleteRuntimeValue(key) {

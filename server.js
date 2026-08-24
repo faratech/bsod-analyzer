@@ -41,7 +41,8 @@ import {
 import { isForumIdentityEnabled, resolveForumIdentityFromCookies } from './services/forumIdentity.js';
 import {
   createExternalAnalyzeJobCoordinator,
-  handoffExternalAnalyzeJob
+  createExternalAnalyzeSubmissionCoordinator,
+  reusableSubmissionResponse
 } from './services/externalAnalyzeJobs.js';
 import {
   createFastifyCompatApp,
@@ -101,8 +102,10 @@ import {
   getRuntimeValue,
   getRuntimeValueStrict,
   setRuntimeValue,
+  createRuntimeJobWithMapping,
   transitionRuntimeJobWithLease,
   deleteRuntimeValue,
+  deleteRuntimeValueIfEquals,
   tryAcquireRuntimeLease,
   renewRuntimeLease,
   releaseRuntimeLease,
@@ -513,6 +516,8 @@ const OWNERSHIP_EXPIRY_SECONDS = Math.ceil(OWNERSHIP_EXPIRY / 1000);
 // Track external asynchronous analysis jobs (fallback when Redis is not enabled)
 const externalJobs = new Map(); // uid -> jobData
 const externalJobLeases = new Map(); // uid -> { token, expiresAt }
+const externalSubmissionLeases = new Map(); // fileHash -> { token, expiresAt }
+const externalInflightJobs = new Map(); // fileHash -> uid
 const externalJobAnalysisCache = new Map(); // fileHash -> WinDBG evidence (development fallback)
 const JOB_EXPIRY_SECONDS = readPositiveInt(process.env.EXTERNAL_JOB_TTL_SECONDS, 2 * 60 * 60);
 const EXTERNAL_JOB_DEADLINE_SECONDS = readPositiveInt(
@@ -528,9 +533,29 @@ const EXTERNAL_JOB_LEASE_REFRESH_MS = readPositiveInt(
   process.env.EXTERNAL_JOB_LEASE_REFRESH_MS,
   15_000
 );
+const EXTERNAL_SUBMISSION_LEASE_SECONDS = readPositiveInt(
+  process.env.EXTERNAL_SUBMISSION_LEASE_SECONDS,
+  60
+);
+const EXTERNAL_SUBMISSION_LEASE_REFRESH_MS = readPositiveInt(
+  process.env.EXTERNAL_SUBMISSION_LEASE_REFRESH_MS,
+  15_000
+);
+const EXTERNAL_SUBMISSION_WAIT_MS = readPositiveInt(
+  process.env.EXTERNAL_SUBMISSION_WAIT_MS,
+  245_000
+);
 
 function externalJobLeaseKey(uid) {
   return `job-lease:${uid}`;
+}
+
+function externalSubmissionLeaseKey(fileHash) {
+  return `submission-lease:${fileHash}`;
+}
+
+function externalInflightKey(fileHash) {
+  return `inflight-job:${fileHash}`;
 }
 
 async function storeJob(uid, jobData) {
@@ -602,6 +627,100 @@ async function releaseExternalJobLease(uid, token) {
   const existing = externalJobLeases.get(uid);
   if (!existing || existing.token !== token) return false;
   externalJobLeases.delete(uid);
+  return true;
+}
+
+async function loadExternalInflightJob(fileHash) {
+  if (isCacheEnabled()) {
+    return REQUIRE_REDIS_RUNTIME
+      ? await getRuntimeValueStrict(externalInflightKey(fileHash))
+      : await getRuntimeValue(externalInflightKey(fileHash));
+  }
+  if (REQUIRE_REDIS_RUNTIME) {
+    throw new Error('Runtime store required but Redis cache is not configured');
+  }
+  return externalInflightJobs.get(fileHash) || null;
+}
+
+async function removeExternalInflightJob(fileHash, expectedUid) {
+  if (isCacheEnabled()) {
+    return await deleteRuntimeValueIfEquals(externalInflightKey(fileHash), expectedUid);
+  }
+  const current = externalInflightJobs.get(fileHash);
+  if (current !== expectedUid) return false;
+  externalInflightJobs.delete(fileHash);
+  return true;
+}
+
+async function acquireExternalSubmissionLease(fileHash) {
+  const token = crypto.randomUUID();
+  if (isCacheEnabled()) {
+    const acquired = await tryAcquireRuntimeLease(
+      externalSubmissionLeaseKey(fileHash),
+      token,
+      EXTERNAL_SUBMISSION_LEASE_SECONDS
+    );
+    return acquired ? token : null;
+  }
+  if (REQUIRE_REDIS_RUNTIME) {
+    throw new Error('Runtime store required but Redis cache is not configured');
+  }
+
+  const existing = externalSubmissionLeases.get(fileHash);
+  if (existing && existing.expiresAt > Date.now()) return null;
+  externalSubmissionLeases.set(fileHash, {
+    token,
+    expiresAt: Date.now() + EXTERNAL_SUBMISSION_LEASE_SECONDS * 1000
+  });
+  return token;
+}
+
+async function renewExternalSubmissionLease(fileHash, token) {
+  if (isCacheEnabled()) {
+    return await renewRuntimeLease(
+      externalSubmissionLeaseKey(fileHash),
+      token,
+      EXTERNAL_SUBMISSION_LEASE_SECONDS
+    );
+  }
+  const existing = externalSubmissionLeases.get(fileHash);
+  if (!existing || existing.token !== token || existing.expiresAt <= Date.now()) return false;
+  existing.expiresAt = Date.now() + EXTERNAL_SUBMISSION_LEASE_SECONDS * 1000;
+  return true;
+}
+
+async function releaseExternalSubmissionLease(fileHash, token) {
+  if (isCacheEnabled()) {
+    return await releaseRuntimeLease(externalSubmissionLeaseKey(fileHash), token);
+  }
+  const existing = externalSubmissionLeases.get(fileHash);
+  if (!existing || existing.token !== token) return false;
+  externalSubmissionLeases.delete(fileHash);
+  return true;
+}
+
+async function storeAcceptedExternalJobWithMapping(fileHash, uid, jobData, token) {
+  if (isCacheEnabled()) {
+    return await createRuntimeJobWithMapping(
+      `job:${uid}`,
+      externalInflightKey(fileHash),
+      externalSubmissionLeaseKey(fileHash),
+      token,
+      uid,
+      jobData,
+      JOB_EXPIRY_SECONDS
+    );
+  }
+  if (REQUIRE_REDIS_RUNTIME) {
+    throw new Error('Runtime store required but Redis cache is not configured');
+  }
+
+  const lease = externalSubmissionLeases.get(fileHash);
+  const existingUid = externalInflightJobs.get(fileHash);
+  if (!lease || lease.token !== token || lease.expiresAt <= Date.now()) return false;
+  if (existingUid && existingUid !== uid) return false;
+  externalJobs.set(uid, jobData);
+  externalInflightJobs.set(fileHash, uid);
   return true;
 }
 
@@ -853,6 +972,12 @@ setInterval(() => {
   }
   for (const [uid, lease] of externalJobLeases.entries()) {
     if (lease.expiresAt <= now) externalJobLeases.delete(uid);
+  }
+  for (const [fileHash, lease] of externalSubmissionLeases.entries()) {
+    if (lease.expiresAt <= now) externalSubmissionLeases.delete(fileHash);
+  }
+  for (const [fileHash, uid] of externalInflightJobs.entries()) {
+    if (!externalJobs.has(uid)) externalInflightJobs.delete(fileHash);
   }
   for (const [fileHash, analysis] of externalJobAnalysisCache.entries()) {
     if (now - analysis.timestamp > JOB_EXPIRY_SECONDS * 1000) {
@@ -3450,6 +3575,19 @@ const externalAnalyzeJobs = createExternalAnalyzeJobCoordinator({
   logger: log
 });
 
+const externalAnalyzeSubmissions = createExternalAnalyzeSubmissionCoordinator({
+  loadMapping: loadExternalInflightJob,
+  loadJob,
+  removeMapping: removeExternalInflightJob,
+  acquireLease: acquireExternalSubmissionLease,
+  renewLease: renewExternalSubmissionLease,
+  releaseLease: releaseExternalSubmissionLease,
+  storeAcceptedJobWithMapping: storeAcceptedExternalJobWithMapping,
+  waitTimeoutMs: EXTERNAL_SUBMISSION_WAIT_MS,
+  leaseRefreshMs: EXTERNAL_SUBMISSION_LEASE_REFRESH_MS,
+  logger: log
+});
+
 /**
  * Determine dump type from file content
  */
@@ -3838,6 +3976,22 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     const fileHash = hashContent(fileBuffer);
     console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
 
+    // A forum worker may lose the original 202 response and submit the same
+    // dump again while WinDBG/reporting is still running. Reuse the durable UID
+    // before consulting the evidence cache, which can already be populated by
+    // the downloading phase while that original job is still processing.
+    const mapped = await externalAnalyzeSubmissions.findReusable(fileHash);
+    const mappedResponse = reusableSubmissionResponse(mapped);
+    if (mappedResponse) {
+      log.info('analyze.job_reused', {
+        uid: mappedResponse.uid,
+        fileHash: fileHash.substring(0, 12),
+        status: mappedResponse.status,
+        phase: mapped.job.phase || null
+      });
+      return res.status(202).json(mappedResponse);
+    }
+
     // Generate UID for this job
     const uid = generateWinDBGUID();
 
@@ -3919,9 +4073,10 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     console.log(`[API/Analyze] Job ${uid}: Uploading to WinDBG before acceptance...`);
     let handoff;
     try {
-      handoff = await handoffExternalAnalyzeJob({
+      handoff = await externalAnalyzeSubmissions.accept({
+        fileHash,
+        uid,
         uploadDump: async () => await uploadBufferToWinDBG(fileBuffer, fileName),
-        persistJob: async job => await storeJob(uid, job),
         createJob: ({ upstreamJobId, uploadResult }) => {
           const acceptedAt = Date.now();
           return {
@@ -3958,9 +4113,10 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       }
       throw error;
     }
-    const { upstreamJobId } = handoff;
-    log.info('analyze.accepted', {
-      uid,
+    const acceptedUid = handoff.uid;
+    const upstreamJobId = handoff.upstreamJobId || handoff.job?.upstreamJobId;
+    log.info(handoff.reused ? 'analyze.accepted_reused' : 'analyze.accepted', {
+      uid: acceptedUid,
       dumpType,
       fileSize,
       upstreamJobId
@@ -3969,9 +4125,9 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     // Respond only after both durable handoff and Redis checkpoint succeed.
     return res.status(202).json({
       success: true,
-      status: 'processing',
-      uid,
-      checkStatusUrl: `/api/analyze/status/${uid}`
+      status: handoff.job?.status === 'completed' ? 'completed' : 'processing',
+      uid: acceptedUid,
+      checkStatusUrl: `/api/analyze/status/${acceptedUid}`
     });
 
   } catch (error) {
@@ -3981,10 +4137,14 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
       processingTime
     });
 
-    res.status(500).json({
+    const submissionBusy = error?.code === 'ANALYSIS_SUBMISSION_BUSY';
+    if (submissionBusy) res.set('Retry-After', '10');
+    res.status(submissionBusy ? 503 : 500).json({
       success: false,
-      error: 'An internal error occurred while initiating the analysis. Please try again later.',
-      code: 'ANALYSIS_INIT_FAILED',
+      error: submissionBusy
+        ? 'The same dump is still being accepted. Please retry shortly.'
+        : 'An internal error occurred while initiating the analysis. Please try again later.',
+      code: submissionBusy ? 'ANALYSIS_SUBMISSION_BUSY' : 'ANALYSIS_INIT_FAILED',
       processingTime
     });
   }
