@@ -30,7 +30,7 @@
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
     "@fastify/multipart": "^10.1.1",
-    "@google/genai": "^2.18.0",
+    "@google/genai": "^2.19.0",
     "@upstash/redis": "^1.38.2",
     "concurrently": "^10.0.5",
     "dotenv": "^17.4.2",
