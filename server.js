@@ -191,8 +191,17 @@ const HASH_RE = /^[a-f0-9]{8,16}$/i;
 const EXTERNAL_JOB_UID_RE = /^API-\d{10,17}-[a-f0-9]{12}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
+// Output budget for an analysis response. On a reasoning model the reasoning trace
+// is charged against the same budget as the answer, so a cap sized for the JSON
+// alone gets consumed by the reasoning and the object is cut off mid-string —
+// surfacing as finishReason "LENGTH" and "AI response was not valid JSON". This is
+// a ceiling, not a target: a model that finishes early is billed for what it used.
+const AI_MAX_OUTPUT_TOKENS = readPositiveInt(process.env.AI_MAX_OUTPUT_TOKENS, 16_384);
 const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
-const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, GEMINI_TIMEOUT_MS);
+// DeepSeek runs with a reasoning trace, so it is materially slower than a
+// straight completion and gets its own budget rather than inheriting Gemini's.
+// Cloud Run's request timeout (300s by default) is the real ceiling.
+const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, 120_000);
 const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPSEEK_API_BASE_URL;
 // OpenRouter free-tier failover: used when the DeepSeek account cannot serve
 // requests (out of credits, auth revoked). Unset key = failover disabled.
@@ -208,7 +217,14 @@ const OPENAI_FREE_MODEL = process.env.OPENAI_FREE_MODEL || DEFAULT_OPENAI_FREE_M
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
 const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
-const DEEPSEEK_REASONING_EFFORT = process.env.DEEPSEEK_REASONING_EFFORT === 'max' ? 'max' : 'high';
+// Effort below 'high' is selectable now, but the default is unchanged: the vendor's
+// accepted values are not verified here beyond 'high'/'max', which is all this code
+// has ever sent, so a lower setting is opt-in and instantly revertible via env
+// rather than something a deploy silently changes underneath the analysis quality.
+const DEEPSEEK_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'max'];
+const DEEPSEEK_REASONING_EFFORT = DEEPSEEK_REASONING_EFFORTS.includes(process.env.DEEPSEEK_REASONING_EFFORT)
+  ? process.env.DEEPSEEK_REASONING_EFFORT
+  : 'high';
 const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
   String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
 );
@@ -1110,7 +1126,7 @@ async function generateAIContent(request) {
     // normal chain when the daily quota is out or the attempt fails.
     const configuredMaxOutput = Number(request.config?.maxOutputTokens);
     const projectedTokens = Math.ceil(String(request.contents || '').length / 4)
-      + (Number.isFinite(configuredMaxOutput) ? configuredMaxOutput : 4096);
+      + (Number.isFinite(configuredMaxOutput) ? configuredMaxOutput : AI_MAX_OUTPUT_TOKENS);
     if (await openAIFreeGate(projectedTokens)) {
       try {
         const response = await withTimeout(
@@ -2674,11 +2690,11 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       responseMimeType: 'application/json',
       candidateCount: 1,
       temperature: 0.5,
-      maxOutputTokens: 4096,
+      maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
       responseSchema: SERVER_REPORT_RESPONSE_SCHEMA
     };
     if (Number.isFinite(frontendConfig.maxOutputTokens)) {
-      sdkConfig.maxOutputTokens = Math.min(Math.max(Math.floor(frontendConfig.maxOutputTokens), 256), 4096);
+      sdkConfig.maxOutputTokens = Math.min(Math.max(Math.floor(frontendConfig.maxOutputTokens), 256), AI_MAX_OUTPUT_TOKENS);
     }
     if (Number.isFinite(frontendConfig.temperature)) {
       sdkConfig.temperature = Math.min(Math.max(frontendConfig.temperature, 0), 1);
@@ -3578,7 +3594,7 @@ ${analysisForPrompt}
       config: {
         responseMimeType: 'application/json',
         temperature: 0.5,
-        maxOutputTokens: 4096,
+        maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
         systemInstruction: SYSTEM_INSTRUCTION_ANALYSIS
       }
     });

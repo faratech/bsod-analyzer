@@ -3,6 +3,10 @@ export const DEEPSEEK_V4_FLASH_MODEL = 'deepseek-v4-flash';
 export const DEFAULT_DEEPSEEK_API_BASE_URL = 'https://api.deepseek.com';
 
 const TRANSIENT_DEEPSEEK_STATUSES = new Set([429, 500, 503]);
+// Reasoning effort levels this client is willing to send. 'high' and 'max' are the
+// values it has always used; the lower levels exist so an operator can trade depth
+// for latency when reasoning is overrunning the request timeout.
+const DEEPSEEK_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 
 export class AIProviderError extends Error {
   constructor(message, { code = 'AI_PROVIDER_ERROR', status = 502, retryable = false } = {}) {
@@ -155,7 +159,9 @@ export async function generateDeepSeekContent(request, {
   messages.push({ role: 'user', content: prompt });
 
   const enabled = thinkingEnabled !== false;
-  const effort = reasoningEffort === 'max' ? 'max' : 'high';
+  // Anything outside the known set collapses to 'high' — the long-standing default —
+  // so an unrecognised value can never reach the provider as an invalid argument.
+  const effort = DEEPSEEK_REASONING_EFFORTS.has(reasoningEffort) ? reasoningEffort : 'high';
   const body = {
     model: DEEPSEEK_V4_FLASH_MODEL,
     messages,
