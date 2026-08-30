@@ -164,3 +164,54 @@ test('worker-src is declared so the service worker is not judged by script-src',
     await server.close();
   }
 });
+
+// CSP keyword source expressions are only keywords when single-quoted. Unquoted,
+// the parser treats them as host source expressions (i.e. a hostname), which
+// grants nothing and fails silently — no header error, no console warning, just a
+// capability that is quietly absent. That is how `wasm-unsafe-eval` shipped
+// unquoted and broke every WebAssembly.instantiate() on the site.
+const CSP_KEYWORDS = [
+  'self', 'none', 'unsafe-inline', 'unsafe-eval', 'wasm-unsafe-eval',
+  'unsafe-hashes', 'strict-dynamic', 'report-sample'
+];
+
+test('every CSP keyword source expression is single-quoted', async () => {
+  const middleware = createSecurityHeadersMiddleware({ cspMode: 'report-only' });
+  middleware.updateInlineScriptHashes(["'sha256-abc='"]);
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/about`, { headers: { connection: 'close' } });
+    const policies = [
+      response.headers.get('content-security-policy'),
+      response.headers.get('content-security-policy-report-only')
+    ].filter(Boolean);
+    assert.ok(policies.length === 2, 'both policies should be present in report-only mode');
+
+    for (const policy of policies) {
+      for (const directive of policy.split(';')) {
+        const [name, ...tokens] = directive.trim().split(/\s+/);
+        if (!name) continue;
+        for (const token of tokens) {
+          if (CSP_KEYWORDS.includes(token)) {
+            assert.fail(`${name} contains bare "${token}" — CSP keywords must be written as '${token}'`);
+          }
+        }
+      }
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('wasm stays enabled for xxhash-wasm, quoted so the browser honours it', async () => {
+  const middleware = createSecurityHeadersMiddleware({ cspMode: 'report-only' });
+  middleware.updateInlineScriptHashes(["'sha256-abc='"]);
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/about`, { headers: { connection: 'close' } });
+    // The enforcing policy is the one that can actually break the client.
+    assert.match(response.headers.get('content-security-policy'), /script-src[^;]*'wasm-unsafe-eval'/);
+  } finally {
+    await server.close();
+  }
+});
