@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { useAnalytics } from '../hooks/useAnalytics';
 
 declare global {
@@ -49,15 +49,13 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
     buttonText = 'Donate with PayPal',
     isMonthly = false
 }) => {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const mountRef = useRef<HTMLDivElement>(null);
     const buttonIdRef = useRef(`paypal-donate-${Math.random().toString(36).slice(2, 9)}`);
+    const [sdkFailed, setSdkFailed] = useState(false);
     const { trackDonation } = useAnalytics();
 
     const renderButton = useCallback(async () => {
-        if (!containerRef.current) return;
-
-        // Clear previous button
-        containerRef.current.innerHTML = `<div id="${buttonIdRef.current}"></div>`;
+        if (!mountRef.current) return;
 
         try {
             await loadPayPalSdk();
@@ -86,26 +84,9 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
 
             window.PayPal.Donation.Button(config).render(`#${buttonIdRef.current}`);
         } catch {
-            // Fallback: render a direct link if SDK fails to load
-            if (containerRef.current) {
-                const params = new URLSearchParams({
-                    business: 'admin@windowsforum.com',
-                    item_name: 'BSOD AI Analyzer Support',
-                    currency_code: 'USD',
-                    no_recurring: isMonthly ? '0' : '1',
-                });
-                if (amount) {
-                    params.set('amount', amount);
-                }
-                containerRef.current.innerHTML = `
-                    <a href="https://www.paypal.com/donate?${params.toString()}"
-                       target="_blank"
-                       rel="noopener noreferrer"
-                       class="btn btn-primary btn-large">
-                        ${buttonText}
-                    </a>
-                `;
-            }
+            // Fallback: render a direct link if SDK fails to load. JSX rather
+            // than innerHTML so no prop can ever become markup (issue #81).
+            setSdkFailed(true);
         }
     }, [amount, buttonText, isMonthly, trackDonation]);
 
@@ -113,7 +94,33 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
         renderButton();
     }, [renderButton]);
 
-    return <div ref={containerRef}></div>;
+    if (sdkFailed) {
+        const params = new URLSearchParams({
+            business: 'admin@windowsforum.com',
+            item_name: 'BSOD AI Analyzer Support',
+            currency_code: 'USD',
+            no_recurring: isMonthly ? '0' : '1',
+        });
+        if (amount) {
+            params.set('amount', amount);
+        }
+        return (
+            <a
+                href={`https://www.paypal.com/donate?${params.toString()}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-primary btn-large"
+            >
+                {buttonText}
+            </a>
+        );
+    }
+
+    return (
+        <div ref={mountRef}>
+            <div id={buttonIdRef.current} />
+        </div>
+    );
 };
 
 export default PayPalDonateButton;

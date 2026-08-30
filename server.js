@@ -10,11 +10,8 @@ import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import { PROMPT_SHAPES, SYSTEM_INSTRUCTION_ANALYSIS, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from './shared/promptTemplates.js';
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import os from 'os';
 import JSZip from 'jszip';
-import net from 'net';
 import {
   ALLOWED_EXTENSIONS,
   DUMP_EXTENSIONS,
@@ -58,7 +55,9 @@ import { createUploadHandler } from './server/uploadHandler.js';
 import {
   CSP_EMBED_HEADER,
   CSP_HEADER,
+  CSP_MODE,
   EMBEDDABLE_PATHS,
+  computeInlineScriptSources,
   createSecurityHeadersMiddleware
 } from './server/securityHeaders.js';
 import {
@@ -68,6 +67,10 @@ import {
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
 import { registerStatsRoute } from './server/statsRoute.js';
+import { createPeerIpResolver } from './server/peerIp.js';
+import { createTurnstileReplayGuard } from './server/turnstile.js';
+import { createArchiveDumpExtractor } from './server/archiveExtract.js';
+import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
   createStatsInsightService,
   registerStatsInsightRoute
@@ -88,7 +91,6 @@ import {
   isSupportedAIModel
 } from './services/aiProvider.js';
 
-const execFileAsync = promisify(execFile);
 import {
   initCache,
   initCacheCompression,
@@ -114,7 +116,10 @@ import {
   isCacheEnabled,
   getRedisCommandClient,
   checkCacheConnection,
-  incrementRuntimeCounter
+  incrementRuntimeCounter,
+  reserveSessionQuota,
+  commitSessionTokens,
+  refundSessionQuota
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -244,75 +249,19 @@ async function withTimeout(operation, ms, message) {
   }
 }
 
-// Cloudflare-published IP ranges (https://www.cloudflare.com/ips/).
-// Refresh manually when Cloudflare announces changes; the lists are stable
-// for months at a time.
-const CLOUDFLARE_IPV4_RANGES = [
-  '173.245.48.0/20',
-  '103.21.244.0/22',
-  '103.22.200.0/22',
-  '103.31.4.0/22',
-  '141.101.64.0/18',
-  '108.162.192.0/18',
-  '190.93.240.0/20',
-  '188.114.96.0/20',
-  '197.234.240.0/22',
-  '198.41.128.0/17',
-  '162.158.0.0/15',
-  '104.16.0.0/13',
-  '104.24.0.0/14',
-  '172.64.0.0/13',
-  '131.0.72.0/22',
-];
-const CLOUDFLARE_IPV6_RANGES = [
-  '2400:cb00::/32',
-  '2606:4700::/32',
-  '2803:f800::/32',
-  '2405:b500::/32',
-  '2405:8100::/32',
-  '2a06:98c0::/29',
-  '2c0f:f248::/32',
-];
-
-const cloudflareBlockList = new net.BlockList();
-for (const range of CLOUDFLARE_IPV4_RANGES) {
-  const [addr, prefix] = range.split('/');
-  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv4');
-}
-for (const range of CLOUDFLARE_IPV6_RANGES) {
-  const [addr, prefix] = range.split('/');
-  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv6');
-}
-
-// Returns the IP that Cloud Run saw connecting to the service. Cloud Run
-// appends its view of the peer IP to X-Forwarded-For, so the rightmost entry
-// is the immediate upstream — which is a Cloudflare edge IP in production.
-function getImmediatePeerIp(req) {
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length > 0) {
-    const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  return req.socket?.remoteAddress || null;
-}
-
-function isFromCloudflare(req) {
-  const ip = getImmediatePeerIp(req);
-  if (!ip) return false;
-  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
-  if (net.isIPv4(normalized)) return cloudflareBlockList.check(normalized, 'ipv4');
-  if (net.isIPv6(normalized)) return cloudflareBlockList.check(normalized, 'ipv6');
-  return false;
-}
-
-// CF-Connecting-IP is set by Cloudflare and contains the original client IP.
-// Trust it only when the immediate peer is a Cloudflare edge; otherwise fall
-// back to Fastify's trusted-proxy IP calculation.
-function getClientIp(req) {
-  const cfIp = req.headers['cf-connecting-ip'];
-  if (typeof cfIp === 'string' && cfIp.length > 0 && isFromCloudflare(req)) return cfIp;
-  return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
-}
+// Cloudflare-published IP ranges live in server/peerIp.js alongside the
+// proxy-chain trust rule: the immediate peer is read from the rightmost
+// X-Forwarded-For entry ONLY when the chain carries at least TRUST_PROXY_HOPS
+// entries (Cloudflare + Cloud Run append one each in production). A shorter
+// chain means a proxy was skipped or the header was replaced, so the socket
+// address is used instead — no header can spoof that. The ingress gate below
+// and every IP-keyed rate limiter hang off these resolvers.
+const {
+  getImmediatePeerIp,
+  hasTrustedXffChain,
+  isFromCloudflare,
+  getClientIp
+} = createPeerIpResolver({ trustProxyHops: TRUST_PROXY_HOPS });
 
 // Reject any request whose immediate peer is not a Cloudflare edge IP.
 // Combined with --no-default-url on the Cloud Run service, this closes both
@@ -321,13 +270,20 @@ function getClientIp(req) {
 const CLOUDFLARE_ONLY_INGRESS =
   (process.env.CLOUDFLARE_ONLY_INGRESS ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
 if (CLOUDFLARE_ONLY_INGRESS) {
+  console.log(`Ingress gate: requiring a Cloudflare edge peer and an XFF chain of >= ${TRUST_PROXY_HOPS} entries`);
   app.use((req, res, next) => {
     if (req.path === '/health') return next();
     if (isFromCloudflare(req)) return next();
+    // chainTrusted=false means the XFF chain was shorter than TRUST_PROXY_HOPS —
+    // if that shows up for legitimate traffic, production hop count has drifted
+    // from the configured value (rollback: CLOUDFLARE_ONLY_INGRESS=false and
+    // retune TRUST_PROXY_HOPS; no redeploy needed).
     log.warn('non_cloudflare_request_rejected', {
       path: req.path,
       peer: getImmediatePeerIp(req),
       xff: req.headers['x-forwarded-for'] || null,
+      xffHops: (String(req.headers['x-forwarded-for'] || '')).split(',').filter(Boolean).length,
+      chainTrusted: hasTrustedXffChain(req)
     });
     return res.status(403).send('Forbidden');
   });
@@ -426,6 +382,9 @@ const ACTUAL_SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(3
 const validSessions = new Map(); // sessionId -> { hash, timestamp, turnstileVerified }
 const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
 const SESSION_EXPIRY_SECONDS = Math.ceil(SESSION_EXPIRY / 1000);
+// Absolute cap: the sliding SESSION_EXPIRY renews on every request, so without a
+// hard ceiling an actively-used session would never expire.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
@@ -808,19 +767,13 @@ async function loadSessionTracking(sessionId) {
   return sessionRequestTracking.get(sessionId);
 }
 
-async function storeSessionTracking(sessionId, tracking) {
+// Legacy JSON tracking records are read once for migration into the atomic
+// quota counters, then deleted (issue #77).
+async function deleteSessionTracking(sessionId) {
   if (isCacheEnabled()) {
-    const ttlSeconds = Math.max(1, Math.ceil((tracking.resetTime - Date.now()) / 1000));
-    const stored = await setRuntimeValue(runtimeSessionTrackingKey(sessionId), tracking, ttlSeconds);
-    if (!stored && REQUIRE_REDIS_RUNTIME) {
-      throw new Error('Runtime store unavailable while saving session quota');
-    }
-  } else {
-    if (REQUIRE_REDIS_RUNTIME) {
-      throw new Error('Runtime store required but Redis cache is not configured');
-    }
-    sessionRequestTracking.set(sessionId, tracking);
+    await deleteRuntimeValue(runtimeSessionTrackingKey(sessionId));
   }
+  sessionRequestTracking.delete(sessionId);
 }
 
 async function loadSession(sessionId) {
@@ -960,11 +913,6 @@ setInterval(() => {
     if (now - data.timestamp > SESSION_EXPIRY) {
       validSessions.delete(sessionId);
       sessionHashOwnership.delete(sessionId);
-    }
-  }
-  for (const [sessionId, tracking] of sessionRequestTracking.entries()) {
-    if (now > tracking.resetTime) {
-      sessionRequestTracking.delete(sessionId);
     }
   }
   for (const [uid, job] of externalJobs.entries()) {
@@ -1408,6 +1356,12 @@ const externalAnalyzeStatusIpLimiter = makeLimiter({
   name: 'external-analyze-status-ip',
   keyGenerator: rateLimitKey
 });
+// The IP limiter above intentionally runs BEFORE requireApiKey on the status
+// route: it is the cheap shield that stops unauthenticated floods from reaching
+// multipart parsing or Redis. Tradeoff (accepted): an unauthenticated flood can
+// drain one client IP's 1200/hr status budget — lockout, never disclosure. The
+// key-scoped limiter behind requireApiKey is the authoritative quota.
+
 // Public stats endpoint: generous per-IP budget for widget traffic.
 const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
 
@@ -1416,20 +1370,19 @@ const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY'
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 
-// Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
-const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
-
 // Default JSON parser applied per-route, after rate limit and requireSession,
 // so unauthenticated requests are rejected before allocating a parse buffer.
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
 // Global security headers middleware (CSP strings + embeddable-path handling
-// live in server/securityHeaders.js).
-app.use(createSecurityHeadersMiddleware({
+// live in server/securityHeaders.js). The instance handle is kept so startup
+// can hand over the inline-script hashes computed from the served HTML.
+const securityHeadersMiddleware = createSecurityHeadersMiddleware({
   cspHeader: CSP_HEADER,
   cspEmbedHeader: CSP_EMBED_HEADER,
   embeddablePaths: EMBEDDABLE_PATHS
-}));
+});
+app.use(securityHeadersMiddleware);
 
 // MIME type lookup for static assets
 const MIME_TYPES = {
@@ -1554,45 +1507,63 @@ if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
 
-// Store used tokens to prevent replay attacks
-const usedTurnstileTokens = new Map(); // token -> timestamp
-
-// Clean up old tokens periodically (older than 5 minutes)
+// Replay protection for verified tokens lives in server/turnstile.js (atomic
+// Redis reservation shared across instances). The sweep below only bounds the
+// no-Redis fallback map that guard keeps for development.
 setInterval(() => {
-  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
-  for (const [token, timestamp] of usedTurnstileTokens.entries()) {
-    if (timestamp < fiveMinutesAgo) {
-      usedTurnstileTokens.delete(token);
-    }
-  }
+  turnstileReplayGuard.prune(5 * 60 * 1000);
 }, 60 * 1000); // Clean every minute
 
 // Verify Turnstile token with proper Siteverify implementation
+//
+// Single-use enforcement is ATOMIC and happens BEFORE the siteverify round-trip
+// (server/turnstile.js): incrementRuntimeCounter() is a Redis INCRBY, so
+// concurrent requests carrying the same token cannot both win the race, and the
+// reservation lives in Redis, so it is shared across Cloud Run instances (the
+// previous in-memory Map was neither). The reservation is released only when
+// the token did not verify or the transport threw — a successfully verified
+// token stays consumed.
+const turnstileReplayGuard = createTurnstileReplayGuard({
+  incrementCounter: incrementRuntimeCounter,
+  redisEnabled: isCacheEnabled
+});
+
 async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
   if (!TURNSTILE_SECRET_KEY) {
     console.error('TURNSTILE_SECRET_KEY not configured');
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['missing-input-secret'],
-      error: 'Turnstile not configured' 
+      error: 'Turnstile not configured'
     };
   }
 
   if (!token || typeof token !== 'string' || token.length > 4096) {
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['missing-input-response'],
-      error: 'No token provided' 
+      error: 'No token provided'
     };
   }
 
-  // Check if token was already used (prevent replay attacks)
-  if (usedTurnstileTokens.has(token)) {
+  // Reserve the token atomically before talking to Cloudflare (issue #72).
+  const reservation = await turnstileReplayGuard.reserve(token);
+  if (reservation.duplicate) {
     console.warn('Turnstile token replay blocked:', safeToken(token));
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['timeout-or-duplicate'],
-      error: 'Token already used' 
+      error: 'Token already used'
+    };
+  }
+  if (reservation.unavailable) {
+    // Fail closed: without the atomic reservation a replay could mint extra
+    // sessions, so no verification is attempted during a Redis outage.
+    console.error('Turnstile reservation unavailable (runtime store down)');
+    return {
+      success: false,
+      'error-codes': ['internal-error'],
+      error: 'Verification temporarily unavailable'
     };
   }
 
@@ -1601,11 +1572,11 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
     const formData = new URLSearchParams();
     formData.append('secret', TURNSTILE_SECRET_KEY);
     formData.append('response', token); // Must be called 'response', not 'token'
-    
+
     if (ip) {
       formData.append('remoteip', ip);
     }
-    
+
     // Add idempotency key for retry support
     if (idempotencyKey) {
       formData.append('idempotency_key', idempotencyKey);
@@ -1622,19 +1593,18 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
 
     if (!response.ok) {
       console.error('Siteverify HTTP error:', response.status);
-      return { 
-        success: false, 
+      await turnstileReplayGuard.release(token);
+      return {
+        success: false,
         'error-codes': ['internal-error'],
-        error: 'Siteverify request failed' 
+        error: 'Siteverify request failed'
       };
     }
 
     const result = await response.json();
-    
+
     if (result.success) {
-      // Mark token as used to prevent replay attacks
-      usedTurnstileTokens.set(token, Date.now());
-      
+      // Reservation stays: the token is now permanently consumed.
       // Log successful verification
       console.log('Turnstile verification successful:', {
         hostname: result.hostname,
@@ -1642,16 +1612,20 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
         action: result.action
       });
     } else {
+      // The token did not verify, so it carries no value — release the
+      // reservation so a client retry (or idempotency-key retry) can proceed.
+      await turnstileReplayGuard.release(token);
       console.error('Turnstile verification failed:', result['error-codes']);
     }
-    
+
     return result;
   } catch (error) {
     console.error('Turnstile Siteverify error:', error);
-    return { 
-      success: false, 
+    await turnstileReplayGuard.release(token);
+    return {
+      success: false,
       'error-codes': ['internal-error'],
-      error: 'Verification request failed' 
+      error: 'Verification request failed'
     };
   }
 }
@@ -1672,6 +1646,8 @@ function generateSessionCookie(turnstileVerified = false) {
   const sessionData = {
     hash: sessionHash,
     timestamp,
+    // Absolute-lifetime anchor (survives sliding renewals of `timestamp`).
+    createdAt: timestamp,
     turnstileVerified
   };
   if (!isCacheEnabled()) {
@@ -1724,7 +1700,17 @@ async function validateSession(sessionId, sessionHash) {
     await deleteSession(sessionId);
     return { valid: false, reason: 'Session expired' };
   }
-  
+
+  // Absolute lifetime cap: sessions created before this field existed fall back
+  // to their last-renewal timestamp, so the cap tightens rather than loosens.
+  const sessionCreatedAt = Number.isFinite(sessionData.createdAt)
+    ? sessionData.createdAt
+    : sessionData.timestamp;
+  if (Date.now() - sessionCreatedAt > SESSION_MAX_AGE_MS) {
+    await deleteSession(sessionId);
+    return { valid: false, reason: 'Session expired' };
+  }
+
   // Verify hash
   if (!timingSafeEqualString(sessionData.hash, sessionHash)) {
     return { valid: false, reason: 'Invalid session hash' };
@@ -2490,44 +2476,20 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
       quotaKey = sessionId;
     }
-
-    // SECURITY: Check per-session rate limiting (prevent abuse even with valid prompts)
-    const now = Date.now();
-    let sessionTracking = await loadSessionTracking(quotaKey);
-
-    if (!sessionTracking || now > sessionTracking.resetTime) {
-      // Initialize or reset tracking
-      sessionTracking = {
-        count: 0,
-        resetTime: now + (60 * 60 * 1000), // Reset after 1 hour
-        totalTokens: 0
-      };
-    }
-
-    // Check request limit
-    if (sessionTracking.count >= limits.requests) {
-      log.warn('session.rate_limit', {
-        sessionId: sessionId?.substring(0, 10) + '...',
-        tier,
-        ip: getClientIp(req),
-        requestCount: sessionTracking.count,
-        resetTime: sessionTracking.resetTime
-      });
-      return res.status(429).json({
-        error: `Rate limit exceeded. Maximum ${limits.requests} analysis requests per hour${WF_SSO_ENABLED ? ' for your tier' : ''}.`,
-        code: 'SESSION_RATE_LIMIT',
-        ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
-        resetTime: sessionTracking.resetTime
-      });
-    }
+    const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
+    const quotaRefundCap = refundCapFor(limits.requests);
 
     const validation = validateAnalysisPrompt(contents);
     if (!validation.valid) {
+      // Fingerprint, never echo: the prompt is user-controlled text, so log its
+      // length and a truncated hash rather than any of its content.
+      const promptText = getPromptText(contents);
       log.warn('prompt.blocked', {
         sessionId: sessionId?.substring(0, 10) + '...',
         ip: getClientIp(req),
         reason: validation.reason,
-        promptPreview: getPromptText(contents).substring(0, 150)
+        promptLength: promptText.length,
+        promptHash: safeToken(promptText)
       });
       return res.status(400).json({
         error: 'Invalid request. This endpoint only analyzes Windows crash dumps and BSOD errors.',
@@ -2544,33 +2506,27 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const requestText = serverPrompt;
     const estimatedInputTokens = Math.ceil(requestText.length / 4);
 
-    // Check token limit
-    if (sessionTracking.totalTokens + estimatedInputTokens > limits.tokens) {
-      log.warn('session.token_limit', {
-        sessionId: sessionId?.substring(0, 10) + '...',
-        tier,
-        ip: getClientIp(req),
-        totalTokens: sessionTracking.totalTokens,
-        estimatedRequest: estimatedInputTokens
-      });
-      return res.status(429).json({
-        error: WF_SSO_ENABLED
-          ? 'Token quota exceeded for your tier. Please try again later.'
-          : 'Token quota exceeded for this session. Please try again later.',
-        code: 'SESSION_TOKEN_LIMIT',
-        ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
-        resetTime: sessionTracking.resetTime
-      });
-    }
-
     // Check cache using fileHash only after the session has proven ownership by
-    // uploading that exact file. Otherwise fall back to the prompt hash.
+    // uploading that exact file — AND only when the hash-keyed entry carries
+    // WinDBG provenance (issue #78). Pure-AI reports never take over a shared
+    // hash key, so one uploader cannot plant a fabricated report that other
+    // uploaders of the same dump would be served.
     let ownedFileHash = false;
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
     }
-    const cacheKey = ownedFileHash ? fileHash : getPromptCacheKey(hashContent(requestText));
-    const cachedAnalysis = await getCachedAnalysis(cacheKey);
+    let cacheKey = getPromptCacheKey(hashContent(requestText));
+    let cachedAnalysis = null;
+    if (ownedFileHash) {
+      const provenEntry = await getCachedAnalysis(fileHash);
+      if (provenEntry && (provenEntry.windbgDerived || provenEntry.windbgOutput)) {
+        cacheKey = fileHash;
+        cachedAnalysis = provenEntry;
+      }
+    }
+    if (!cachedAnalysis) {
+      cachedAnalysis = await getCachedAnalysis(cacheKey);
+    }
     const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
@@ -2581,7 +2537,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         log.info('ai.cache.hit', {
           provider,
           model: modelName,
-          keyed: ownedFileHash ? 'fileHash' : 'prompt',
+          keyed: cacheKey === fileHash ? 'fileHash' : 'prompt',
           fileHash: ownedFileHash ? fileHash : undefined
         });
         // Hook D (cache-hit): local-parser analyses served from cache still
@@ -2602,19 +2558,71 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
           cached: true
         });
       }
-      log.warn('ai.cache.invalid', { provider, model: modelName, keyed: ownedFileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
+      log.warn('ai.cache.invalid', { provider, model: modelName, keyed: cacheKey === fileHash ? 'fileHash' : 'prompt', reason: cachedValidation.reason });
     }
     log.info('ai.cache.miss', {
       provider,
       model: modelName,
-      keyed: ownedFileHash ? 'fileHash' : 'prompt',
+      keyed: cacheKey === fileHash ? 'fileHash' : 'prompt',
       fileHash: ownedFileHash ? fileHash : undefined
     });
 
-    // Increment request count and token usage
-    sessionTracking.count++;
-    sessionTracking.totalTokens += estimatedInputTokens;
-    await storeSessionTracking(quotaKey, sessionTracking);
+    // SECURITY: reserve the request + token bundle ATOMICALLY (issue #77).
+    // The Redis script checks both caps and increments both counters in one
+    // EVAL, so concurrent requests can no longer all pass a read-then-write
+    // limit check. The reservation happens after the cache-miss check, so
+    // cached answers still cost nothing.
+    const legacyTracking = await loadSessionTracking(quotaKey);
+    const legacyQuota = legacyTracking && Date.now() <= legacyTracking.resetTime
+      ? { requests: legacyTracking.count, tokens: legacyTracking.totalTokens }
+      : { requests: 0, tokens: 0 };
+    const reserved = await reserveSessionQuota(quotaKey, {
+      requestCost: 1,
+      tokenCost: estimatedInputTokens,
+      requestLimit: limits.requests,
+      tokenLimit: limits.tokens,
+      windowSeconds: quotaWindowSeconds,
+      legacy: legacyQuota
+    });
+    if (legacyTracking) {
+      // Migrated: the old JSON record is superseded by the atomic counters.
+      await deleteSessionTracking(quotaKey);
+    }
+    if (!reserved.allowed) {
+      if (reserved.reason === 'unavailable') {
+        return res.status(503).json({
+          error: 'Quota accounting is temporarily unavailable. Please try again later.',
+          code: 'QUOTA_UNAVAILABLE'
+        });
+      }
+      const tokenExhausted = reserved.reason === 'tokens';
+      log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
+        sessionId: sessionId?.substring(0, 10) + '...',
+        tier,
+        ip: getClientIp(req),
+        requestCount: reserved.requests,
+        totalTokens: reserved.tokens,
+        estimatedRequest: estimatedInputTokens,
+        resetTime: reserved.resetTime
+      });
+      return res.status(429).json(
+        tokenExhausted
+          ? {
+              error: WF_SSO_ENABLED
+                ? 'Token quota exceeded for your tier. Please try again later.'
+                : 'Token quota exceeded for this session. Please try again later.',
+              code: 'SESSION_TOKEN_LIMIT',
+              ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
+              resetTime: reserved.resetTime
+            }
+          : {
+              error: `Rate limit exceeded. Maximum ${limits.requests} analysis requests per hour${WF_SSO_ENABLED ? ' for your tier' : ''}.`,
+              code: 'SESSION_RATE_LIMIT',
+              ...(WF_SSO_ENABLED ? { tier, upgradeable: tier !== 'premium' } : {}),
+              resetTime: reserved.resetTime
+            }
+      );
+    }
     
     // Accept only narrow generation controls from the browser. Tool use, response
     // schemas, stop sequences, model overrides, and sampling breadth are server-owned.
@@ -2645,12 +2653,15 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     });
 
     // Track real input + output tokens using the provider-normalized metadata;
-    // fall back to char/4 only when the API did not report counts.
+    // fall back to char/4 only when the API did not report counts. The
+    // difference adjusts the reserved estimate toward the actual consumption.
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
-    sessionTracking.totalTokens += actualInputTokens + outputTokens - estimatedInputTokens;
-    await storeSessionTracking(quotaKey, sessionTracking);
+    await commitSessionTokens(quotaKey, {
+      tokenDelta: actualInputTokens + outputTokens - estimatedInputTokens,
+      windowSeconds: quotaWindowSeconds
+    });
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2672,8 +2683,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
           Math.max(1, actualInputTokens)).toFixed(3)
       ),
       finishReason,
-      sessionTotal: sessionTracking.totalTokens,
-      requestsRemaining: REQUEST_LIMIT_PER_SESSION - sessionTracking.count
+      sessionTotal: reserved.tokens,
+      requestsRemaining: limits.requests - reserved.requests
     });
 
     if (!reportValidation.valid) {
@@ -2717,17 +2728,30 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     res.json(responseData);
   } catch (error) {
-    // Refund the request/token estimate committed before the provider call so
-    // provider outages do not burn the user's hourly tier quota. (The
-    // pre-commit still guards against concurrent TOCTOU overrun.)
-    try {
-      if (quotaKey && sessionTracking.count > 0) {
-        sessionTracking.count -= 1;
-        sessionTracking.totalTokens = Math.max(0, sessionTracking.totalTokens - estimatedInputTokens);
-        await storeSessionTracking(quotaKey, sessionTracking);
+    // Refund the reservation only for failure classes that are not the
+    // client's fault (provider outage, transport stall, invalid upstream
+    // payload) so outages do not burn tier quota — and so failures cannot be
+    // farmed to shift accounting backwards, the refund counter is capped per
+    // window (issue #77).
+    if (quotaKey && shouldRefund(error)) {
+      try {
+        const refund = await refundSessionQuota(quotaKey, {
+          requestCost: 1,
+          tokenCost: estimatedInputTokens,
+          windowSeconds: quotaWindowSeconds,
+          refundCap: quotaRefundCap
+        });
+        if (!refund.refunded) {
+          log.warn('quota.refund_declined', {
+            quotaKey: safeToken(quotaKey),
+            refundsUsed: refund.refundsUsed,
+            refundCap: refund.refundCap,
+            failureClass: classifyQuotaFailure(error)
+          });
+        }
+      } catch (refundError) {
+        log.warn('ai.quota_refund_failed', { message: refundError.message });
       }
-    } catch (refundError) {
-      log.warn('ai.quota_refund_failed', { message: refundError.message });
     }
     log.error('ai.error', {
       code: error.code,
@@ -2876,10 +2900,16 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
     const hashesToCheck = validHashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the combined cache. The client uses this as a
-    // hint before fetching cached results by hash.
+    // Check each hash against the combined cache. Same ownership rule as
+    // GET /api/cache/get: a hash this session never uploaded reports cached:false,
+    // so the endpoint cannot be used as a cross-user "has anyone analyzed this
+    // dump?" oracle. The client only probes hashes it has uploaded itself.
     const checkPromises = hashesToCheck
       .map(async (hash) => {
+        if (!(await sessionOwnsHash(req.sessionId, hash))) {
+          results[hash] = false;
+          return;
+        }
         const cached = await isAnalysisCached(hash);
         results[hash] = cached;
       });
@@ -2902,7 +2932,6 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-// Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
@@ -3151,6 +3180,9 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       windbgOutput: analysisText,
       analysisSignalText,
       structured,
+      // Provenance stamp (issue #78): this hash-keyed entry holds server-fetched
+      // WinDBG evidence, so it may serve as the shared cache for other uploaders.
+      windbgDerived: true,
     });
 
     // Hook A: web WinDBG analysis completed — record crash stats.
@@ -3517,10 +3549,12 @@ ${analysisForPrompt}
     const report = enrichReport(aiReport);
 
     // Cache the compact AI response; deterministic WinDBG fields are rebuilt from
-    // the separately cached raw/structured evidence on every return path.
+    // the separately cached raw/structured evidence on every return path. The
+    // provenance stamp marks this as WinDBG-derived analysis (issue #78).
     await setCachedAnalysis(cacheKey, {
       aiReport,
-      aiModel: response.cacheModel || modelName
+      aiModel: response.cacheModel || modelName,
+      windbgDerived: true
     });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
     return report;
@@ -3677,228 +3711,27 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
 }
 
 /**
- * Extract .dmp files from a 7z/RAR archive.
- * Uses 7z for .7z files and bsdtar for .rar files (Alpine's 7zip lacks RAR codec).
- * Security: archive bomb detection, path traversal prevention, timeout
+ * Extract .dmp files from any supported archive (.zip, .7z, .rar).
+ * Delegates to server/archiveExtract.js, which routes every format — including
+ * .zip — through the bounded list-first/extract-to-disk/verify-on-disk path
+ * (issue #76). `originalName` is retained in the signature for callers that
+ * still pass it; the module no longer attaches it to results.
  */
-async function extractDumpsFromArchive(buffer, originalName, archiveType) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bsod-extract-'));
-  const archivePath = path.join(tmpDir, `archive.${archiveType}`);
-  const extractDir = path.join(tmpDir, 'out');
+const archiveDumpExtractor = createArchiveDumpExtractor({
+  maxRawFileSize: MAX_RAW_FILE_SIZE,
+  maxExtractedSize: MAX_EXTRACTED_ARCHIVE_SIZE,
+  maxFileCount: MAX_ARCHIVE_FILE_COUNT,
+  maxCompressionRatio: MAX_ARCHIVE_COMPRESSION_RATIO
+});
 
-  try {
-    fs.writeFileSync(archivePath, buffer);
-    fs.mkdirSync(extractDir);
+const extractDumpsFromArchive = (buffer, originalName, archiveType) =>
+  archiveDumpExtractor.extractDumps(buffer, originalName, archiveType);
 
-    // Archive bomb checks
-    const MAX_EXTRACTED_SIZE = MAX_EXTRACTED_ARCHIVE_SIZE;
-    const MAX_FILE_COUNT = MAX_ARCHIVE_FILE_COUNT;
-    const MAX_COMPRESSION_RATIO = MAX_ARCHIVE_COMPRESSION_RATIO;
-
-    if (archiveType === 'rar') {
-      // Use bsdtar for RAR files (Alpine's 7zip lacks the RAR codec)
-      // Step 1: List verbose contents for pre-extraction bomb detection.
-      // bsdtar's long listing exposes each entry's uncompressed size, allowing
-      // us to reject archive bombs before writing expanded data to disk.
-      let listOutput;
-      try {
-        listOutput = await execFileAsync('bsdtar', ['tvf', archivePath], { timeout: 15000 });
-      } catch (err) {
-        if (err.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
-          throw new Error('Password-protected archives are not supported');
-        }
-        throw new Error(`Failed to read RAR archive: ${err.stderr || err.message}`);
-      }
-
-      let pathOutput;
-      try {
-        pathOutput = await execFileAsync('bsdtar', ['tf', archivePath], { timeout: 15000 });
-      } catch (err) {
-        throw new Error(`Failed to read RAR archive paths: ${err.stderr || err.message}`);
-      }
-      const listedPaths = pathOutput.stdout.trim().split('\n').filter(Boolean);
-      for (const entryPath of listedPaths) {
-        if (!validatePathEntry(entryPath)) {
-          throw new Error('Archive contains an unsafe path');
-        }
-      }
-
-      const fileList = listOutput.stdout.trim().split('\n').filter(f => f.length > 0);
-      let totalListedSize = 0;
-      for (const line of fileList) {
-        if (/^\s*l/.test(line)) {
-          throw new Error('Archive contains symbolic links, which are not supported');
-        }
-        const columns = line.trim().split(/\s+/);
-        // Expected bsdtar -tvf shape: mode links owner group size date... name
-        const size = Number.parseInt(columns[4], 10);
-        if (!Number.isFinite(size) || size < 0) {
-          throw new Error('Failed to read RAR archive: unable to determine uncompressed size');
-        }
-        totalListedSize += size;
-      }
-
-      if (totalListedSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalListedSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
-      }
-      if (fileList.length > MAX_FILE_COUNT) {
-        throw new Error(`Archive contains too many files (${fileList.length}). Maximum is ${MAX_FILE_COUNT}.`);
-      }
-      if (buffer.length > 0 && totalListedSize / buffer.length > MAX_COMPRESSION_RATIO) {
-        throw new Error('Archive compression ratio too high — possible archive bomb');
-      }
-
-      // Step 2: Extract
-      try {
-        await execFileAsync('bsdtar', ['xf', archivePath, '-C', extractDir], { timeout: 30000 });
-      } catch (err) {
-        if (err.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
-          throw new Error('Password-protected archives are not supported');
-        }
-        throw new Error(`Failed to extract RAR archive: ${err.stderr || err.message}`);
-      }
-
-      // Post-extraction size check
-      let totalSize = 0;
-      function checkSize(dir) {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            checkSize(fullPath);
-          } else {
-            totalSize += fs.statSync(fullPath).size;
-          }
-        }
-      }
-      checkSize(extractDir);
-
-      if (totalSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
-      }
-      if (buffer.length > 0 && totalSize / buffer.length > MAX_COMPRESSION_RATIO) {
-        throw new Error('Archive compression ratio too high — possible archive bomb');
-      }
-    } else {
-      // Use 7z for .7z files
-      // Step 1: List archive contents for bomb detection
-      let listOutput;
-      try {
-        listOutput = await execFileAsync('7z', ['l', '-slt', archivePath], { timeout: 15000 });
-      } catch (err) {
-        if (err.stderr && err.stderr.includes('Wrong password')) {
-          throw new Error('Password-protected archives are not supported');
-        }
-        throw new Error(`Failed to read archive: ${err.message}`);
-      }
-
-      const sizeMatches = listOutput.stdout.matchAll(/^Size = (\d+)$/gm);
-      const pathMatches = listOutput.stdout.matchAll(/^Path = (.+)$/gm);
-      let totalExtractedSize = 0;
-      let fileCount = 0;
-
-      for (const match of pathMatches) {
-        const entryPath = match[1];
-        if (entryPath === archivePath || entryPath === path.basename(archivePath)) continue;
-        if (!validatePathEntry(entryPath)) {
-          throw new Error('Archive contains an unsafe path');
-        }
-      }
-
-      for (const match of sizeMatches) {
-        totalExtractedSize += parseInt(match[1], 10);
-        fileCount++;
-      }
-
-      if (totalExtractedSize > MAX_EXTRACTED_SIZE) {
-        throw new Error(`Archive too large when extracted (${(totalExtractedSize / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
-      }
-      if (fileCount > MAX_FILE_COUNT) {
-        throw new Error(`Archive contains too many files (${fileCount}). Maximum is ${MAX_FILE_COUNT}.`);
-      }
-      if (buffer.length > 0 && totalExtractedSize / buffer.length > MAX_COMPRESSION_RATIO) {
-        throw new Error('Archive compression ratio too high — possible archive bomb');
-      }
-
-      // Step 2: Extract
-      try {
-        await execFileAsync('7z', ['x', `-o${extractDir}`, '-y', archivePath], { timeout: 30000 });
-      } catch (err) {
-        if (err.stderr && err.stderr.includes('Wrong password')) {
-          throw new Error('Password-protected archives are not supported');
-        }
-        throw new Error(`Failed to extract archive: ${err.message}`);
-      }
-    }
-
-    // Step 3: Find .dmp files recursively, with path traversal protection
-    const results = [];
-    const realExtractDir = fs.realpathSync(extractDir);
-    let dumpCount = 0;
-    let dumpBytes = 0;
-
-    function findDmpFiles(dir) {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-
-        // Reject any symlink outright — lstat avoids the realpath TOCTOU window and
-        // guarantees we never follow a link out of the extract dir.
-        const lstat = fs.lstatSync(fullPath);
-        if (lstat.isSymbolicLink()) {
-          console.warn('[Archive] Symlink entry rejected:', fullPath);
-          continue;
-        }
-
-        // Defense in depth: still verify the resolved path stays within realExtractDir.
-        const realPath = fs.realpathSync(fullPath);
-        if (realPath !== realExtractDir && !realPath.startsWith(realExtractDir + path.sep)) {
-          console.warn('[Archive] Path traversal detected, skipping:', fullPath);
-          continue;
-        }
-        if (entry.isDirectory()) {
-          findDmpFiles(fullPath);
-        } else if (DUMP_EXTENSIONS.some(ext => entry.name.toLowerCase().endsWith(ext))) {
-          if (dumpCount >= MAX_FILE_COUNT) {
-            throw new Error(`Archive contains too many dump files. Maximum is ${MAX_FILE_COUNT}.`);
-          }
-          if (lstat.size > MAX_RAW_FILE_SIZE) {
-            throw new Error(`Extracted dump is too large (${(lstat.size / 1024 / 1024).toFixed(1)}MB). Maximum is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB.`);
-          }
-          if (dumpBytes + lstat.size > MAX_EXTRACTED_SIZE) {
-            throw new Error(`Extracted dumps exceed ${(MAX_EXTRACTED_SIZE / 1024 / 1024).toFixed(0)}MB.`);
-          }
-          const content = fs.readFileSync(fullPath);
-          dumpCount++;
-          dumpBytes += content.length;
-          const sourcePath = path.relative(extractDir, fullPath).replace(/\\/g, '/');
-          const fileName = sanitizeUploadFileName(entry.name);
-          const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
-          if (!validation.valid) {
-            console.warn('[Archive] Invalid dump skipped:', validation.error);
-            continue;
-          }
-          results.push({
-            fileName,
-            sourcePath,
-            buffer: content,
-            originalArchive: originalName
-          });
-        }
-      }
-    }
-
-    findDmpFiles(extractDir);
-    return results;
-  } finally {
-    // Always clean up temp directory
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (cleanupErr) {
-      console.error('[Archive] Cleanup error:', cleanupErr.message);
-    }
-  }
-}
+// Engine selection for .zip uploads. '7z' (default) extracts on disk with
+// pre-extraction bounds; 'jszip' restores the retired in-memory path for one
+// release as a config-only rollback.
+const ARCHIVE_EXTRACT_ENGINE =
+  (process.env.ARCHIVE_EXTRACT_ENGINE || '7z').toLowerCase() === 'jszip' ? 'jszip' : '7z';
 
 // Main external API endpoint
 // Main external API endpoint
@@ -3934,10 +3767,12 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     // Check if file is an archive and extract dumps
     const archiveType = detectArchiveType(fileBuffer);
     if (archiveType) {
-      console.log(`[API/Analyze] Detected ${archiveType} archive, extracting dumps...`);
+      console.log(`[API/Analyze] Detected ${archiveType} archive, extracting dumps (engine: ${ARCHIVE_EXTRACT_ENGINE})...`);
 
       let extractedDumps;
-      if (archiveType === 'zip') {
+      if (archiveType === 'zip' && ARCHIVE_EXTRACT_ENGINE === 'jszip') {
+        // Kill switch for one release (issue #76): the in-memory JSZip path
+        // predates the bounded on-disk extractor and is retired by default.
         extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
       } else {
         extractedDumps = await extractDumpsFromArchive(fileBuffer, fileName, archiveType);
@@ -4414,6 +4249,14 @@ let earlyHintsLinkHeader = '';
 const htmlEtags = {};
 
 async function startServer() {
+  // Refuse to boot when a production deployment would silently disable auth:
+  // requireSession short-circuits to an auto-premium identity under
+  // NODE_ENV=development, and the Cloudflare-only ingress gate defaults off
+  // outside production — so neither escape hatch may survive a prod boot.
+  if (process.env.NODE_ENV === 'production' && process.env.WF_DEV_TIER) {
+    throw new Error('WF_DEV_TIER is a development-only escape hatch and must not be set in production');
+  }
+
   // Initialize xxhash before accepting requests
   [hasher] = await Promise.all([
     xxhash(),
@@ -4477,6 +4320,26 @@ async function startServer() {
     htmlEtags.__fallback = etagOf(cachedIndexHtml);
     for (const [route, html] of Object.entries(cachedRouteHtml)) {
       htmlEtags[route] = etagOf(html);
+    }
+
+    // CSP inline-script hashes (issue #74) are computed from the exact served
+    // bytes — injectSsoFlags above rewrites script contents, so build-time
+    // hashes would drift. Union every HTML variant the server can serve.
+    const sha256B64 = (content) => crypto.createHash('sha256').update(content).digest('base64');
+    const servedHtmlVariants = [cachedIndexHtml, cachedHomeHtml, ...Object.values(cachedRouteHtml)];
+    const inlineScriptHashes = new Set();
+    for (const html of servedHtmlVariants) {
+      for (const source of computeInlineScriptSources(html, { sha256: sha256B64 })) {
+        inlineScriptHashes.add(source);
+      }
+    }
+    if (inlineScriptHashes.size > 0) {
+      securityHeadersMiddleware.updateInlineScriptHashes([...inlineScriptHashes]);
+      console.log(`CSP: hashed ${inlineScriptHashes.size} inline script(s) from served HTML (mode: ${CSP_MODE})`);
+    } else if (CSP_MODE === 'enforce' && process.env.NODE_ENV === 'production') {
+      throw new Error('CSP_MODE=enforce requires dist HTML with inline scripts to hash; refusing to boot with a fallback that would blank the page');
+    } else {
+      log.warn('csp.inline_hashes.unavailable', { mode: CSP_MODE });
     }
 
     if (WF_SSO_ENABLED) {
