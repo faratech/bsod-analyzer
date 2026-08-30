@@ -94,6 +94,57 @@ end
 return 0
 `;
 
+// Atomic session-quota reservation (issue #77). KEYS[1]/KEYS[2] are the
+// request/token counters for one quota window; both are checked AND incremented
+// in a single script so concurrent requests cannot all pass the old
+// read-check-write pattern. On the very first touch the counters adopt the
+// legacy tracking record (ARGV[6]/ARGV[7]) so quotas survive the migration.
+const QUOTA_RESERVE_SCRIPT = `
+local ttl = tonumber(ARGV[5])
+local exists_req = redis.call('EXISTS', KEYS[1])
+local exists_tok = redis.call('EXISTS', KEYS[2])
+if exists_req == 0 and exists_tok == 0 then
+  local legacy_req = tonumber(ARGV[6]) or 0
+  local legacy_tok = tonumber(ARGV[7]) or 0
+  if legacy_req > 0 or legacy_tok > 0 then
+    redis.call('SET', KEYS[1], legacy_req, 'EX', ttl)
+    redis.call('SET', KEYS[2], legacy_tok, 'EX', ttl)
+  end
+end
+local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
+local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
+local add_req = tonumber(ARGV[1])
+local add_tok = tonumber(ARGV[2])
+local max_req = tonumber(ARGV[3])
+local max_tok = tonumber(ARGV[4])
+if max_req >= 0 and cur_req + add_req > max_req then
+  return {0, 1, cur_req, cur_tok, redis.call('TTL', KEYS[1])}
+end
+if cur_tok + add_tok > max_tok then
+  return {0, 2, cur_req, cur_tok, redis.call('TTL', KEYS[2])}
+end
+redis.call('INCRBY', KEYS[1], add_req)
+redis.call('INCRBY', KEYS[2], add_tok)
+if redis.call('TTL', KEYS[1]) < 1 then redis.call('EXPIRE', KEYS[1], ttl) end
+if redis.call('TTL', KEYS[2]) < 1 then redis.call('EXPIRE', KEYS[2], ttl) end
+return {1, 0, cur_req + add_req, cur_tok + add_tok, redis.call('TTL', KEYS[1])}
+`;
+
+// Refund a reserved request/token bundle, bounded by a per-window refund cap
+// tracked in KEYS[3] so failures cannot be farmed to shift accounting backwards.
+const QUOTA_REFUND_SCRIPT = `
+local refunded = tonumber(redis.call('GET', KEYS[3]) or '0')
+if refunded >= tonumber(ARGV[3]) then
+  return {0, refunded}
+end
+redis.call('INCRBY', KEYS[3], 1)
+redis.call('INCRBY', KEYS[1], -tonumber(ARGV[1]))
+redis.call('INCRBY', KEYS[2], -tonumber(ARGV[2]))
+local ttl = tonumber(ARGV[4])
+if redis.call('TTL', KEYS[3]) < 1 then redis.call('EXPIRE', KEYS[3], ttl) end
+return {1, refunded + 1}
+`;
+
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
@@ -590,6 +641,156 @@ export async function incrementRuntimeCounter(key, ttlSeconds, delta = 1) {
   } catch (error) {
     console.error('[Cache] Error incrementing runtime counter:', error.message);
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session quota (issue #77): atomic reserve / commit / capped refund.
+// Both counters for one quota window live under quota:req|tok:<key>; the
+// reserve script checks and increments them in a single EVAL so concurrent
+// requests cannot all pass a read-then-write limit check.
+// ---------------------------------------------------------------------------
+
+const quotaMemory = new Map(); // quotaKey -> { requests, tokens, refunds, resetTime }
+
+function quotaCounterKeys(quotaKey) {
+  return {
+    requests: getRuntimeKey(`quota:req:${quotaKey}`),
+    tokens: getRuntimeKey(`quota:tok:${quotaKey}`),
+    refunds: getRuntimeKey(`quota:ref:${quotaKey}`)
+  };
+}
+
+function memoryQuotaWindow(entry, windowSeconds, now = Date.now()) {
+  if (!entry || now > entry.resetTime) {
+    return { requests: 0, tokens: 0, refunds: 0, resetTime: now + windowSeconds * 1000 };
+  }
+  return entry;
+}
+
+export async function reserveSessionQuota(quotaKey, {
+  requestCost = 1,
+  tokenCost,
+  requestLimit,
+  tokenLimit,
+  windowSeconds,
+  legacy = { requests: 0, tokens: 0 }
+} = {}) {
+  const now = Date.now();
+  if (!isCacheEnabled()) {
+    // No shared store: the in-memory fallback is only reachable outside
+    // production (REQUIRE_REDIS_RUNTIME forbids prod without Redis) — the
+    // caller owns that policy, matching storeSessionTracking's contract.
+    let entry = quotaMemory.get(quotaKey);
+    if (!entry) {
+      // First touch: adopt the legacy tracking window, mirroring the Redis
+      // script, so quotas survive the migration in development too.
+      const legacyRequests = Math.max(0, Math.ceil(legacy.requests || 0));
+      const legacyTokens = Math.max(0, Math.ceil(legacy.tokens || 0));
+      entry = {
+        requests: legacyRequests,
+        tokens: legacyTokens,
+        refunds: 0,
+        resetTime: now + windowSeconds * 1000
+      };
+    } else if (now > entry.resetTime) {
+      entry = { requests: 0, tokens: 0, refunds: 0, resetTime: now + windowSeconds * 1000 };
+    }
+    if (entry.requests + requestCost > requestLimit) {
+      quotaMemory.set(quotaKey, entry);
+      return { allowed: false, reason: 'requests', requests: entry.requests, tokens: entry.tokens, resetTime: new Date(entry.resetTime) };
+    }
+    if (entry.tokens + tokenCost > tokenLimit) {
+      quotaMemory.set(quotaKey, entry);
+      return { allowed: false, reason: 'tokens', requests: entry.requests, tokens: entry.tokens, resetTime: new Date(entry.resetTime) };
+    }
+    entry.requests += requestCost;
+    entry.tokens += tokenCost;
+    quotaMemory.set(quotaKey, entry);
+    return { allowed: true, requests: entry.requests, tokens: entry.tokens, resetTime: new Date(entry.resetTime) };
+  }
+
+  try {
+    const keys = quotaCounterKeys(quotaKey);
+    const result = await redis.eval(
+      QUOTA_RESERVE_SCRIPT,
+      [keys.requests, keys.tokens],
+      [
+        String(requestCost),
+        String(Math.max(0, Math.ceil(tokenCost))),
+        String(Math.max(0, Math.ceil(requestLimit))),
+        String(Math.max(0, Math.ceil(tokenLimit))),
+        String(Math.max(1, Math.ceil(windowSeconds))),
+        String(Math.max(0, Math.ceil(legacy.requests || 0))),
+        String(Math.max(0, Math.ceil(legacy.tokens || 0)))
+      ]
+    );
+    const [allowed, reason, requests, tokens, ttl] = result;
+    const resetTime = new Date(now + (ttl > 0 ? ttl : windowSeconds) * 1000);
+    if (!Number(allowed)) {
+      return { allowed: false, reason: Number(reason) === 1 ? 'requests' : 'tokens', requests: Number(requests), tokens: Number(tokens), resetTime };
+    }
+    return { allowed: true, requests: Number(requests), tokens: Number(tokens), resetTime };
+  } catch (error) {
+    console.error('[Cache] Error reserving session quota:', error.message);
+    // Fail closed: an unusable quota store must not admit unlimited requests.
+    return { allowed: false, reason: 'unavailable' };
+  }
+}
+
+export async function commitSessionTokens(quotaKey, { tokenDelta, windowSeconds }) {
+  if (!isCacheEnabled()) {
+    // No shared store: the in-memory fallback is only reachable outside
+    // production (REQUIRE_REDIS_RUNTIME forbids prod without Redis) — the
+    // caller owns that policy, matching storeSessionTracking's contract.
+    const entry = quotaMemory.get(quotaKey);
+    if (entry) entry.tokens = Math.max(0, entry.tokens + tokenDelta);
+    return true;
+  }
+
+  // Adjust the reserved estimate toward the provider-reported actuals. A plain
+  // INCRBY (not the refund script) so the refund cap budget is untouched.
+  const committed = await incrementRuntimeCounter(`quota:tok:${quotaKey}`, windowSeconds, Math.ceil(tokenDelta));
+  if (!committed) {
+    console.error('[Cache] Error committing session tokens: counter unavailable');
+    return false;
+  }
+  return true;
+}
+
+export async function refundSessionQuota(quotaKey, {
+  requestCost = 1,
+  tokenCost,
+  windowSeconds,
+  refundCap
+} = {}) {
+  if (!isCacheEnabled()) {
+    // No shared store: the in-memory fallback is only reachable outside
+    // production (REQUIRE_REDIS_RUNTIME forbids prod without Redis) — the
+    // caller owns that policy, matching storeSessionTracking's contract.
+    const entry = quotaMemory.get(quotaKey);
+    if (!entry) return { refunded: false, refundsUsed: 0, refundCap };
+    if (entry.refunds >= refundCap) {
+      return { refunded: false, refundsUsed: entry.refunds, refundCap };
+    }
+    entry.refunds += 1;
+    entry.requests = Math.max(0, entry.requests - requestCost);
+    entry.tokens = Math.max(0, entry.tokens - tokenCost);
+    return { refunded: true, refundsUsed: entry.refunds, refundCap };
+  }
+
+  try {
+    const keys = quotaCounterKeys(quotaKey);
+    const result = await redis.eval(
+      QUOTA_REFUND_SCRIPT,
+      [keys.requests, keys.tokens, keys.refunds],
+      [String(requestCost), String(Math.max(0, Math.ceil(tokenCost))), String(Math.max(0, Math.ceil(refundCap))), String(Math.max(1, Math.ceil(windowSeconds)))]
+    );
+    const [refunded, refundsUsed] = result;
+    return { refunded: Number(refunded) === 1, refundsUsed: Number(refundsUsed), refundCap };
+  } catch (error) {
+    console.error('[Cache] Error refunding session quota:', error.message);
+    return { refunded: false, refundsUsed: -1, refundCap };
   }
 }
 
