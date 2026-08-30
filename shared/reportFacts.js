@@ -135,6 +135,17 @@ export function redactPublicReportText(value) {
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[id-redacted]');
 }
 
+// These reports are pasted into markdown-rendering surfaces (forums, issue
+// trackers), and their text ultimately derives from attacker-supplied dump
+// content. Neutralize link syntax so a crafted dump cannot plant clickable
+// links at the destination (issue #81) — the URL stays visible as plain text.
+export function neutralizeMarkdownLinks(value) {
+  return String(value || '').replace(
+    /\[([^\]\n]{0,200})\]\((https?:\/\/[^\s)]+)\)/g,
+    '$1 ($2)'
+  );
+}
+
 export function generateForumReport(dumpFile) {
   const facts = getReportFacts(dumpFile);
   if (!facts) return '';
@@ -160,7 +171,7 @@ export function generateForumReport(dumpFile) {
   actions.forEach((action, index) => lines.push(`${index + 1}. ${action}`));
 
   lines.push('', `_${facts.caveat} Private upload details and raw dump output omitted._`);
-  return redactPublicReportText(lines.join('\n'));
+  return neutralizeMarkdownLinks(redactPublicReportText(lines.join('\n')));
 }
 
 export function generateMarkdownReport(dumpFile) {
@@ -239,5 +250,5 @@ export function generateMarkdownReport(dumpFile) {
   }
 
   lines.push(`_${facts.caveat}_`);
-  return lines.join('\n');
+  return neutralizeMarkdownLinks(lines.join('\n'));
 }
