@@ -23,7 +23,7 @@ const API_LIMITS = Object.freeze({
   maxExtractedArchiveSize: FILE_LIMITS.maxArchiveExtractedSize,
   rateLimiting: Object.freeze({
     windowMs: 15 * 60 * 1000,
-    maxRequests: 100,
+    maxRequests: 500,
     message: 'Too many requests from this IP, please try again later'
   }),
   maxConcurrentRequests: 3

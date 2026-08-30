@@ -426,6 +426,9 @@ const ACTUAL_SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(3
 const validSessions = new Map(); // sessionId -> { hash, timestamp, turnstileVerified }
 const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
 const SESSION_EXPIRY_SECONDS = Math.ceil(SESSION_EXPIRY / 1000);
+// Absolute cap: the sliding SESSION_EXPIRY renews on every request, so without a
+// hard ceiling an actively-used session would never expire.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
@@ -1408,6 +1411,12 @@ const externalAnalyzeStatusIpLimiter = makeLimiter({
   name: 'external-analyze-status-ip',
   keyGenerator: rateLimitKey
 });
+// The IP limiter above intentionally runs BEFORE requireApiKey on the status
+// route: it is the cheap shield that stops unauthenticated floods from reaching
+// multipart parsing or Redis. Tradeoff (accepted): an unauthenticated flood can
+// drain one client IP's 1200/hr status budget — lockout, never disclosure. The
+// key-scoped limiter behind requireApiKey is the authoritative quota.
+
 // Public stats endpoint: generous per-IP budget for widget traffic.
 const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
 
@@ -1415,9 +1424,6 @@ const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
-
-// Higher limit parser for file upload endpoints (base64-encoded files can be up to 133MB for 100MB files)
-const largeJsonParser = jsonParser({ limit: `${Math.ceil(MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024)}mb` });
 
 // Default JSON parser applied per-route, after rate limit and requireSession,
 // so unauthenticated requests are rejected before allocating a parse buffer.
@@ -1672,6 +1678,8 @@ function generateSessionCookie(turnstileVerified = false) {
   const sessionData = {
     hash: sessionHash,
     timestamp,
+    // Absolute-lifetime anchor (survives sliding renewals of `timestamp`).
+    createdAt: timestamp,
     turnstileVerified
   };
   if (!isCacheEnabled()) {
@@ -1724,7 +1732,17 @@ async function validateSession(sessionId, sessionHash) {
     await deleteSession(sessionId);
     return { valid: false, reason: 'Session expired' };
   }
-  
+
+  // Absolute lifetime cap: sessions created before this field existed fall back
+  // to their last-renewal timestamp, so the cap tightens rather than loosens.
+  const sessionCreatedAt = Number.isFinite(sessionData.createdAt)
+    ? sessionData.createdAt
+    : sessionData.timestamp;
+  if (Date.now() - sessionCreatedAt > SESSION_MAX_AGE_MS) {
+    await deleteSession(sessionId);
+    return { valid: false, reason: 'Session expired' };
+  }
+
   // Verify hash
   if (!timingSafeEqualString(sessionData.hash, sessionHash)) {
     return { valid: false, reason: 'Invalid session hash' };
@@ -2523,11 +2541,15 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     const validation = validateAnalysisPrompt(contents);
     if (!validation.valid) {
+      // Fingerprint, never echo: the prompt is user-controlled text, so log its
+      // length and a truncated hash rather than any of its content.
+      const promptText = getPromptText(contents);
       log.warn('prompt.blocked', {
         sessionId: sessionId?.substring(0, 10) + '...',
         ip: getClientIp(req),
         reason: validation.reason,
-        promptPreview: getPromptText(contents).substring(0, 150)
+        promptLength: promptText.length,
+        promptHash: safeToken(promptText)
       });
       return res.status(400).json({
         error: 'Invalid request. This endpoint only analyzes Windows crash dumps and BSOD errors.',
@@ -2876,10 +2898,16 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
     const hashesToCheck = validHashes.slice(0, 20);
     const results = {};
 
-    // Check each hash against the combined cache. The client uses this as a
-    // hint before fetching cached results by hash.
+    // Check each hash against the combined cache. Same ownership rule as
+    // GET /api/cache/get: a hash this session never uploaded reports cached:false,
+    // so the endpoint cannot be used as a cross-user "has anyone analyzed this
+    // dump?" oracle. The client only probes hashes it has uploaded itself.
     const checkPromises = hashesToCheck
       .map(async (hash) => {
+        if (!(await sessionOwnsHash(req.sessionId, hash))) {
+          results[hash] = false;
+          return;
+        }
         const cached = await isAnalysisCached(hash);
         results[hash] = cached;
       });
@@ -2902,7 +2930,6 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-// Uses largeJsonParser to handle base64-encoded files up to 100MB (becomes ~133MB encoded)
 app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
@@ -4414,6 +4441,14 @@ let earlyHintsLinkHeader = '';
 const htmlEtags = {};
 
 async function startServer() {
+  // Refuse to boot when a production deployment would silently disable auth:
+  // requireSession short-circuits to an auto-premium identity under
+  // NODE_ENV=development, and the Cloudflare-only ingress gate defaults off
+  // outside production — so neither escape hatch may survive a prod boot.
+  if (process.env.NODE_ENV === 'production' && process.env.WF_DEV_TIER) {
+    throw new Error('WF_DEV_TIER is a development-only escape hatch and must not be set in production');
+  }
+
   // Initialize xxhash before accepting requests
   [hasher] = await Promise.all([
     xxhash(),

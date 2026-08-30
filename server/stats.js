@@ -49,9 +49,12 @@ export function normalizeStopCode(value) {
 }
 
 function normalizeLabel(label) {
-  const text = String(label || '').trim();
-  if (!text || !/^[A-Z0-9_ ]{1,64}$/i.test(text)) return undefined;
-  return text.toUpperCase().slice(0, 64);
+  // Labels come from attacker-supplied dump text, so collapse whitespace to
+  // underscores and allow only a compact identifier charset: public labels
+  // cannot carry spaces or prose, and cardinality stays bounded.
+  const text = String(label || '').trim().replace(/\s+/g, '_');
+  if (!text || !/^[A-Z0-9_]{1,64}$/.test(text)) return undefined;
+  return text.slice(0, 64);
 }
 
 // '10.0.26100.1' | '10.0.26100' | banner text -> first three numeric parts.

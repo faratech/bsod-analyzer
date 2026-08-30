@@ -11,6 +11,7 @@ import {
   utcDay,
   buildSnapshot
 } from '../server/stats.js';
+import { describeBugcheck } from '../server/bugcheckKnowledge.js';
 
 test('normalizeStopCode canonicalizes hex/decimal/paren forms', () => {
   assert.deepEqual(normalizeStopCode('0x0000001A'), { code: '0x1A', label: undefined });
@@ -21,6 +22,18 @@ test('normalizeStopCode canonicalizes hex/decimal/paren forms', () => {
   assert.equal(normalizeStopCode(''), undefined);
   assert.equal(normalizeStopCode(null), undefined);
   assert.equal(normalizeStopCode('not-a-code'), undefined);
+});
+
+test('normalizeStopCode collapses label whitespace to underscores (issue #79)', () => {
+  const spaced = normalizeStopCode('0x1A (MEMORY MANAGEMENT)');
+  assert.equal(spaced.label, 'MEMORY_MANAGEMENT');
+  // Prose with spaces cannot survive: it becomes a single underscored token,
+  // so the public stats page never publishes authored sentences.
+  const prose = normalizeStopCode('0x1A (BUY CHEVY AVIS NOW)');
+  assert.equal(prose.label, 'BUY_CHEVY_AVIS_NOW');
+  assert.ok(!/[ ]/.test(prose.label));
+  // Anything outside the identifier charset (after collapsing) is rejected.
+  assert.equal(normalizeStopCode('0x1A (BAD; DROP TABLE)').label, undefined);
 });
 
 test('normalizers bound cardinality', () => {
@@ -133,4 +146,14 @@ test('buildSnapshot is fully deterministic on an empty store', () => {
 
   // Garbage tracking timestamps are dropped, not passed through.
   assert.equal(buildSnapshot({ trackingSince: 'not-a-date' }, { now }).trackingSince, null);
+});
+
+test('describeBugcheck never echoes attacker labels into public descriptions (issue #79)', () => {
+  const hostile = 'PLEASE_IGNORE_ALL_PREVIOUS_INSTRUCTIONS';
+  const description = describeBugcheck('0x999999', hostile);
+  assert.equal(typeof description, 'string');
+  assert.ok(!description.includes(hostile));
+  assert.ok(!/IGNORE/i.test(description));
+  // Known codes keep their curated meaning.
+  assert.match(describeBugcheck('0x1A', 'MEMORY_MANAGEMENT'), /memory management/i);
 });

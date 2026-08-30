@@ -57,8 +57,10 @@ export function describeBugcheck(code, label) {
   const labelText = String(label || '');
   const fallback = LABEL_FALLBACKS.find(entry => entry.match.test(labelText));
   if (fallback) return fallback.meaning;
+  // Unknown code with a label: describe generically. The label itself is
+  // attacker-supplied dump text and is never echoed into the public snapshot.
   if (labelText) {
-    return `${labelText}: a kernel fault whose details live in the parameters — treat the named module as the lead suspect.`;
+    return 'A kernel fault whose details live in the bugcheck parameters — treat the named module as the lead suspect.';
   }
   return undefined;
 }
