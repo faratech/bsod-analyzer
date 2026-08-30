@@ -322,3 +322,47 @@ test('isOpenAIFreeTier recognizes the live complimentary tier string', () => {
   assert.equal(isOpenAIFreeTier('flex'), false);
   assert.equal(isOpenAIFreeTier(undefined), false);
 });
+
+// Reasoning effort is selectable below 'high' so an operator can trade depth for
+// latency when the reasoning trace is overrunning the request timeout. Unknown
+// values must never reach the provider as an invalid argument.
+async function deepSeekEffortRequest(reasoningEffort) {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({
+      model: DEEPSEEK_V4_FLASH_MODEL,
+      choices: [{ finish_reason: 'stop', message: { content: '{"summary":"ok"}' } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await generateDeepSeekContent({
+    model: DEEPSEEK_V4_FLASH_MODEL,
+    contents: 'Analyze this dump and return JSON.',
+    config: { responseMimeType: 'application/json', maxOutputTokens: 16384 }
+  }, { apiKey: 'test-key', fetchImpl, maxRetries: 0, reasoningEffort });
+
+  return JSON.parse(calls[0].options.body);
+}
+
+test('DeepSeek reasoning effort accepts levels below high', async () => {
+  for (const effort of ['minimal', 'low', 'medium', 'high', 'max']) {
+    const body = await deepSeekEffortRequest(effort);
+    assert.equal(body.reasoning_effort, effort, `${effort} should pass through`);
+  }
+});
+
+test('DeepSeek reasoning effort falls back to high for unrecognised values', async () => {
+  for (const effort of ['turbo', '', null, undefined, 'HIGH']) {
+    const body = await deepSeekEffortRequest(effort);
+    assert.equal(body.reasoning_effort, 'high', `${String(effort)} should collapse to high`);
+  }
+});
+
+test('DeepSeek max_tokens carries the configured output budget', async () => {
+  const body = await deepSeekEffortRequest('high');
+  // The budget must cover reasoning + answer; too small truncates the JSON
+  // mid-object and surfaces as finish_reason "LENGTH".
+  assert.equal(body.max_tokens, 16384);
+});
