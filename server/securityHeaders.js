@@ -28,7 +28,12 @@ const CONNECT_SOURCES =
 
 // 'wasm-unsafe-eval' is required: the client bundle hashes uploads with
 // xxhash-wasm and cannot run without WebAssembly.
-const WASM_SOURCE = 'wasm-unsafe-eval';
+// The single quotes are part of the CSP token, not JS string syntax. Without them
+// the browser parses `wasm-unsafe-eval` as a *host* source expression (a hostname),
+// silently grants nothing, and every WebAssembly.instantiate() throws a CompileError
+// — which took out the WinDBG upload path, since the client hashes the dump with
+// xxhash-wasm before uploading it.
+const WASM_SOURCE = "'wasm-unsafe-eval'";
 
 function scriptSources({ inlineScriptSources }) {
   // `inlineScriptSources` is either "'unsafe-inline'" or a list of
