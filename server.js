@@ -14,7 +14,6 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
 import JSZip from 'jszip';
-import net from 'net';
 import {
   ALLOWED_EXTENSIONS,
   DUMP_EXTENSIONS,
@@ -68,6 +67,8 @@ import {
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
 import { registerStatsRoute } from './server/statsRoute.js';
+import { createPeerIpResolver } from './server/peerIp.js';
+import { createTurnstileReplayGuard } from './server/turnstile.js';
 import {
   createStatsInsightService,
   registerStatsInsightRoute
@@ -244,75 +245,19 @@ async function withTimeout(operation, ms, message) {
   }
 }
 
-// Cloudflare-published IP ranges (https://www.cloudflare.com/ips/).
-// Refresh manually when Cloudflare announces changes; the lists are stable
-// for months at a time.
-const CLOUDFLARE_IPV4_RANGES = [
-  '173.245.48.0/20',
-  '103.21.244.0/22',
-  '103.22.200.0/22',
-  '103.31.4.0/22',
-  '141.101.64.0/18',
-  '108.162.192.0/18',
-  '190.93.240.0/20',
-  '188.114.96.0/20',
-  '197.234.240.0/22',
-  '198.41.128.0/17',
-  '162.158.0.0/15',
-  '104.16.0.0/13',
-  '104.24.0.0/14',
-  '172.64.0.0/13',
-  '131.0.72.0/22',
-];
-const CLOUDFLARE_IPV6_RANGES = [
-  '2400:cb00::/32',
-  '2606:4700::/32',
-  '2803:f800::/32',
-  '2405:b500::/32',
-  '2405:8100::/32',
-  '2a06:98c0::/29',
-  '2c0f:f248::/32',
-];
-
-const cloudflareBlockList = new net.BlockList();
-for (const range of CLOUDFLARE_IPV4_RANGES) {
-  const [addr, prefix] = range.split('/');
-  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv4');
-}
-for (const range of CLOUDFLARE_IPV6_RANGES) {
-  const [addr, prefix] = range.split('/');
-  cloudflareBlockList.addSubnet(addr, Number(prefix), 'ipv6');
-}
-
-// Returns the IP that Cloud Run saw connecting to the service. Cloud Run
-// appends its view of the peer IP to X-Forwarded-For, so the rightmost entry
-// is the immediate upstream — which is a Cloudflare edge IP in production.
-function getImmediatePeerIp(req) {
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length > 0) {
-    const parts = xff.split(',').map(s => s.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  return req.socket?.remoteAddress || null;
-}
-
-function isFromCloudflare(req) {
-  const ip = getImmediatePeerIp(req);
-  if (!ip) return false;
-  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
-  if (net.isIPv4(normalized)) return cloudflareBlockList.check(normalized, 'ipv4');
-  if (net.isIPv6(normalized)) return cloudflareBlockList.check(normalized, 'ipv6');
-  return false;
-}
-
-// CF-Connecting-IP is set by Cloudflare and contains the original client IP.
-// Trust it only when the immediate peer is a Cloudflare edge; otherwise fall
-// back to Fastify's trusted-proxy IP calculation.
-function getClientIp(req) {
-  const cfIp = req.headers['cf-connecting-ip'];
-  if (typeof cfIp === 'string' && cfIp.length > 0 && isFromCloudflare(req)) return cfIp;
-  return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
-}
+// Cloudflare-published IP ranges live in server/peerIp.js alongside the
+// proxy-chain trust rule: the immediate peer is read from the rightmost
+// X-Forwarded-For entry ONLY when the chain carries at least TRUST_PROXY_HOPS
+// entries (Cloudflare + Cloud Run append one each in production). A shorter
+// chain means a proxy was skipped or the header was replaced, so the socket
+// address is used instead — no header can spoof that. The ingress gate below
+// and every IP-keyed rate limiter hang off these resolvers.
+const {
+  getImmediatePeerIp,
+  hasTrustedXffChain,
+  isFromCloudflare,
+  getClientIp
+} = createPeerIpResolver({ trustProxyHops: TRUST_PROXY_HOPS });
 
 // Reject any request whose immediate peer is not a Cloudflare edge IP.
 // Combined with --no-default-url on the Cloud Run service, this closes both
@@ -321,13 +266,20 @@ function getClientIp(req) {
 const CLOUDFLARE_ONLY_INGRESS =
   (process.env.CLOUDFLARE_ONLY_INGRESS ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
 if (CLOUDFLARE_ONLY_INGRESS) {
+  console.log(`Ingress gate: requiring a Cloudflare edge peer and an XFF chain of >= ${TRUST_PROXY_HOPS} entries`);
   app.use((req, res, next) => {
     if (req.path === '/health') return next();
     if (isFromCloudflare(req)) return next();
+    // chainTrusted=false means the XFF chain was shorter than TRUST_PROXY_HOPS —
+    // if that shows up for legitimate traffic, production hop count has drifted
+    // from the configured value (rollback: CLOUDFLARE_ONLY_INGRESS=false and
+    // retune TRUST_PROXY_HOPS; no redeploy needed).
     log.warn('non_cloudflare_request_rejected', {
       path: req.path,
       peer: getImmediatePeerIp(req),
       xff: req.headers['x-forwarded-for'] || null,
+      xffHops: (String(req.headers['x-forwarded-for'] || '')).split(',').filter(Boolean).length,
+      chainTrusted: hasTrustedXffChain(req)
     });
     return res.status(403).send('Forbidden');
   });
@@ -1560,45 +1512,63 @@ if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
 
-// Store used tokens to prevent replay attacks
-const usedTurnstileTokens = new Map(); // token -> timestamp
-
-// Clean up old tokens periodically (older than 5 minutes)
+// Replay protection for verified tokens lives in server/turnstile.js (atomic
+// Redis reservation shared across instances). The sweep below only bounds the
+// no-Redis fallback map that guard keeps for development.
 setInterval(() => {
-  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
-  for (const [token, timestamp] of usedTurnstileTokens.entries()) {
-    if (timestamp < fiveMinutesAgo) {
-      usedTurnstileTokens.delete(token);
-    }
-  }
+  turnstileReplayGuard.prune(5 * 60 * 1000);
 }, 60 * 1000); // Clean every minute
 
 // Verify Turnstile token with proper Siteverify implementation
+//
+// Single-use enforcement is ATOMIC and happens BEFORE the siteverify round-trip
+// (server/turnstile.js): incrementRuntimeCounter() is a Redis INCRBY, so
+// concurrent requests carrying the same token cannot both win the race, and the
+// reservation lives in Redis, so it is shared across Cloud Run instances (the
+// previous in-memory Map was neither). The reservation is released only when
+// the token did not verify or the transport threw — a successfully verified
+// token stays consumed.
+const turnstileReplayGuard = createTurnstileReplayGuard({
+  incrementCounter: incrementRuntimeCounter,
+  redisEnabled: isCacheEnabled
+});
+
 async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
   if (!TURNSTILE_SECRET_KEY) {
     console.error('TURNSTILE_SECRET_KEY not configured');
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['missing-input-secret'],
-      error: 'Turnstile not configured' 
+      error: 'Turnstile not configured'
     };
   }
 
   if (!token || typeof token !== 'string' || token.length > 4096) {
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['missing-input-response'],
-      error: 'No token provided' 
+      error: 'No token provided'
     };
   }
 
-  // Check if token was already used (prevent replay attacks)
-  if (usedTurnstileTokens.has(token)) {
+  // Reserve the token atomically before talking to Cloudflare (issue #72).
+  const reservation = await turnstileReplayGuard.reserve(token);
+  if (reservation.duplicate) {
     console.warn('Turnstile token replay blocked:', safeToken(token));
-    return { 
-      success: false, 
+    return {
+      success: false,
       'error-codes': ['timeout-or-duplicate'],
-      error: 'Token already used' 
+      error: 'Token already used'
+    };
+  }
+  if (reservation.unavailable) {
+    // Fail closed: without the atomic reservation a replay could mint extra
+    // sessions, so no verification is attempted during a Redis outage.
+    console.error('Turnstile reservation unavailable (runtime store down)');
+    return {
+      success: false,
+      'error-codes': ['internal-error'],
+      error: 'Verification temporarily unavailable'
     };
   }
 
@@ -1607,11 +1577,11 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
     const formData = new URLSearchParams();
     formData.append('secret', TURNSTILE_SECRET_KEY);
     formData.append('response', token); // Must be called 'response', not 'token'
-    
+
     if (ip) {
       formData.append('remoteip', ip);
     }
-    
+
     // Add idempotency key for retry support
     if (idempotencyKey) {
       formData.append('idempotency_key', idempotencyKey);
@@ -1628,19 +1598,18 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
 
     if (!response.ok) {
       console.error('Siteverify HTTP error:', response.status);
-      return { 
-        success: false, 
+      await turnstileReplayGuard.release(token);
+      return {
+        success: false,
         'error-codes': ['internal-error'],
-        error: 'Siteverify request failed' 
+        error: 'Siteverify request failed'
       };
     }
 
     const result = await response.json();
-    
+
     if (result.success) {
-      // Mark token as used to prevent replay attacks
-      usedTurnstileTokens.set(token, Date.now());
-      
+      // Reservation stays: the token is now permanently consumed.
       // Log successful verification
       console.log('Turnstile verification successful:', {
         hostname: result.hostname,
@@ -1648,16 +1617,20 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
         action: result.action
       });
     } else {
+      // The token did not verify, so it carries no value — release the
+      // reservation so a client retry (or idempotency-key retry) can proceed.
+      await turnstileReplayGuard.release(token);
       console.error('Turnstile verification failed:', result['error-codes']);
     }
-    
+
     return result;
   } catch (error) {
     console.error('Turnstile Siteverify error:', error);
-    return { 
-      success: false, 
+    await turnstileReplayGuard.release(token);
+    return {
+      success: false,
       'error-codes': ['internal-error'],
-      error: 'Verification request failed' 
+      error: 'Verification request failed'
     };
   }
 }
