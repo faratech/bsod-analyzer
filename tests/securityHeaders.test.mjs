@@ -134,3 +134,33 @@ test('updateInlineScriptHashes rejects malformed source expressions', () => {
   middleware.updateInlineScriptHashes(["'sha256-good='", 'javascript:']);
   assert.equal(middleware.hasInlineScriptHashes(), true, 'valid hashes survive alongside junk');
 });
+
+test('report-only policy omits directives browsers ignore in report-only mode', async () => {
+  const middleware = createSecurityHeadersMiddleware({ cspMode: 'report-only' });
+  middleware.updateInlineScriptHashes(["'sha256-abc='"]);
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/about`, { headers: { connection: 'close' } });
+    const csp = response.headers.get('content-security-policy');
+    const reportOnly = response.headers.get('content-security-policy-report-only');
+    // Chrome warns once per page load for every ignored directive, drowning the
+    // violation reports the staged rollout is meant to surface.
+    assert.doesNotMatch(reportOnly, /upgrade-insecure-requests/);
+    // The enforcing policy still upgrades — only the report-only copy drops it.
+    assert.match(csp, /upgrade-insecure-requests/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('worker-src is declared so the service worker is not judged by script-src', async () => {
+  const middleware = createSecurityHeadersMiddleware({ cspMode: 'enforce' });
+  middleware.updateInlineScriptHashes(["'sha256-abc='"]);
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/about`, { headers: { connection: 'close' } });
+    assert.match(response.headers.get('content-security-policy'), /worker-src 'self'/);
+  } finally {
+    await server.close();
+  }
+});

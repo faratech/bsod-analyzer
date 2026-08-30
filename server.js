@@ -2438,6 +2438,17 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
 
 // Browser compatibility endpoint. Provider/model selection remains server-owned.
 app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
+  // Declared in the handler scope, not inside the try: the catch below reads them
+  // to refund the quota reservation, and a catch block is a sibling of its try, not
+  // a child of it. Declaring them inside the try made every failure path throw
+  // `ReferenceError: quotaKey is not defined` before it could send an error
+  // response — which both swallowed the real error and made refunds impossible.
+  // The catch guards on `quotaKey` being set, so failures before the reservation
+  // simply skip the refund.
+  let quotaKey;
+  let estimatedInputTokens = 0;
+  const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
+  let quotaRefundCap = 0;
   try {
     const modelName = getPrimaryModel();
     const provider = getAIProviderForModel(modelName);
@@ -2466,7 +2477,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // (logged-in users on the stable forum userId, anonymous visitors on the client
     // IP so re-doing Turnstile can't reset it). With the feature OFF: the original
     // flat 50/500K cap keyed on the sessionId, identical to the pre-upgrade server.
-    let tier, limits, quotaKey;
+    let tier, limits;
     if (WF_SSO_ENABLED) {
       tier = req.tier || 'anon';
       limits = tierLimits(tier);
@@ -2476,8 +2487,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
       quotaKey = sessionId;
     }
-    const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
-    const quotaRefundCap = refundCapFor(limits.requests);
+    quotaRefundCap = refundCapFor(limits.requests);
 
     const validation = validateAnalysisPrompt(contents);
     if (!validation.valid) {
@@ -2504,7 +2514,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     // Estimate tokens in request (rough estimate: 1 token = 4 characters)
     const requestText = serverPrompt;
-    const estimatedInputTokens = Math.ceil(requestText.length / 4);
+    estimatedInputTokens = Math.ceil(requestText.length / 4);
 
     // Check cache using fileHash only after the session has proven ownership by
     // uploading that exact file — AND only when the hash-keyed entry carries
