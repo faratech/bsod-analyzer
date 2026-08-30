@@ -58,17 +58,34 @@ function updateHTMLWithSRI() {
 
   html = html.replace(/<script\b[^>]*\bsrc="\/assets\/[^"]+"[^>]*><\/script>/g, addIntegrityToTag);
   html = html.replace(/<link\b[^>]*\bhref="\/assets\/[^"]+"[^>]*>/g, addIntegrityToTag);
-  
+
   // Save the SRI mapping for server validation
   fs.writeFileSync(
     path.join(distPath, 'sri-mapping.json'),
     JSON.stringify(sriMapping, null, 2)
   );
-  
+
+  // Record the inline script hashes present in the built template. The server
+  // recomputes these from the SERVED bytes at startup (injectSsoFlags rewrites
+  // script contents), so this file is a build artifact/audit trail, not the
+  // runtime source of truth (issue #74).
+  const inlineHashes = {};
+  for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const content = match[1];
+    if (content && content.trim()) {
+      inlineHashes[`'sha256-${crypto.createHash('sha256').update(content).digest('base64')}'`] = content.length;
+    }
+  }
+  fs.writeFileSync(
+    path.join(distPath, 'inline-script-hashes.json'),
+    JSON.stringify(inlineHashes, null, 2)
+  );
+
   // Save updated HTML
   fs.writeFileSync(htmlPath, html);
   console.log('SRI hashes added to index.html');
   console.log('SRI mapping:', sriMapping);
+  console.log('Inline script hashes:', Object.keys(inlineHashes));
 }
 
 updateHTMLWithSRI();

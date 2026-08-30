@@ -3,29 +3,20 @@ import { SECURITY_CONFIG } from '../config/security';
 export function sanitizeExtractedContent(content: string): string {
   // Remove null bytes and other control characters
   let sanitized = content.replace(new RegExp('\\x00', 'g'), '');
-  
+
   // Remove non-printable characters except common whitespace
   sanitized = sanitized.replace(new RegExp('[^\\x20-\\x7E\\t\\n\\r]', 'g'), '');
-  
+
   // Limit the length
   if (sanitized.length > SECURITY_CONFIG.processing.maxStringLength) {
     sanitized = sanitized.substring(0, SECURITY_CONFIG.processing.maxStringLength);
   }
-  
-  // Remove potential script injection patterns
-  const dangerousPatterns = [
-    /<script[\s\S]*?<\/script>/gi,
-    /<iframe[\s\S]*?<\/iframe>/gi,
-    /javascript:/gi,
-    /on\w+\s*=/gi, // onclick=, onload=, etc.
-    /<object[\s\S]*?<\/object>/gi,
-    /<embed[\s\S]*?>/gi,
-  ];
-  
-  for (const pattern of dangerousPatterns) {
-    sanitized = sanitized.replace(pattern, '[REMOVED]');
-  }
-  
+
+  // No HTML-pattern stripping here (issue #81): this text is never rendered as
+  // HTML — it is React-escaped on display and prompt-wrapped for the model —
+  // and the previous regexes ("on\w+=" etc.) were both trivially bypassable
+  // and destructive to legitimate dump evidence like "session=" tokens.
+
   return sanitized;
 }
 

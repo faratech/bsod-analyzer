@@ -55,7 +55,9 @@ import { createUploadHandler } from './server/uploadHandler.js';
 import {
   CSP_EMBED_HEADER,
   CSP_HEADER,
+  CSP_MODE,
   EMBEDDABLE_PATHS,
+  computeInlineScriptSources,
   createSecurityHeadersMiddleware
 } from './server/securityHeaders.js';
 import {
@@ -1373,12 +1375,14 @@ const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
 // Global security headers middleware (CSP strings + embeddable-path handling
-// live in server/securityHeaders.js).
-app.use(createSecurityHeadersMiddleware({
+// live in server/securityHeaders.js). The instance handle is kept so startup
+// can hand over the inline-script hashes computed from the served HTML.
+const securityHeadersMiddleware = createSecurityHeadersMiddleware({
   cspHeader: CSP_HEADER,
   cspEmbedHeader: CSP_EMBED_HEADER,
   embeddablePaths: EMBEDDABLE_PATHS
-}));
+});
+app.use(securityHeadersMiddleware);
 
 // MIME type lookup for static assets
 const MIME_TYPES = {
@@ -4316,6 +4320,26 @@ async function startServer() {
     htmlEtags.__fallback = etagOf(cachedIndexHtml);
     for (const [route, html] of Object.entries(cachedRouteHtml)) {
       htmlEtags[route] = etagOf(html);
+    }
+
+    // CSP inline-script hashes (issue #74) are computed from the exact served
+    // bytes — injectSsoFlags above rewrites script contents, so build-time
+    // hashes would drift. Union every HTML variant the server can serve.
+    const sha256B64 = (content) => crypto.createHash('sha256').update(content).digest('base64');
+    const servedHtmlVariants = [cachedIndexHtml, cachedHomeHtml, ...Object.values(cachedRouteHtml)];
+    const inlineScriptHashes = new Set();
+    for (const html of servedHtmlVariants) {
+      for (const source of computeInlineScriptSources(html, { sha256: sha256B64 })) {
+        inlineScriptHashes.add(source);
+      }
+    }
+    if (inlineScriptHashes.size > 0) {
+      securityHeadersMiddleware.updateInlineScriptHashes([...inlineScriptHashes]);
+      console.log(`CSP: hashed ${inlineScriptHashes.size} inline script(s) from served HTML (mode: ${CSP_MODE})`);
+    } else if (CSP_MODE === 'enforce' && process.env.NODE_ENV === 'production') {
+      throw new Error('CSP_MODE=enforce requires dist HTML with inline scripts to hash; refusing to boot with a fallback that would blank the page');
+    } else {
+      log.warn('csp.inline_hashes.unavailable', { mode: CSP_MODE });
     }
 
     if (WF_SSO_ENABLED) {
