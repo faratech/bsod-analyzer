@@ -34,12 +34,35 @@ export function onSessionInvalid(listener: () => void): () => void {
   return () => window.removeEventListener(SESSION_INVALID_EVENT, handler);
 }
 
+// Concurrent callers share one request. Several components initialise the session
+// as they mount (FileUploader, the analyzer's existing-session check, useAnalysis),
+// and every call site passes force=true, which bypasses the `sessionInitialized`
+// guard above. Without coalescing, one page load fired ~8 GET /api/auth/session
+// calls in a few seconds and two or three reloads exhausted the shared auth
+// limiter (20 requests / 10 min), leaving the client stuck on 429 with no session.
+// `force` still bypasses the cached result, but never duplicates a live request.
+let inFlightInit: Promise<boolean> | null = null;
+
 export async function initializeSession(force: boolean = false): Promise<boolean> {
   if (sessionInitialized && !force) {
     console.log('[Session] Already initialized, skipping');
     return true;
   }
 
+  if (inFlightInit) {
+    console.log('[Session] Initialization already in flight, joining it');
+    return inFlightInit;
+  }
+
+  inFlightInit = requestSession();
+  try {
+    return await inFlightInit;
+  } finally {
+    inFlightInit = null;
+  }
+}
+
+async function requestSession(): Promise<boolean> {
   try {
     console.log('[Session] Initializing session...');
     const response = await fetch('/api/auth/session', {
