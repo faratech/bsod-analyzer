@@ -1326,12 +1326,45 @@ const apiLimiter = makeLimiter({
   }
 });
 
-const authLimiter = makeLimiter({ windowMs: 10 * 60 * 1000, max: 20, name: 'auth' });
-const cacheLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 120, name: 'cache' });
-const geminiLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 40, name: 'gemini' });
-const windbgUploadLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 20, name: 'windbg-upload' });
-const windbgPollLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'windbg-poll' });
-const archiveLimiter = makeLimiter({ windowMs: 60 * 60 * 1000, max: 10, name: 'archive' });
+// These are per-IP burst guards, not the cost control. Spend is bounded by the
+// per-session quota (REQUEST_LIMIT_PER_SESSION / TOKEN_LIMIT_PER_SESSION and the
+// tier limits), which these deliberately do not duplicate — so they are sized for
+// "a real person using the site briskly" rather than for billing safety. Each is
+// overridable at deploy time for incident response without a code change.
+//
+// auth is the loosest: it guards session creation and Turnstile verification, both
+// cheap and already bot-gated, and it is the one a normal user trips just by
+// reloading the page a few times.
+const authLimiter = makeLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: readPositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 100),
+  name: 'auth'
+});
+const cacheLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: readPositiveInt(process.env.CACHE_RATE_LIMIT_MAX, 300),
+  name: 'cache'
+});
+const geminiLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: readPositiveInt(process.env.GEMINI_RATE_LIMIT_MAX, 80),
+  name: 'gemini'
+});
+const windbgUploadLimiter = makeLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.WINDBG_UPLOAD_RATE_LIMIT_MAX, 50),
+  name: 'windbg-upload'
+});
+const windbgPollLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: readPositiveInt(process.env.WINDBG_POLL_RATE_LIMIT_MAX, 600),
+  name: 'windbg-poll'
+});
+const archiveLimiter = makeLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.ARCHIVE_RATE_LIMIT_MAX, 30),
+  name: 'archive'
+});
 const externalAnalyzeSubmitLimiter = makeLimiter({
   windowMs: 60 * 60 * 1000,
   max: 60,
