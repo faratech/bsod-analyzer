@@ -36,7 +36,12 @@ function scriptSources({ inlineScriptSources }) {
   return `'self' ${inlineScriptSources} ${WASM_SOURCE} ${AD_SCRIPT_SOURCES}`;
 }
 
-function cspDirectives(frameAncestors, inlineScriptSources) {
+// `reportOnly` drops directives that browsers refuse to honour in a
+// Content-Security-Policy-Report-Only header. Keeping them there is not merely
+// inert: Chrome logs an "is ignored when delivered in a report-only policy"
+// warning for each one, on every page load, which buries the actual violation
+// reports this staged rollout exists to collect.
+function cspDirectives(frameAncestors, inlineScriptSources, { reportOnly = false } = {}) {
   return [
     "default-src 'self'",
     // *.doubleclick.net + www.googleadservices.com cover Google Ads conversion
@@ -49,11 +54,15 @@ function cspDirectives(frameAncestors, inlineScriptSources) {
     "img-src 'self' data: https: blob:",
     `connect-src ${CONNECT_SOURCES}`,
     "frame-src 'self' https://challenges.cloudflare.com https://*.google https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com https://*.doubleclick.net https://www.paypal.com",
+    // The app registers /sw.js. Without an explicit worker-src this falls back to
+    // script-src, where the hash-based policy has no source that matches a
+    // same-origin worker script and the registration is reported as a violation.
+    "worker-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self' https://www.paypal.com",
     `frame-ancestors ${frameAncestors}`,
-    'upgrade-insecure-requests'
+    ...(reportOnly ? [] : ['upgrade-insecure-requests'])
   ].join('; ');
 }
 
@@ -109,17 +118,23 @@ export function createSecurityHeadersMiddleware({
   let inlineScriptSources = null;
   let strictHeaders = null;
   let strictEmbedHeaders = null;
+  // Same policy as strictHeaders/strictEmbedHeaders minus the directives that are
+  // ignored in a report-only header, so staging the rollout stays quiet in the console.
+  let strictReportOnlyHeaders = null;
+  let strictEmbedReportOnlyHeaders = null;
 
-  function strictPolicyFor(variant) {
+  function strictPolicyFor(variant, options) {
     const inline = inlineScriptSources ? inlineScriptSources.join(' ') : LEGACY_INLINE_SOURCES;
     return variant === 'embed'
-      ? cspDirectives(EMBED_FRAME_ANCESTORS, inline)
-      : cspDirectives(DEFAULT_FRAME_ANCESTORS, inline);
+      ? cspDirectives(EMBED_FRAME_ANCESTORS, inline, options)
+      : cspDirectives(DEFAULT_FRAME_ANCESTORS, inline, options);
   }
 
   function recompute() {
     strictHeaders = strictPolicyFor('default');
     strictEmbedHeaders = strictPolicyFor('embed');
+    strictReportOnlyHeaders = strictPolicyFor('default', { reportOnly: true });
+    strictEmbedReportOnlyHeaders = strictPolicyFor('embed', { reportOnly: true });
   }
 
   function headersFor(variant) {
@@ -132,7 +147,7 @@ export function createSecurityHeadersMiddleware({
       // Legacy policy keeps enforcing while the strict policy is staged.
       result.csp = legacy;
       if (inlineScriptSources) {
-        result.cspReportOnly = variant === 'embed' ? strictEmbedHeaders : strictHeaders;
+        result.cspReportOnly = variant === 'embed' ? strictEmbedReportOnlyHeaders : strictReportOnlyHeaders;
       }
     }
     return result;
