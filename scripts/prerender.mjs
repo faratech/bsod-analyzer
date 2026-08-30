@@ -27,8 +27,10 @@ if (!indexHtml.includes(ROOT_MARKER)) fail(`root marker "${ROOT_MARKER}" not fou
 
 // Inject rendered app markup into the SRI'd index.html template (prerender runs
 // after generate-sri, so integrity attributes are already present and inherited).
+// A replacer FUNCTION is required: a string replacement would interpret `$&`,
+// "$`", "$'" and $<n> sequences inside appHtml as substitution patterns.
 function writePrerendered(file, appHtml) {
-  const out = indexHtml.replace(ROOT_MARKER, `<div id="root">${appHtml}</div>`);
+  const out = indexHtml.replace(ROOT_MARKER, () => `<div id="root">${appHtml}</div>`);
   fs.writeFileSync(file, out);
   return Buffer.byteLength(out);
 }

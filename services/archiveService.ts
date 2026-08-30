@@ -4,6 +4,7 @@
 
 import { handleSessionError } from '../utils/sessionManager';
 import { ARCHIVE_EXTENSIONS } from '../shared/ingestPolicy.js';
+import { validateZipFile } from '../utils/zipSecurity';
 import JSZip from 'jszip';
 
 const SERVER_ARCHIVE_EXTENSIONS = ARCHIVE_EXTENSIONS.filter(ext => ext !== '.zip');
@@ -38,6 +39,16 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
   }
 
   const payload = await response.arrayBuffer();
+
+  // The returned ZIP is server-produced, but it is still untrusted input to
+  // this tab: validate entry sizes/count before materializing anything, the
+  // same way user-supplied ZIPs are handled (issue #81).
+  const returnedZip = new File([payload], 'extracted-dumps.zip', { type: 'application/zip' });
+  const validation = await validateZipFile(returnedZip);
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Server returned an invalid archive');
+  }
+
   const zip = await JSZip.loadAsync(payload);
   const files: File[] = [];
   const entries = Object.entries(zip.files).filter(([, entry]) => !entry.dir);

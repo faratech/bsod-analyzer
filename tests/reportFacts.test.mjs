@@ -97,3 +97,27 @@ test('public redaction removes direct identifiers', () => {
 
   assert.equal(text, 'ip [ip-redacted] path [path-redacted] id [id-redacted]');
 });
+
+test('markdown links in AI-derived report text are neutralized (issue #81)', () => {
+  const markdown = generateMarkdownReport(dumpFile({
+    summary: 'Crash in nt. See [our forum](https://evil.example/spam) for details.',
+    probableCause: 'WinDbg identified nt.',
+    culprit: 'nt',
+    recommendations: ['Check [the guide](https://evil.example/guide).'],
+    systemInfo: { kernelImageVersion: '10.0.26200.8655' }
+  }));
+
+  assert.ok(!/\[([^\]]+)\]\(https?:\/\//.test(markdown), 'markdown link syntax must not survive');
+  assert.match(markdown, /our forum \(https:\/\/evil\.example\/spam\)/);
+});
+
+test('the forum report also neutralizes links after redaction', () => {
+  const report = generateForumReport(dumpFile({
+    summary: 'Crash.',
+    probableCause: 'nt',
+    recommendations: ['Read [this](https://evil.example/x).']
+  }));
+
+  assert.ok(!/\]\(https?:\/\//.test(report));
+  assert.match(report, /this \(https:\/\/evil\.example\/x\)/);
+});
