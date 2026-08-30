@@ -38,6 +38,22 @@ const Navigation: React.FC = () => {
     useEffect(() => {
         closeMobileMenu();
     }, [location.pathname]);
+
+    // Close the menu when the viewport grows past the nav collapse threshold.
+    // The stylesheet hides the overlay above it, but isMobileMenuOpen would stay
+    // true and keep the `mobile-menu-open` scroll lock on <body> — leaving the page
+    // unscrollable with no visible menu to dismiss. Threshold matches styles.css.
+    useEffect(() => {
+        const desktop = window.matchMedia('(min-width: 1025px)');
+        const syncToViewport = () => {
+            if (desktop.matches) {
+                setIsMobileMenuOpen(false);
+            }
+        };
+        syncToViewport();
+        desktop.addEventListener('change', syncToViewport);
+        return () => desktop.removeEventListener('change', syncToViewport);
+    }, []);
     
     return (
         <>
