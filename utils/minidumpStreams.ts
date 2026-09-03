@@ -194,10 +194,14 @@ export class MinidumpParser {
                 }
             };
             
-            // Extract module name
+            // Extract module name. MINIDUMP_MODULE.ModuleNameRva points at the
+            // module's full path (e.g. C:\Windows\System32\ntoskrnl.exe); store
+            // the bare filename so isLegitimateModuleName(), culprit matching
+            // and driver-version lookups — which all compare bare names — work.
             if (module.nameRva && module.nameRva + 4 < this.buffer.byteLength) {
                 const nameLength = this.view.getUint32(module.nameRva, true);
-                module.name = this.extractUnicodeString(module.nameRva + 4, nameLength);
+                const fullName = this.extractUnicodeString(module.nameRva + 4, nameLength);
+                module.name = fullName.split(/[\\/]/).pop() ?? fullName;
             }
             
             modules.push(module);
@@ -275,62 +279,34 @@ export class MinidumpParser {
     }
     
     public getBugCheckInfo(): { code: number; parameters: bigint[] } | null {
-        // First try exception stream for kernel crashes
+        // Bug check data has no defined location inside a (user-mode) MDMP, so
+        // the only legitimate evidence is the kernel-crash convention: an
+        // exception stream whose code is 0x80000003 (BREAKPOINT), carrying the
+        // bug check code in ExceptionInformation[0] and the parameters in
+        // [1..4]. The old fixed-offset scans here read raw uint32s out of the
+        // stream directory / stream payloads and returned stream sizes, RVAs
+        // and directory types as a fabricated STOP code.
         const exception = this.getException();
         if (exception && exception.exceptionCode === 0x80000003) { // BREAKPOINT
-            // Bug check info is in exception parameters
             if (exception.exceptionInformation.length >= 5) {
-                return {
-                    code: Number(exception.exceptionInformation[0]),
-                    parameters: exception.exceptionInformation.slice(1, 5)
-                };
-            }
-        }
-        
-        // Try to find bug check data in memory
-        const memoryStream = this.streams.get(MinidumpStreamType.MemoryListStream);
-        if (memoryStream) {
-            // Search memory regions for bug check pattern
-            const bugCheckData = this.searchForBugCheckData();
-            if (bugCheckData) return bugCheckData;
-        }
-        
-        return null;
-    }
-    
-    private searchForBugCheckData(): { code: number; parameters: bigint[] } | null {
-        // Search for KiBugCheckData pattern or direct bug check values
-        // This is a simplified version - real implementation would be more comprehensive
-        
-        const patterns = [
-            { offset: 0x80, size: 20 },
-            { offset: 0x88, size: 20 },
-            { offset: 0x90, size: 20 },
-            { offset: 0xA0, size: 20 },
-            { offset: 0x100, size: 20 },
-            { offset: 0x120, size: 20 },
-        ];
-        
-        for (const pattern of patterns) {
-            if (pattern.offset + pattern.size > this.buffer.byteLength) continue;
-            
-            const code = this.view.getUint32(pattern.offset, true);
-            if (this.isValidBugCheckCode(code)) {
-                const parameters: bigint[] = [];
-                for (let i = 0; i < 4; i++) {
-                    parameters.push(BigInt(this.view.getUint32(pattern.offset + 4 + (i * 4), true)));
+                const code = Number(exception.exceptionInformation[0]);
+                if (this.isPlausibleBugCheckCode(code)) {
+                    return {
+                        code,
+                        parameters: exception.exceptionInformation.slice(1, 5)
+                    };
                 }
-                
-                return { code, parameters };
             }
         }
-        
+
         return null;
     }
-    
-    private isValidBugCheckCode(code: number): boolean {
-        return (code > 0 && code <= 0xFF) ||
-               (code >= 0x100 && code <= 0x1FF) ||
+
+    // Bug check codes are small (KeBugCheck codes, 0x1..0x1FF) or
+    // parameterized 0xC........ codes; anything else in the exception payload
+    // is not crash evidence.
+    private isPlausibleBugCheckCode(code: number): boolean {
+        return (code > 0 && code <= 0x1FF) ||
                (code >= 0xC0000000 && code <= 0xC0FFFFFF);
     }
     

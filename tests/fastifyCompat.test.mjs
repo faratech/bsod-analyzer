@@ -100,6 +100,24 @@ test('Fastify compat stack preserves route-level JSON parsing and errors', async
   }
 });
 
+test('Fastify compat res.set supports header objects and the (name, value) form', async () => {
+  const app = createFastifyCompatApp();
+  app.get('/retry', (_req, res) => {
+    res.set('Retry-After', '10');
+    res.set({ 'Cache-Control': 'no-store' });
+    res.json({ ok: true });
+  });
+
+  try {
+    const response = await app.fastify.inject({ method: 'GET', url: '/retry' });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['retry-after'], '10');
+    assert.equal(response.headers['cache-control'], 'no-store');
+  } finally {
+    await app.fastify.close();
+  }
+});
+
 test('Fastify compat stack serves static files and rejects traversal', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsod-fastify-static-'));
   await fs.writeFile(path.join(root, 'asset.txt'), 'hello static');

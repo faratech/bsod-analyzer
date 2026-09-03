@@ -366,6 +366,7 @@ export async function generateOpenRouterContent(request, {
         body: JSON.stringify(body),
         signal
       });
+      lastNetworkError = null;
     } catch (error) {
       lastNetworkError = error;
       if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || attempt >= maxRetries) break;
@@ -516,6 +517,7 @@ export async function generateOpenAIContent(request, {
         body: JSON.stringify(body),
         signal
       });
+      lastNetworkError = null;
     } catch (error) {
       lastNetworkError = error;
       if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || attempt >= maxRetries) break;

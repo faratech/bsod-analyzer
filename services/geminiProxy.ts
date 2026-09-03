@@ -690,7 +690,9 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
                 responseSchema: reportSchema,
                 // Enable optimized settings for complex BSOD analysis
                 temperature: 0.7,
-                maxOutputTokens: 4096,
+                // No maxOutputTokens here: the server applies its own
+                // AI_MAX_OUTPUT_TOKENS default, which must also cover the
+                // DeepSeek reasoning trace.
             },
             fileHash // Pass fileHash for cache key consistency
             // Note: Grounding with Google Search cannot be used with JSON response format
@@ -958,8 +960,9 @@ ${analysisForPrompt}
             config: {
                 responseMimeType: 'application/json',
                 responseSchema: reportSchema,
-                temperature: 0.5,
-                maxOutputTokens: 4096
+                temperature: 0.5
+                // No maxOutputTokens: let the server's AI_MAX_OUTPUT_TOKENS
+                // default govern the output budget.
             },
             fileHash // Pass fileHash for cache key consistency
         });
@@ -1357,8 +1360,10 @@ export const analyzeDumpFiles = async (
             let threadInfo = '';
             
             try {
-                // Get more stack data if available (for MDMP minidumps only)
-                if (structuredInfo.dumpHeader?.signature === 'MDMP') {
+                // Get more stack data if available (for MDMP minidumps only).
+                // extractDumpHeader() reports the MINIDUMP signature — not the
+                // raw "MDMP" file magic — for this format.
+                if (structuredInfo.dumpHeader?.signature === 'MINIDUMP') {
                     const parser = new MinidumpParser(fileBuffer);
                     const threads = parser.getThreads();
                     
@@ -1679,31 +1684,37 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
                     report.bugCheckCode = correctBugCheckCode;
                 }
 
-                // Fix any hallucinated bug check codes
-                const fakeBugCheckPattern = /0x[0-9A-Fa-f]{4,8}/g;
+                // Fix any hallucinated bug check codes. Only values presented in
+                // an explicit bug-check context are rewritten — the same scoping
+                // the extracted-strings pass uses above. A blanket hex scan here
+                // would corrupt NTSTATUS codes, exception codes and 64-bit
+                // addresses that legitimately appear in the prose.
+                const bugcheckValuePattern = /\b(bug\s?check(?:\s+code)?|bugcheck(?:_code)?|stop\s+code)\b(\s*[:=]?\s*)((?:0x)?[0-9A-Fa-f]{1,16})\b/gi;
+                const normalizeBugCheckHex = (value: string): string =>
+                    value.toUpperCase().replace(/^0X0+/, '0X');
 
                 // Fix summary
                 if (report.summary) {
-                    const summaryMatches = report.summary.match(fakeBugCheckPattern) || [];
-                    for (const match of summaryMatches) {
-                        if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') {
-                            console.warn(`[Analyzer] Replacing fake bug check ${match} in summary`);
-                            report.summary = report.summary.replace(new RegExp(match, 'gi'), correctBugCheckHex);
+                    report.summary = report.summary.replace(bugcheckValuePattern, (match, prefix: string, sep: string, hex: string) => {
+                        if (normalizeBugCheckHex(hex) === normalizeBugCheckHex(correctBugCheckHex)) {
+                            return match; // already the verified code
                         }
-                    }
+                        console.warn(`[Analyzer] Replacing fake bug check ${hex} in summary`);
+                        return `${prefix}${sep}${correctBugCheckHex}`;
+                    });
                     report.summary = report.summary.replace(/UNKNOWN_BUG_CHECK_[0-9A-Fx]+/gi, structuredInfo.bugCheckInfo.name);
                 }
 
                 // Fix probable cause
                 const fakeDrivers = [...FAKE_DRIVER_SYS, ...FAKE_DRIVERS];
                 if (report.probableCause) {
-                    const causeMatches = report.probableCause.match(fakeBugCheckPattern) || [];
-                    for (const match of causeMatches) {
-                        if (match !== correctBugCheckHex && match !== '0xFFFFFFFFC0000005') {
-                            console.warn(`[Analyzer] Replacing fake bug check ${match} in probable cause`);
-                            report.probableCause = report.probableCause.replace(new RegExp(match, 'gi'), correctBugCheckHex);
+                    report.probableCause = report.probableCause.replace(bugcheckValuePattern, (match, prefix: string, sep: string, hex: string) => {
+                        if (normalizeBugCheckHex(hex) === normalizeBugCheckHex(correctBugCheckHex)) {
+                            return match; // already the verified code
                         }
-                    }
+                        console.warn(`[Analyzer] Replacing fake bug check ${hex} in probable cause`);
+                        return `${prefix}${sep}${correctBugCheckHex}`;
+                    });
 
                     for (const fakeDriver of fakeDrivers) {
                         if (report.probableCause.includes(fakeDriver)) {

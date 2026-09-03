@@ -16,6 +16,7 @@ const HOURLY_TTL_SECONDS = 26 * 60 * 60;    // last-hour gauge outlives its hour
 const RUNS_TTL_SECONDS = 48 * 60 * 60;      // raw-runs-per-day counter
 const ZSET_MAX_MEMBERS = 500;               // cardinality cap for buckets/modules
 const DAILY_KEEP_MARGIN = 6;                // keep a few days beyond the window
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_SNAPSHOT_TTL_SECONDS = 60;
 export const DEFAULT_DAILY_WINDOW_DAYS = 90;
@@ -106,12 +107,21 @@ export function createStatsStore({
         pipe.zremrangebyrank(key('z:module'), 0, -(ZSET_MAX_MEMBERS + 1));
       }
       pipe.zincrby(key('z:daily'), 1, day);
-      pipe.zremrangebyrank(key('z:daily'), 0, -(dailyWindowDays + DAILY_KEEP_MARGIN + 1));
+      // z:daily members are dates but their scores are analysis counts, so the
+      // rank trim used for z:bucket/z:module is wrong here: it evicts the
+      // *quietest* days, and once the set reaches the window size it evicts the
+      // brand-new day (score 1) in the same pipeline that created it — freezing
+      // the daily chart and today gauge at zero. Trim by date instead (see
+      // trimDailySeries); the member read piggybacks on this pipeline.
+      pipe.zrange(key('z:daily'), 0, -1);
 
       const results = await pipe.exec();
       if (results.some(r => resultValue(r) instanceof Error || r?.error)) {
         throw new Error('pipeline reported command errors');
       }
+      // The member list read above rides as the pipeline's final command;
+      // resultValue() would collapse it to its first element, so index it raw.
+      await trimDailySeries(results[results.length - 1], now());
       return true;
     } catch (error) {
       console.error('[Stats] record failed:', error?.message || error);
@@ -204,6 +214,23 @@ export function createStatsStore({
     } catch (error) {
       console.error('[Stats] meta read failed:', error?.message || error);
       return undefined;
+    }
+  }
+
+  // Remove z:daily members older than the retention window. Members are UTC day
+  // strings (YYYYMMDD), so lexicographic order is chronological order and the
+  // comparison below needs no date parsing. Best-effort: failures here must not
+  // flip the recorded-analysis result.
+  async function trimDailySeries(members, nowTs) {
+    try {
+      if (!Array.isArray(members) || members.length === 0) return;
+      const oldestKept = utcDay(nowTs - (dailyWindowDays + DAILY_KEEP_MARGIN) * DAY_MS);
+      const stale = members.map(String).filter(m => m < oldestKept);
+      if (stale.length > 0) {
+        await redis.zrem(key('z:daily'), stale);
+      }
+    } catch (error) {
+      console.error('[Stats] daily series trim failed:', error?.message || error);
     }
   }
 

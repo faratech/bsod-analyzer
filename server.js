@@ -861,7 +861,10 @@ function ownershipIncludesSession(job, sessionId) {
 
 async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
   if (!sessionId || !uid || !fileHash) return;
-  const existing = winDbgJobOwnership.get(uid) || await loadWinDbgJobOwnership(uid);
+  // Merge from the authoritative record (see loadWinDbgJobOwnership): merging
+  // into a stale process-local snapshot would silently drop sessions another
+  // instance added.
+  const existing = await loadWinDbgJobOwnership(uid);
   const ownership = existing
     ? { ...existing,
         sessions: [...new Set([...(Array.isArray(existing.sessions) ? existing.sessions : [existing.sessionId].filter(Boolean)), sessionId])],
@@ -878,12 +881,18 @@ async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
 }
 
 async function loadWinDbgJobOwnership(uid) {
-  let job = winDbgJobOwnership.get(uid);
-  if (!job) {
-    job = await getRuntimeValue(runtimeWinDbgJobKey(uid));
-    if (job) winDbgJobOwnership.set(uid, job);
+  // Redis is the authority when it is available. markWinDbgJob() merges an
+  // extra session on whichever instance handles the second upload, so serving
+  // a process-local snapshot in preference would 403 the merged session
+  // intermittently and let a stale local timestamp expire a shared record
+  // other instances still need. The in-process Map is only the no-Redis
+  // fallback, mirroring loadJob().
+  if (isCacheEnabled()) {
+    return REQUIRE_REDIS_RUNTIME
+      ? await getRuntimeValueStrict(runtimeWinDbgJobKey(uid))
+      : await getRuntimeValue(runtimeWinDbgJobKey(uid));
   }
-  return job;
+  return winDbgJobOwnership.get(uid);
 }
 
 async function getOwnedWinDbgJob(sessionId, uid) {
@@ -891,7 +900,12 @@ async function getOwnedWinDbgJob(sessionId, uid) {
   if (!ownershipIncludesSession(job, sessionId)) return null;
   if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
     winDbgJobOwnership.delete(uid);
-    await deleteRuntimeValue(runtimeWinDbgJobKey(uid));
+    // Expire the shared record only while it is still the expired one just
+    // read — a concurrent markWinDbgJob() may have refreshed it for a new
+    // session, and an unconditional delete would drop that fresh ownership.
+    if (isCacheEnabled()) {
+      await deleteRuntimeValueIfEquals(runtimeWinDbgJobKey(uid), job);
+    }
     return null;
   }
   return job;
@@ -4041,7 +4055,9 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     });
 
     const submissionBusy = error?.code === 'ANALYSIS_SUBMISSION_BUSY';
-    if (submissionBusy) res.set('Retry-After', '10');
+    // res.set() here takes a headers object only — the compat layer does not
+    // support the Express (name, value) form.
+    if (submissionBusy) res.set({ 'Retry-After': '10' });
     res.status(submissionBusy ? 503 : 500).json({
       success: false,
       error: submissionBusy
@@ -4100,7 +4116,7 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
       }
 
       if (job?.status === 'processing') {
-        res.set('Retry-After', '10');
+        res.set({ 'Retry-After': '10' });
         return res.json({
           success: true,
           status: 'processing'
@@ -4285,10 +4301,15 @@ app.use((req, res) => {
   const etag = isHome
     ? htmlEtags['/']
     : (htmlEtags[normalized] ?? htmlEtags.__fallback);
-  res.setHeader('ETag', etag);
-  const ifNoneMatch = req.headers['if-none-match'];
-  if (ifNoneMatch && String(ifNoneMatch).split(',').map(s => s.trim()).includes(etag)) {
-    return res.status(304).end();
+  // htmlEtags is only populated when dist/index.html exists, so a missing build
+  // leaves etag undefined — setting that header throws ERR_HTTP_INVALID_HEADER_VALUE
+  // and would turn the "Build not found" fallback page into a 500.
+  if (etag) {
+    res.setHeader('ETag', etag);
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch && String(ifNoneMatch).split(',').map(s => s.trim()).includes(etag)) {
+      return res.status(304).end();
+    }
   }
   res.send(html);
 });

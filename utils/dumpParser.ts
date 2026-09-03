@@ -965,7 +965,11 @@ function createBugCheckInfo(code: number, p1: bigint, p2: bigint, p3: bigint, p4
 export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
     const view = new DataView(buffer);
     console.log('[BugCheck] Starting bug check extraction, buffer size:', buffer.byteLength);
-    
+    // Strategy 4's unanchored scan is only meaningful for raw/legacy kernel
+    // memory; a user-mode MDMP has no bug check location, so scanning its
+    // stream payloads fabricates codes out of thread ids, sizes and RVAs.
+    const isMinidump = view.getUint32(0, true) === 0x504D444D; // 'MDMP'
+
     // Strategy 0: Parse structured dump headers (most accurate)
     
     // Check for PAGEDU64/PAGEDUMP (full/kernel dumps)
@@ -1044,16 +1048,20 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
             try {
                 const parser = new MinidumpParser(buffer);
                 const bugCheckData = parser.getBugCheckInfo();
-                
+
                 if (bugCheckData) {
-                    console.log(`[BugCheck] Found via MinidumpParser: 0x${bugCheckData.code.toString(16).padStart(8, '0')} (${BUG_CHECK_CODES[bugCheckData.code] || 'UNKNOWN'})`);
-                    return createBugCheckInfo(
-                        bugCheckData.code,
-                        bugCheckData.parameters[0] || 0n,
-                        bugCheckData.parameters[1] || 0n,
-                        bugCheckData.parameters[2] || 0n,
-                        bugCheckData.parameters[3] || 0n
-                    );
+                    const [bp1, bp2, bp3, bp4] = bugCheckData.parameters;
+                    if (validateBugCheckParamsBasic(bugCheckData.code, Number(bp1), Number(bp2), Number(bp3), Number(bp4))) {
+                        console.log(`[BugCheck] Found via MinidumpParser: 0x${bugCheckData.code.toString(16).padStart(8, '0')} (${BUG_CHECK_CODES[bugCheckData.code] || 'UNKNOWN'})`);
+                        return createBugCheckInfo(
+                            bugCheckData.code,
+                            bp1 || 0n,
+                            bp2 || 0n,
+                            bp3 || 0n,
+                            bp4 || 0n
+                        );
+                    }
+                    console.log('[BugCheck] MinidumpParser bug check failed parameter validation, ignoring');
                 }
             } catch (e) {
                 console.log('[BugCheck] MinidumpParser failed, falling back to legacy parsing');
@@ -1110,12 +1118,11 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
                     }
                 }
                 
-                // If no exception stream, check common offsets in minidumps
-                const commonOffsets = [0x80, 0x88, 0x90, 0xA0, 0xB0, 0xC0, 0x100, 0x104, 0x120, 0x200];
-                for (const offset of commonOffsets) {
-                    const result = tryExtractBugCheck32(view, offset);
-                    if (result) return result;
-                }
+                // No fixed-offset scan here: a user-mode MDMP has no defined
+                // bug check location, and reading raw uint32s at "common"
+                // offsets returned stream sizes, RVAs and directory types as
+                // fabricated STOP codes (bug checks only surface through the
+                // 0x80000003 BREAKPOINT exception stream handled above).
             } catch (e) {
                 // Continue to next strategy
             }
@@ -1187,7 +1194,12 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
     }
     
     // Strategy 4: Comprehensive heuristic search
-    // Last resort - search for any valid bug check pattern
+    // Last resort - search for any valid bug check pattern. Skipped for
+    // minidumps: with no KiBugCheckData anchor, this scan accepts thread ids
+    // and stream metadata as bug check codes.
+    if (isMinidump) {
+        return null;
+    }
     const searchLimit = Math.min(buffer.byteLength, 131072); // Search first 128KB
     for (let i = 0; i < searchLimit - 20; i += 4) {
         const candidate = tryExtractBugCheck32(view, i);
