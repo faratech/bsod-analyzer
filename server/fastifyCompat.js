@@ -69,7 +69,12 @@ function patchResponse(res, req, options = {}) {
     return res;
   };
 
-  res.set = function set(headers) {
+  res.set = function set(headers, value) {
+    // Support the Express (name, value) form as well as a headers object.
+    if (typeof headers === 'string') {
+      res.setHeader(headers, value);
+      return res;
+    }
     for (const [key, value] of Object.entries(headers || {})) {
       res.setHeader(key, value);
     }

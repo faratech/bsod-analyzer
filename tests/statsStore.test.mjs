@@ -80,6 +80,15 @@ function createFakeRedis({ failWrites = false } = {}) {
       zadd(zsets.get(key(k)), String(member), Number(delta));
       return zsets.get(key(k)).get(String(member));
     },
+    async zrem(k, members) {
+      const map = zsets.get(key(k));
+      if (!map) return 0;
+      let removed = 0;
+      for (const member of Array.isArray(members) ? members : [members]) {
+        if (map.delete(String(member))) removed += 1;
+      }
+      return removed;
+    },
     async zremrangebyrank(k, start, stop) {
       const map = zsets.get(key(k));
       if (!map) return 0;
@@ -113,6 +122,7 @@ function createFakeRedis({ failWrites = false } = {}) {
         hset(k, f, v) { queue.push(['hset', k, f, v]); return pipe; },
         zincrby(k, d, m) { queue.push(['zincrby', k, d, m]); return pipe; },
         zremrangebyrank(k, s, e) { queue.push(['zremrangebyrank', k, s, e]); return pipe; },
+        zrange(k, s, e, opts) { queue.push(['zrange', k, s, e, opts]); return pipe; },
         incrby(k, d) { queue.push(['incrby', k, d]); return pipe; },
         ttl(k) { queue.push(['ttl', k]); return pipe; },
         async exec() {
@@ -254,3 +264,30 @@ test('disabled store is a no-op; write failures are swallowed', async () => {
   assert.equal(await failing.recordAnalysis(WINDGBG_FACTS), false); // swallowed
   assert.equal(await failing.getSnapshot(), null);
 });
+
+test('z:daily trims by date: quiet old days go, a new day with a low count stays', async () => {
+  const redis = createFakeRedis();
+  const store = fixedStore(redis);
+
+  // A full window of busy historic days (high scores) plus today arriving with
+  // the minimum possible count. A rank-based trim would evict today here.
+  const daily = redis._zsets.get('stats:z:daily') ?? new Map();
+  for (let offset = 1; offset <= 100; offset += 1) {
+    daily.set(utcDayString(offset), 500 + offset);
+  }
+  redis._zsets.set('stats:z:daily', daily);
+
+  assert.equal(await store.recordAnalysis(WINDGBG_FACTS), true);
+
+  const remaining = await redis.zrange('stats:z:daily', 0, -1);
+  assert.equal(remaining.includes(FIXED_DAY), true, 'today must survive the trim');
+  assert.equal(remaining.includes(utcDayString(100)), false, 'the oldest seeded day must be trimmed');
+  // Everything still inside the 90-day window (+ margin) is kept regardless of score.
+  assert.equal(remaining.includes(utcDayString(94)), true);
+});
+
+// YYYYMMDD day string `offset` days before the fixed test date 2026-08-23.
+function utcDayString(offset) {
+  return new Date(Date.UTC(2026, 7, 23, 12) - offset * 24 * 3600 * 1000)
+    .toISOString().slice(0, 10).replace(/-/g, '');
+}

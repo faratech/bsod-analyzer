@@ -1,5 +1,5 @@
 declare const __BUILD_VERSION__: string;
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
 import FilePreview from '../components/FilePreview';
@@ -112,6 +112,12 @@ const Analyzer: React.FC = () => {
     }, [dumpFiles, retryFile, trackAnalysisStart, trackAnalysisComplete]);
 
     const pendingFilesCount = dumpFiles.filter(df => df.status === FileStatus.PENDING).length;
+    // Stable identity so AnalysisResults' memo is not defeated by a fresh
+    // .filter() array on every render (e.g. each upload-progress tick).
+    const analyzedFiles = useMemo(
+        () => dumpFiles.filter(df => df.status !== FileStatus.PENDING),
+        [dumpFiles]
+    );
 
     const analyzerStructuredData = {
         "@context": "https://schema.org",
@@ -225,7 +231,7 @@ const Analyzer: React.FC = () => {
                 )}
 
                 <AnalysisResults
-                    dumpFiles={dumpFiles.filter(df => df.status !== FileStatus.PENDING)}
+                    dumpFiles={analyzedFiles}
                     onRetry={handleRetry}
                     showAds={true}
                     AdComponent={InFeedAd}

@@ -45,3 +45,35 @@ test('minidump thread context descriptor reads DataSize before RVA', async () =>
   assert.equal(thread.stackPointer, 0x5555666677778888n);
   assert.equal(thread.framePointer, 0x9999aaaabbbbccccn);
 });
+
+test('minidump module names are reduced to their bare filename', async () => {
+  const { MinidumpParser, MinidumpStreamType } = await loadMinidumpParser();
+  const nameRva = 0x80;
+  const fullName = 'C:\\Windows\\System32\\ntoskrnl.exe';
+  const buffer = new ArrayBuffer(nameRva + 4 + fullName.length * 2);
+  const view = new DataView(buffer);
+
+  view.setUint32(0, 0x504d444d, true); // MDMP
+  view.setUint32(8, 1, true); // stream count
+  view.setUint32(12, 0x20, true); // stream directory RVA
+
+  view.setUint32(0x20, MinidumpStreamType.ModuleListStream, true);
+  view.setUint32(0x24, 4 + 108, true);
+  view.setUint32(0x28, 0x30, true);
+
+  view.setUint32(0x30, 1, true); // number of modules
+  const moduleOffset = 0x34;
+  view.setBigUint64(moduleOffset, 0xfffff80339a00000n, true); // base address
+  view.setUint32(moduleOffset + 8, 0x800000, true); // size
+  view.setUint32(moduleOffset + 20, nameRva, true); // name RVA
+
+  // MINIDUMP_STRING: u32 byte length, then UTF-16LE characters
+  view.setUint32(nameRva, fullName.length * 2, true);
+  for (let i = 0; i < fullName.length; i++) {
+    view.setUint16(nameRva + 4 + i * 2, fullName.charCodeAt(i), true);
+  }
+
+  const [module] = new MinidumpParser(buffer).getModules();
+  assert.equal(module.name, 'ntoskrnl.exe');
+  assert.equal(module.baseAddress, 0xfffff80339a00000n);
+});

@@ -132,16 +132,28 @@ return {1, 0, cur_req + add_req, cur_tok + add_tok, redis.call('TTL', KEYS[1])}
 
 // Refund a reserved request/token bundle, bounded by a per-window refund cap
 // tracked in KEYS[3] so failures cannot be farmed to shift accounting backwards.
+// Each counter is clamped at zero (mirroring the in-memory fallback) so a refund
+// that lands on an already-expired window cannot recreate it as a negative,
+// TTL-less pair; EXPIRE below is a no-op on missing keys, so expired windows
+// stay gone.
 const QUOTA_REFUND_SCRIPT = `
 local refunded = tonumber(redis.call('GET', KEYS[3]) or '0')
 if refunded >= tonumber(ARGV[3]) then
   return {0, refunded}
 end
 redis.call('INCRBY', KEYS[3], 1)
-redis.call('INCRBY', KEYS[1], -tonumber(ARGV[1]))
-redis.call('INCRBY', KEYS[2], -tonumber(ARGV[2]))
 local ttl = tonumber(ARGV[4])
+local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
+if cur_req > 0 then
+  redis.call('INCRBY', KEYS[1], -math.min(cur_req, tonumber(ARGV[1])))
+end
+local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
+if cur_tok > 0 then
+  redis.call('INCRBY', KEYS[2], -math.min(cur_tok, tonumber(ARGV[2])))
+end
 if redis.call('TTL', KEYS[3]) < 1 then redis.call('EXPIRE', KEYS[3], ttl) end
+if redis.call('TTL', KEYS[1]) < 1 then redis.call('EXPIRE', KEYS[1], ttl) end
+if redis.call('TTL', KEYS[2]) < 1 then redis.call('EXPIRE', KEYS[2], ttl) end
 return {1, refunded + 1}
 `;
 

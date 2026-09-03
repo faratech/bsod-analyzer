@@ -315,6 +315,45 @@ test('OpenAI adapter classifies insufficient_quota as exhausted, not retryable',
   );
 });
 
+// A transport error on the first attempt followed by a 200 must resolve: the
+// adapters clear lastNetworkError on every successful fetch, so a recovered
+// retry is never reported as a failure (and the paid completion discarded).
+test('adapters resolve when a network error recovers on retry', async () => {
+  const okBody = JSON.stringify({
+    choices: [{ message: { content: '{"summary":"ok"}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+  });
+  const cases = [
+    ['DeepSeek', (fetchImpl) => generateDeepSeekContent(
+      { model: DEEPSEEK_V4_FLASH_MODEL, contents: 'Return JSON.', config: {} },
+      { apiKey: 'test-key', fetchImpl, sleepImpl: async () => {} }
+    )],
+    ['OpenRouter', (fetchImpl) => generateOpenRouterContent(
+      { contents: 'Return JSON.', config: {} },
+      { apiKey: 'test-key', fetchImpl, sleepImpl: async () => {} }
+    )],
+    ['OpenAI', (fetchImpl) => generateOpenAIContent(
+      { contents: 'Return JSON.', config: {} },
+      { apiKey: 'test-key', fetchImpl, sleepImpl: async () => {} }
+    )]
+  ];
+
+  for (const [label, run] of cases) {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('ECONNRESET');
+      }
+      return new Response(okBody, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const result = await run(fetchImpl);
+    assert.equal(calls, 2, `${label} should retry after a transport error`);
+    assert.equal(result.text, '{"summary":"ok"}', `${label} should return the retried response`);
+  }
+});
+
 test('isOpenAIFreeTier recognizes the live complimentary tier string', () => {
   assert.equal(isOpenAIFreeTier('incentivized-tier'), true);
   assert.equal(isOpenAIFreeTier('data sharing incentive tier - input tokens'), true);
