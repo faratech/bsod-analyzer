@@ -31,7 +31,7 @@
     "@fastify/cors": "^11.3.0",
     "@fastify/multipart": "^10.1.1",
     "@google/genai": "^2.21.0",
-    "@upstash/redis": "^1.38.3",
+    "@upstash/redis": "^1.38.4",
     "concurrently": "^10.0.5",
     "dotenv": "^17.4.2",
     "fastify": "^5.12.3",
