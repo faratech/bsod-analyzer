@@ -86,12 +86,17 @@ npm run optimize-css     # Apply CSS purging
 
 1. `model.cfg` names the primary model (re-read with a 30s cache; currently
    `deepseek-v4-flash`). Gemini models fall back to `gemini-2.5-flash-lite`.
-2. DeepSeek requests first try the **OpenAI free tier** (`gpt-5.6-luna`,
-   daily data-sharing incentive, metered by the `openai-free:<date>` Redis
-   counter); billed-tier responses mark the gate exhausted for the day.
-3. Then DeepSeek itself. Fatal DeepSeek failures (out of credits, auth revoked)
+2. DeepSeek requests first try **Experiential Cloud** (`gpt-5.6-luna`) when
+   `EXPLABS_API_KEY` is bound. Redis atomically reserves estimated input and
+   output tokens against the provider's daily/hourly free-tier limits, then
+   settles to reported usage. Quota/auth failures latch for the current window
+   and fall through to the existing OpenAI Luna route.
+3. The existing **OpenAI free tier** (`gpt-5.6-luna`) remains the next leg,
+   metered by the `openai-free:<date>` Redis counter; billed-tier responses mark
+   that gate exhausted for the day.
+4. Then DeepSeek itself. Fatal DeepSeek failures (out of credits, auth revoked)
    fail over to the **OpenRouter free tier** when `OPENROUTER_API_KEY` is set.
-4. All adapters (`services/aiProvider.js`) share the same retry contract:
+5. All adapters (`services/aiProvider.js`) share the same retry contract:
    transient statuses and transport errors are retried with backoff, the
    network-error latch is cleared on every successful fetch, and responses
    normalize to the Gemini-shaped result (`normalizeAIResponse`).

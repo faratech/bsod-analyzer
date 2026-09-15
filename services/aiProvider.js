@@ -449,6 +449,8 @@ export async function generateOpenRouterContent(request, {
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
+export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-5.6-luna';
 
 const TRANSIENT_OPENAI_STATUSES = new Set([429, 500, 502, 503]);
 
@@ -595,6 +597,142 @@ export async function generateOpenAIContent(request, {
     text,
     modelVersion: typeof data.model === 'string' ? data.model : model,
     serviceTier: typeof data.service_tier === 'string' ? data.service_tier : null,
+    usageMetadata: {
+      promptTokenCount: safeInteger(usage.prompt_tokens),
+      candidatesTokenCount: safeInteger(usage.completion_tokens),
+      totalTokenCount: safeInteger(usage.total_tokens),
+      cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
+      thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
+    },
+    candidates: [{ content: { parts: [{ text }] }, finishReason }]
+  };
+}
+
+// Experiential Labs is an OpenAI-compatible Chat Completions gateway. Keep
+// this adapter separate from the OpenAI adapter so provider identity remains
+// explicit in logs, quota accounting, and fallback decisions.
+export async function generateExperientialContent(request, {
+  apiKey,
+  baseUrl = DEFAULT_EXPERIENTIAL_BASE_URL,
+  model = DEFAULT_EXPERIENTIAL_MODEL,
+  fetchImpl = globalThis.fetch,
+  maxRetries = 1,
+  signal,
+  sleepImpl = wait
+} = {}) {
+  if (!apiKey) {
+    throw new AIProviderError('EXPLABS_API_KEY is not configured', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new AIProviderError('Fetch is unavailable for the Experiential provider', {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503
+    });
+  }
+
+  const config = request.config || {};
+  const prompt = typeof request.contents === 'string'
+    ? request.contents
+    : JSON.stringify(request.contents ?? '');
+  const messages = [];
+  if (config.systemInstruction) {
+    messages.push({ role: 'system', content: String(config.systemInstruction) });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  const body = { model, messages, stream: false };
+  if (config.jsonObjectMode !== false) {
+    body.response_format = { type: 'json_object' };
+  }
+  const maxTokens = safeInteger(config.maxOutputTokens);
+  if (maxTokens) body.max_completion_tokens = maxTokens;
+
+  let response;
+  let lastNetworkError;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      response = await fetchImpl(`${String(baseUrl || DEFAULT_EXPERIENTIAL_BASE_URL).replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body),
+        signal
+      });
+      lastNetworkError = null;
+    } catch (error) {
+      lastNetworkError = error;
+      if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || attempt >= maxRetries) break;
+      await sleepImpl(Math.min(250 * (2 ** attempt), 2_000));
+      continue;
+    }
+
+    if (response.ok) break;
+    if (response.status === 401 || response.status === 403 || response.status === 402 || response.status === 429) {
+      let errorPayload = null;
+      try { errorPayload = await response.clone().json(); } catch { /* bounded text below */ }
+      const message = errorPayload?.error?.message || errorPayload?.message || `Experiential request failed with HTTP ${response.status}`;
+      const quota = response.status === 402 || response.status === 429 || /quota|credit|limit|exhaust/i.test(String(message));
+      throw new AIProviderError(String(message).slice(0, 500), {
+        code: quota ? 'AI_QUOTA_EXHAUSTED' : 'AI_AUTH_FAILED',
+        status: response.status,
+        retryable: false
+      });
+    }
+    if (![500, 502, 503, 504].includes(response.status) || attempt >= maxRetries) {
+      const message = await readDeepSeekError(response);
+      throw new AIProviderError(message, {
+        code: 'AI_UPSTREAM_ERROR',
+        status: response.status,
+        retryable: false
+      });
+    }
+    await sleepImpl(retryDelayMs(response, attempt));
+  }
+
+  if (lastNetworkError) {
+    const timedOut = lastNetworkError?.name === 'AbortError' || lastNetworkError?.name === 'TimeoutError';
+    throw new AIProviderError(timedOut ? 'Experiential request timed out' : 'Experiential request failed', {
+      code: timedOut ? 'AI_TIMEOUT' : 'AI_UPSTREAM_ERROR',
+      status: timedOut ? 504 : 502,
+      retryable: true
+    });
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new AIProviderError('Experiential returned an invalid response', {
+      code: 'INVALID_AI_RESPONSE',
+      status: 502
+    });
+  }
+  if (data?.error) {
+    throw new AIProviderError(data.error.message || 'Experiential request failed', {
+      code: 'AI_UPSTREAM_ERROR',
+      status: 502
+    });
+  }
+
+  const choice = data?.choices?.[0];
+  const text = typeof choice?.message?.content === 'string' ? choice.message.content.trim() : '';
+  if (!text) {
+    throw new AIProviderError('Experiential returned an empty response', {
+      code: 'INVALID_AI_RESPONSE',
+      status: 502
+    });
+  }
+
+  const usage = data.usage || {};
+  const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
+  return {
+    text,
+    modelVersion: typeof data.model === 'string' ? data.model : model,
     usageMetadata: {
       promptTokenCount: safeInteger(usage.prompt_tokens),
       candidatesTokenCount: safeInteger(usage.completion_tokens),
