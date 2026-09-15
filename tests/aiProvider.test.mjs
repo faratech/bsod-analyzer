@@ -8,12 +8,23 @@ import {
   generateOpenRouterContent,
   generateOpenAIContent,
   generateExperientialContent,
+  conservativeChatInputTokenReservation,
   isOpenAIFreeTier,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel,
   normalizeDeepSeekApiBaseUrl
 } from '../services/aiProvider.js';
+
+test('Experiential quota reservation uses a UTF-8 upper bound, not chars per token', () => {
+  const system = 'Return JSON only.';
+  const tokenDense = '💥'.repeat(64);
+  const reservation = conservativeChatInputTokenReservation(system, tokenDense);
+  const bytes = Buffer.byteLength(system, 'utf8') + Buffer.byteLength(tokenDense, 'utf8');
+
+  assert.equal(reservation, bytes + 32);
+  assert.ok(reservation > Math.ceil((system.length + tokenDense.length) / 4));
+});
 
 test('Experiential adapter sends the OpenAI-compatible Luna request', async () => {
   let request;
@@ -65,6 +76,22 @@ test('Experiential adapter classifies quota responses for OpenAI fallback', asyn
     }),
     error => error instanceof AIProviderError
       && error.code === 'AI_QUOTA_EXHAUSTED'
+      && error.retryable === false
+  );
+});
+
+test('Experiential adapter latches an explicitly daily quota response for the day', async () => {
+  await assert.rejects(
+    () => generateExperientialContent({ contents: 'x', config: {} }, {
+      apiKey: 'test-key',
+      maxRetries: 0,
+      fetchImpl: async () => new Response(
+        JSON.stringify({ error: { message: 'daily free tier limit reached' } }),
+        { status: 429 }
+      )
+    }),
+    error => error instanceof AIProviderError
+      && error.code === 'AI_DAILY_QUOTA_EXHAUSTED'
       && error.retryable === false
   );
 });

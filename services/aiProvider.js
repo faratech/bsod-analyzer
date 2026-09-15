@@ -452,6 +452,16 @@ export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
 export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-5.6-luna';
 
+// OpenAI-compatible tokenizers start from UTF-8 bytes and merge them, so the
+// byte length plus a fixed Chat Completions envelope is a conservative upper
+// bound. This is deliberately separate from the char/4 display estimate: a
+// quota reservation must never rely on friendly-text token density.
+export function conservativeChatInputTokenReservation(systemInstruction, contents) {
+  const system = String(systemInstruction || '');
+  const prompt = typeof contents === 'string' ? contents : JSON.stringify(contents ?? '');
+  return Math.max(1, Buffer.byteLength(system, 'utf8') + Buffer.byteLength(prompt, 'utf8') + 32);
+}
+
 const TRANSIENT_OPENAI_STATUSES = new Set([429, 500, 502, 503]);
 
 export function isOpenAIFreeTier(tier) {
@@ -677,8 +687,9 @@ export async function generateExperientialContent(request, {
       try { errorPayload = await response.clone().json(); } catch { /* bounded text below */ }
       const message = errorPayload?.error?.message || errorPayload?.message || `Experiential request failed with HTTP ${response.status}`;
       const quota = response.status === 402 || response.status === 429 || /quota|credit|limit|exhaust/i.test(String(message));
+      const dailyQuota = /daily|per\s*day|day(?:ly)?\s*(?:quota|limit|cap)/i.test(String(message));
       throw new AIProviderError(String(message).slice(0, 500), {
-        code: quota ? 'AI_QUOTA_EXHAUSTED' : 'AI_AUTH_FAILED',
+        code: quota ? (dailyQuota ? 'AI_DAILY_QUOTA_EXHAUSTED' : 'AI_QUOTA_EXHAUSTED') : 'AI_AUTH_FAILED',
         status: response.status,
         retryable: false
       });

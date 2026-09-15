@@ -2,7 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { classifyQuotaFailure, shouldRefund, refundCapFor } from '../server/quotaPolicy.js';
-import { reserveSessionQuota, commitSessionTokens, refundSessionQuota } from '../services/cache.js';
+import {
+  reserveSessionQuota,
+  commitSessionTokens,
+  refundSessionQuota,
+  settleProviderTokenReservation
+} from '../services/cache.js';
 
 test('quota failures classify into refundable and non-refundable classes', () => {
   assert.equal(classifyQuotaFailure({ code: 'AI_TIMEOUT' }), 'timeout');
@@ -125,4 +130,16 @@ test('the in-memory branch is reachable only with cache disabled and never repor
   });
   assert.equal(result.allowed, true);
   assert.notEqual(result.reason, 'unavailable');
+});
+
+test('provider settlement releases only provider-reported unused tokens', () => {
+  const reservation = { allowed: true, reservedInput: 500, reservedOutput: 100 };
+  assert.deepEqual(
+    settleProviderTokenReservation(reservation, { inputTokens: 300, outputTokens: 40 }),
+    { actualInput: 300, actualOutput: 40, inputDelta: -200, outputDelta: -60, usageEstimated: false }
+  );
+  assert.deepEqual(
+    settleProviderTokenReservation(reservation, {}),
+    { actualInput: 500, actualOutput: 100, inputDelta: 0, outputDelta: 0, usageEstimated: true }
+  );
 });
