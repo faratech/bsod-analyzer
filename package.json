@@ -38,7 +38,7 @@
     "jszip": "^3.10.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-router-dom": "^7.18.3",
+    "react-router-dom": "^7.18.4",
     "xxhash-wasm": "^1.1.0"
   },
   "devDependencies": {
