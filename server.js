@@ -83,6 +83,7 @@ import {
   generateOpenRouterContent,
   generateOpenAIContent,
   generateExperientialContent,
+  conservativeChatInputTokenReservation,
   isOpenAIFreeTier,
   DEFAULT_OPENROUTER_BASE_URL,
   DEFAULT_OPENROUTER_FREE_MODEL,
@@ -122,7 +123,8 @@ import {
   commitSessionTokens,
   refundSessionQuota,
   reserveProviderTokenQuota,
-  adjustProviderTokenQuota
+  adjustProviderTokenQuota,
+  settleProviderTokenReservation
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1200,7 +1202,14 @@ function requestTokenEstimate(request) {
   const outputTokens = Number.isFinite(configuredMaxOutput) && configuredMaxOutput > 0
     ? Math.ceil(configuredMaxOutput)
     : AI_MAX_OUTPUT_TOKENS;
-  return { inputTokens, outputTokens };
+  return {
+    inputTokens,
+    outputTokens,
+    experientialInputReservation: conservativeChatInputTokenReservation(
+      config.systemInstruction,
+      request.contents
+    )
+  };
 }
 
 async function generateAIContent(request) {
@@ -1218,7 +1227,7 @@ async function generateAIContent(request) {
     // the same model contract; only the provider endpoint changes.
     const estimate = requestTokenEstimate(request);
     const experientialReservation = await reserveExperientialQuota(
-      estimate.inputTokens,
+      estimate.experientialInputReservation,
       estimate.outputTokens
     );
     if (experientialReservation?.allowed) {
@@ -1233,19 +1242,19 @@ async function generateAIContent(request) {
           DEEPSEEK_TIMEOUT_MS,
           'Experiential request timed out'
         );
-        const actualInput = response.usageMetadata?.promptTokenCount ?? estimate.inputTokens;
-        const actualOutput = response.usageMetadata?.candidatesTokenCount
-          ?? Math.ceil(String(response.text || '').length / 4);
+        const settlement = settleProviderTokenReservation(experientialReservation, {
+          inputTokens: response.usageMetadata?.promptTokenCount,
+          outputTokens: response.usageMetadata?.candidatesTokenCount
+        });
         await adjustProviderTokenQuota(experientialReservation, {
-          inputDelta: actualInput - estimate.inputTokens,
-          outputDelta: actualOutput - estimate.outputTokens
+          inputDelta: settlement.inputDelta,
+          outputDelta: settlement.outputDelta
         });
         log.info('ai.experiential', {
           model: EXPERIENTIAL_MODEL,
-          inputTokens: actualInput,
-          outputTokens: actualOutput,
-          usageEstimated: !response.usageMetadata?.promptTokenCount
-            || !response.usageMetadata?.candidatesTokenCount
+          inputTokens: settlement.actualInput,
+          outputTokens: settlement.actualOutput,
+          usageEstimated: settlement.usageEstimated
         });
         return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
       } catch (error) {
@@ -1254,7 +1263,7 @@ async function generateAIContent(request) {
           outputDelta: -experientialReservation.reservedOutput
         });
         const exhausted = error instanceof AIProviderError
-          && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
+          && ['AI_QUOTA_EXHAUSTED', 'AI_DAILY_QUOTA_EXHAUSTED', 'AI_AUTH_FAILED'].includes(error.code);
         if (exhausted) {
           await markExperientialExhausted(
             error.code,

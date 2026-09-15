@@ -396,6 +396,30 @@ export async function adjustProviderTokenQuota(reservation, {
   }
 }
 
+/**
+ * Settle a reservation only when the provider supplied a positive usage
+ * value. Missing usage must retain the original upper-bound reservation.
+ */
+export function settleProviderTokenReservation(reservation, {
+  inputTokens,
+  outputTokens
+} = {}) {
+  if (!reservation?.allowed) return null;
+  const reportedInput = Number(inputTokens);
+  const reportedOutput = Number(outputTokens);
+  const inputKnown = Number.isFinite(reportedInput) && reportedInput > 0;
+  const outputKnown = Number.isFinite(reportedOutput) && reportedOutput > 0;
+  const actualInput = inputKnown ? Math.floor(reportedInput) : reservation.reservedInput;
+  const actualOutput = outputKnown ? Math.floor(reportedOutput) : reservation.reservedOutput;
+  return {
+    actualInput,
+    actualOutput,
+    inputDelta: actualInput - reservation.reservedInput,
+    outputDelta: actualOutput - reservation.reservedOutput,
+    usageEstimated: !inputKnown || !outputKnown
+  };
+}
+
 function getRuntimeKey(key) {
   return `${CACHE_PREFIX.RUNTIME}:${key}`;
 }
