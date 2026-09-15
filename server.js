@@ -82,6 +82,7 @@ import {
   generateDeepSeekContent,
   generateOpenRouterContent,
   generateOpenAIContent,
+  generateExperientialContent,
   isOpenAIFreeTier,
   DEFAULT_OPENROUTER_BASE_URL,
   DEFAULT_OPENROUTER_FREE_MODEL,
@@ -119,7 +120,9 @@ import {
   incrementRuntimeCounter,
   reserveSessionQuota,
   commitSessionTokens,
-  refundSessionQuota
+  refundSessionQuota,
+  reserveProviderTokenQuota,
+  adjustProviderTokenQuota
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -217,6 +220,20 @@ const OPENAI_FREE_MODEL = process.env.OPENAI_FREE_MODEL || DEFAULT_OPENAI_FREE_M
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
 const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
+// Experiential Cloud is used only for the BSOD analyzer's OpenAI-compatible
+// Luna leg. It is enabled only when Redis accounting and the Secret Manager
+// key are both present; otherwise the existing OpenAI leg remains authoritative.
+const EXPERIENTIAL_API_KEY = process.env.EXPLABS_API_KEY;
+const EXPERIENTIAL_BASE_URL = process.env.EXPLABS_BASE_URL || 'https://api.experientiallabs.ai/v1';
+const EXPERIENTIAL_MODEL = process.env.EXPLABS_MODEL || 'gpt-5.6-luna';
+const EXPERIENTIAL_DAILY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_INPUT_LIMIT, 15_000_000);
+const EXPERIENTIAL_DAILY_OUTPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_LIMIT, 3_000_000);
+const EXPERIENTIAL_HOURLY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_LIMIT, 3_000_000);
+const EXPERIENTIAL_HOURLY_OUTPUT_LIMIT = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_LIMIT, 750_000);
+const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_INPUT_BUFFER, 250_000);
+const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
+const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
+const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
 // has ever sent, so a lower setting is opt-in and instantly revertible via env
@@ -1125,6 +1142,67 @@ async function openAIFreeGate(estimatedTokens) {
   return used + estimatedTokens <= threshold;
 }
 
+function experientialWindowKey(now = new Date()) {
+  const date = now.toISOString();
+  return {
+    day: date.slice(0, 10).replaceAll('-', ''),
+    hour: `${date.slice(0, 10).replaceAll('-', '')}${date.slice(11, 13)}`
+  };
+}
+
+function secondsUntilExperientialWindow(window, now = new Date()) {
+  const current = now.getTime();
+  const next = window === 'hour'
+    ? Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1)
+    : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(60, Math.ceil((next - current) / 1000));
+}
+
+async function markExperientialExhausted(reason, scope = 'hour') {
+  const now = new Date();
+  const key = experientialWindowKey(now);
+  await setRuntimeValue(
+    `experiential-exhausted:${scope}:${scope === 'hour' ? key.hour : key.day}`,
+    { reason, timestamp: Date.now() },
+    secondsUntilExperientialWindow(scope, now)
+  );
+}
+
+async function reserveExperientialQuota(inputTokens, outputTokens) {
+  if (!EXPERIENTIAL_API_KEY || !isCacheEnabled() || EXPERIENTIAL_MODEL !== 'gpt-5.6-luna') {
+    return null;
+  }
+  const now = new Date();
+  const window = experientialWindowKey(now);
+  if (await getRuntimeValue(`experiential-exhausted:day:${window.day}`)
+      || await getRuntimeValue(`experiential-exhausted:hour:${window.hour}`)) {
+    return null;
+  }
+  return reserveProviderTokenQuota('experiential-luna', {
+    inputCost: inputTokens,
+    outputCost: outputTokens,
+    dailyInputLimit: EXPERIENTIAL_DAILY_INPUT_LIMIT - EXPERIENTIAL_DAILY_INPUT_BUFFER,
+    dailyOutputLimit: EXPERIENTIAL_DAILY_OUTPUT_LIMIT - EXPERIENTIAL_DAILY_OUTPUT_BUFFER,
+    hourlyInputLimit: EXPERIENTIAL_HOURLY_INPUT_LIMIT - EXPERIENTIAL_HOURLY_INPUT_BUFFER,
+    hourlyOutputLimit: EXPERIENTIAL_HOURLY_OUTPUT_LIMIT - EXPERIENTIAL_HOURLY_OUTPUT_BUFFER,
+    now
+  });
+}
+
+function requestTokenEstimate(request) {
+  const config = request.config || {};
+  const system = String(config.systemInstruction || '');
+  const contents = typeof request.contents === 'string'
+    ? request.contents
+    : JSON.stringify(request.contents ?? '');
+  const inputTokens = Math.max(1, Math.ceil((system.length + contents.length) / 4));
+  const configuredMaxOutput = Number(config.maxOutputTokens);
+  const outputTokens = Number.isFinite(configuredMaxOutput) && configuredMaxOutput > 0
+    ? Math.ceil(configuredMaxOutput)
+    : AI_MAX_OUTPUT_TOKENS;
+  return { inputTokens, outputTokens };
+}
+
 async function generateAIContent(request) {
   const provider = getAIProviderForModel(request.model);
   if (!provider) {
@@ -1135,12 +1213,62 @@ async function generateAIContent(request) {
   }
 
   if (provider === 'deepseek') {
-    // Free-tier-first: consume the OpenAI data-sharing incentive on
-    // gpt-5.6-luna before spending DeepSeek credits. Falls through to the
-    // normal chain when the daily quota is out or the attempt fails.
-    const configuredMaxOutput = Number(request.config?.maxOutputTokens);
-    const projectedTokens = Math.ceil(String(request.contents || '').length / 4)
-      + (Number.isFinite(configuredMaxOutput) ? configuredMaxOutput : AI_MAX_OUTPUT_TOKENS);
+    // Free-tier-first: try the metered Experiential Cloud Luna route before
+    // the existing OpenAI data-sharing incentive route. Both routes preserve
+    // the same model contract; only the provider endpoint changes.
+    const estimate = requestTokenEstimate(request);
+    const experientialReservation = await reserveExperientialQuota(
+      estimate.inputTokens,
+      estimate.outputTokens
+    );
+    if (experientialReservation?.allowed) {
+      try {
+        const response = await withTimeout(
+          () => generateExperientialContent(request, {
+            apiKey: EXPERIENTIAL_API_KEY,
+            baseUrl: EXPERIENTIAL_BASE_URL,
+            model: EXPERIENTIAL_MODEL,
+            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          }),
+          DEEPSEEK_TIMEOUT_MS,
+          'Experiential request timed out'
+        );
+        const actualInput = response.usageMetadata?.promptTokenCount ?? estimate.inputTokens;
+        const actualOutput = response.usageMetadata?.candidatesTokenCount
+          ?? Math.ceil(String(response.text || '').length / 4);
+        await adjustProviderTokenQuota(experientialReservation, {
+          inputDelta: actualInput - estimate.inputTokens,
+          outputDelta: actualOutput - estimate.outputTokens
+        });
+        log.info('ai.experiential', {
+          model: EXPERIENTIAL_MODEL,
+          inputTokens: actualInput,
+          outputTokens: actualOutput,
+          usageEstimated: !response.usageMetadata?.promptTokenCount
+            || !response.usageMetadata?.candidatesTokenCount
+        });
+        return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
+      } catch (error) {
+        await adjustProviderTokenQuota(experientialReservation, {
+          inputDelta: -experientialReservation.reservedInput,
+          outputDelta: -experientialReservation.reservedOutput
+        });
+        const exhausted = error instanceof AIProviderError
+          && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
+        if (exhausted) {
+          await markExperientialExhausted(
+            error.code,
+            error.code === 'AI_QUOTA_EXHAUSTED' ? 'hour' : 'day'
+          );
+        }
+        log.warn(exhausted ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
+          message: error.message?.slice(0, 140)
+        });
+        // Fall through to the OpenAI Luna route.
+      }
+    }
+
+    const projectedTokens = estimate.inputTokens + estimate.outputTokens;
     if (await openAIFreeGate(projectedTokens)) {
       try {
         const response = await withTimeout(

@@ -75,6 +75,23 @@ else
 fi
 echo ""
 
+# 1c. Experiential Labs API Key (optional OpenAI-compatible Luna route)
+echo "🧪 Experiential Labs API Key"
+if [ -z "$EXPLABS_API_KEY" ]; then
+    echo -n "Enter your Experiential Labs API Key (or press Enter to skip): "
+    read -r -s EXPLABS_KEY
+    echo ""
+else
+    EXPLABS_KEY="$EXPLABS_API_KEY"
+    echo "  Using provided Experiential Labs API key from environment"
+fi
+if [ ! -z "$EXPLABS_KEY" ]; then
+    setup_secret "experiential-labs-api-key" "$EXPLABS_KEY" "Experiential Labs API Key"
+else
+    echo "  ⏭️  Skipped"
+fi
+echo ""
+
 # 2. Turnstile Secret Key
 echo "2️⃣ Cloudflare Turnstile Secret Key"
 if [ -z "$TURNSTILE_SECRET_KEY" ]; then
@@ -235,7 +252,7 @@ echo "🔓 Granting runtime access only to application runtime secrets..."
 
 # Grant access to each runtime secret. Cloudflare purge secrets are intentionally
 # not granted to the runtime service account.
-for SECRET in "gemini-api-key" "deepseek-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token" "redis-zstd-dictionary"; do
+for SECRET in "gemini-api-key" "deepseek-api-key" "experiential-labs-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token" "redis-zstd-dictionary"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \

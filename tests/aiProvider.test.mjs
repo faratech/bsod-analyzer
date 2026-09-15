@@ -7,12 +7,67 @@ import {
   generateDeepSeekContent,
   generateOpenRouterContent,
   generateOpenAIContent,
+  generateExperientialContent,
   isOpenAIFreeTier,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel,
   normalizeDeepSeekApiBaseUrl
 } from '../services/aiProvider.js';
+
+test('Experiential adapter sends the OpenAI-compatible Luna request', async () => {
+  let request;
+  const result = await generateExperientialContent({
+    model: 'deepseek-v4-flash',
+    contents: 'Analyze this crash evidence.',
+    config: {
+      systemInstruction: 'Return JSON only.',
+      responseMimeType: 'application/json',
+      maxOutputTokens: 512
+    }
+  }, {
+    apiKey: 'test-key',
+    baseUrl: 'https://example.test/v1',
+    model: 'gpt-5.6-luna',
+    maxRetries: 0,
+    fetchImpl: async (url, options) => {
+      request = { url, options, body: JSON.parse(options.body) };
+      return new Response(JSON.stringify({
+        model: 'gpt-5.6-luna',
+        choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 20, completion_tokens: 7, total_tokens: 27 }
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  assert.equal(request.url, 'https://example.test/v1/chat/completions');
+  assert.equal(request.options.headers.Authorization, 'Bearer test-key');
+  assert.deepEqual(request.body.messages, [
+    { role: 'system', content: 'Return JSON only.' },
+    { role: 'user', content: 'Analyze this crash evidence.' }
+  ]);
+  assert.equal(request.body.model, 'gpt-5.6-luna');
+  assert.deepEqual(request.body.response_format, { type: 'json_object' });
+  assert.equal(request.body.max_completion_tokens, 512);
+  assert.equal(result.text, '{"ok":true}');
+  assert.equal(result.usageMetadata.totalTokenCount, 27);
+});
+
+test('Experiential adapter classifies quota responses for OpenAI fallback', async () => {
+  await assert.rejects(
+    () => generateExperientialContent({ contents: 'x', config: {} }, {
+      apiKey: 'test-key',
+      maxRetries: 0,
+      fetchImpl: async () => new Response(
+        JSON.stringify({ error: { message: 'free tier quota exhausted' } }),
+        { status: 429 }
+      )
+    }),
+    error => error instanceof AIProviderError
+      && error.code === 'AI_QUOTA_EXHAUSTED'
+      && error.retryable === false
+  );
+});
 
 test('AI provider selection accepts server-supported model IDs only', () => {
   assert.equal(getAIProviderForModel(DEFAULT_GEMINI_MODEL), 'gemini');

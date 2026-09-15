@@ -157,6 +157,52 @@ if redis.call('TTL', KEYS[2]) < 1 then redis.call('EXPIRE', KEYS[2], ttl) end
 return {1, refunded + 1}
 `;
 
+// Provider-level token reservations. These counters cover estimated input and
+// output independently across both the UTC day and current UTC hour. The
+// caller settles the estimate after the provider returns, so Cloud Run
+// instances cannot collectively oversubscribe a provider's free tier.
+const PROVIDER_TOKEN_RESERVE_SCRIPT = `
+local day_in = tonumber(redis.call('GET', KEYS[1]) or '0')
+local day_out = tonumber(redis.call('GET', KEYS[2]) or '0')
+local hour_in = tonumber(redis.call('GET', KEYS[3]) or '0')
+local hour_out = tonumber(redis.call('GET', KEYS[4]) or '0')
+local add_in = tonumber(ARGV[1])
+local add_out = tonumber(ARGV[2])
+if day_in + add_in > tonumber(ARGV[3]) or day_out + add_out > tonumber(ARGV[4]) then
+  return {0, 'daily', day_in, day_out, hour_in, hour_out}
+end
+if hour_in + add_in > tonumber(ARGV[5]) or hour_out + add_out > tonumber(ARGV[6]) then
+  return {0, 'hourly', day_in, day_out, hour_in, hour_out}
+end
+redis.call('INCRBY', KEYS[1], add_in)
+redis.call('INCRBY', KEYS[2], add_out)
+redis.call('INCRBY', KEYS[3], add_in)
+redis.call('INCRBY', KEYS[4], add_out)
+local day_ttl = tonumber(ARGV[7])
+local hour_ttl = tonumber(ARGV[8])
+for _, key in ipairs({KEYS[1], KEYS[2]}) do
+  if redis.call('TTL', key) < 1 then redis.call('EXPIRE', key, day_ttl) end
+end
+for _, key in ipairs({KEYS[3], KEYS[4]}) do
+  if redis.call('TTL', key) < 1 then redis.call('EXPIRE', key, hour_ttl) end
+end
+return {1, 'ok', day_in + add_in, day_out + add_out, hour_in + add_in, hour_out + add_out}
+`;
+
+const PROVIDER_TOKEN_ADJUST_SCRIPT = `
+local function adjust(key, delta, ttl)
+  local current = tonumber(redis.call('GET', key) or '0')
+  local next_value = math.max(0, current + delta)
+  redis.call('SET', key, next_value, 'EX', ttl)
+  return next_value
+end
+local day_in = adjust(KEYS[1], tonumber(ARGV[1]), tonumber(ARGV[5]))
+local day_out = adjust(KEYS[2], tonumber(ARGV[2]), tonumber(ARGV[5]))
+local hour_in = adjust(KEYS[3], tonumber(ARGV[3]), tonumber(ARGV[6]))
+local hour_out = adjust(KEYS[4], tonumber(ARGV[4]), tonumber(ARGV[6]))
+return {day_in, day_out, hour_in, hour_out}
+`;
+
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
@@ -230,6 +276,124 @@ export function isCacheEnabled() {
  */
 export function getRedisCommandClient() {
   return isCacheEnabled() ? redis : null;
+}
+
+const providerQuotaMemory = new Map();
+
+function quotaWindow(now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const dayKey = current.toISOString().slice(0, 10).replaceAll('-', '');
+  const hourKey = `${dayKey}${String(current.getUTCHours()).padStart(2, '0')}`;
+  const nextHour = Date.UTC(
+    current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate(),
+    current.getUTCHours() + 1, 0, 0, 0
+  );
+  const nextDay = Date.UTC(
+    current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 0, 0, 0
+  );
+  return {
+    dayKey,
+    hourKey,
+    dayTtl: Math.max(60, Math.ceil((nextDay - current.getTime()) / 1000)),
+    hourTtl: Math.max(60, Math.ceil((nextHour - current.getTime()) / 1000))
+  };
+}
+
+function providerQuotaKeys(provider, window) {
+  const prefix = getRuntimeKey(`provider-quota:${provider}`);
+  return [
+    `${prefix}:day:${window.dayKey}:input`,
+    `${prefix}:day:${window.dayKey}:output`,
+    `${prefix}:hour:${window.hourKey}:input`,
+    `${prefix}:hour:${window.hourKey}:output`
+  ];
+}
+
+/** Atomically reserve provider input/output tokens for the current day/hour. */
+export async function reserveProviderTokenQuota(provider, {
+  inputCost,
+  outputCost,
+  dailyInputLimit,
+  dailyOutputLimit,
+  hourlyInputLimit,
+  hourlyOutputLimit,
+  now = new Date()
+} = {}) {
+  const input = Math.max(0, Math.ceil(Number(inputCost) || 0));
+  const output = Math.max(0, Math.ceil(Number(outputCost) || 0));
+  const limits = [dailyInputLimit, dailyOutputLimit, hourlyInputLimit, hourlyOutputLimit]
+    .map(value => Math.max(0, Math.ceil(Number(value) || 0)));
+  if (!provider || !limits.every(value => value > 0)) {
+    return { allowed: false, reason: 'invalid', provider };
+  }
+  const window = quotaWindow(now);
+  const memoryKey = `${provider}:${window.dayKey}:${window.hourKey}`;
+  if (!isCacheEnabled()) {
+    const current = providerQuotaMemory.get(memoryKey) || { input: 0, output: 0 };
+    const reason = current.input + input > limits[0] || current.output + output > limits[1]
+      ? 'daily'
+      : current.input + input > limits[2] || current.output + output > limits[3]
+        ? 'hourly'
+        : null;
+    if (reason) return { allowed: false, reason, provider, ...current, window };
+    const next = { input: current.input + input, output: current.output + output };
+    providerQuotaMemory.set(memoryKey, next);
+    return { allowed: true, provider, ...next, window, reservedInput: input, reservedOutput: output };
+  }
+
+  try {
+    const result = await redis.eval(
+      PROVIDER_TOKEN_RESERVE_SCRIPT,
+      providerQuotaKeys(provider, window),
+      [String(input), String(output), String(limits[0]), String(limits[1]),
+        String(limits[2]), String(limits[3]), String(window.dayTtl), String(window.hourTtl)]
+    );
+    return {
+      allowed: Number(result?.[0]) === 1,
+      provider,
+      reason: String(result?.[1] || 'unavailable'),
+      dailyInput: Number(result?.[2] || 0),
+      dailyOutput: Number(result?.[3] || 0),
+      hourlyInput: Number(result?.[4] || 0),
+      hourlyOutput: Number(result?.[5] || 0),
+      window,
+      reservedInput: input,
+      reservedOutput: output
+    };
+  } catch (error) {
+    console.error('[Cache] Error reserving provider token quota:', error.message);
+    return { allowed: false, reason: 'unavailable', window };
+  }
+}
+
+/** Adjust a provider reservation toward actual usage or release it. */
+export async function adjustProviderTokenQuota(reservation, {
+  inputDelta = 0,
+  outputDelta = 0
+} = {}) {
+  if (!reservation?.provider || !reservation.window) return false;
+  const window = reservation.window;
+  const deltas = [inputDelta, outputDelta].map(value => Math.trunc(Number(value) || 0));
+  if (!isCacheEnabled()) {
+    const key = `${reservation.provider}:${window.dayKey}:${window.hourKey}`;
+    const current = providerQuotaMemory.get(key);
+    if (!current) return true;
+    current.input = Math.max(0, current.input + deltas[0]);
+    current.output = Math.max(0, current.output + deltas[1]);
+    return true;
+  }
+  try {
+    await redis.eval(
+      PROVIDER_TOKEN_ADJUST_SCRIPT,
+      providerQuotaKeys(reservation.provider, window),
+      [String(deltas[0]), String(deltas[1]), String(deltas[0]), String(deltas[1]),
+        String(window.dayTtl), String(window.hourTtl)]
+    );
+    return true;
+  } catch (error) {
+    console.error('[Cache] Error adjusting provider token quota:', error.message);
+    return false;
+  }
 }
 
 function getRuntimeKey(key) {

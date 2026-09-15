@@ -18,6 +18,18 @@ All sensitive configuration values are stored in Google Secret Manager and injec
 - **Usage**: Required only when `model.cfg` is `deepseek-v4-flash`
 - **How to obtain**: https://platform.deepseek.com/api_keys
 
+### 1c. Experiential Labs API Key (`experiential-labs-api-key`)
+- **Purpose**: OpenAI-compatible `gpt-5.6-luna` fallback for the BSOD analyzer
+- **Usage**: Optional. When enabled, the service tries Experiential Cloud before
+  the existing OpenAI Luna route and meters input/output tokens in Redis against
+  the configured daily and hourly free-tier limits.
+- **Runtime binding**: `EXPLABS_API_KEY`
+- **Endpoint**: `https://api.experientiallabs.ai/v1`
+- **How to obtain**: https://www.experientiallabs.ai/
+- **Safety**: Add the key as a Secret Manager version; never commit it or put it
+  in the container image. A missing or disabled version leaves OpenAI fallback
+  behavior unchanged.
+
 ### 2. Turnstile Secret Key (`turnstile-secret-key`)
 - **Purpose**: Server-side verification of Cloudflare Turnstile CAPTCHA
 - **Usage**: Validates CAPTCHA tokens before allowing file uploads
@@ -77,7 +89,8 @@ All sensitive configuration values are stored in Google Secret Manager and injec
 This script will:
 1. Prompt for your Gemini API key
 2. Optionally prompt for a DeepSeek API key
-3. Set up the Turnstile secret key
+3. Optionally prompt for an Experiential Labs API key
+4. Set up the Turnstile secret key
 4. Generate a random session secret
 5. Prompt for Upstash Redis credentials
 6. Prompt for Cloudflare purge token and zone ID
@@ -242,7 +255,17 @@ CACHE_ZSTD_WRITES_ENABLED=false
 
 Only the API key for the model selected in `model.cfg` is required. DeepSeek is
 optional; `deploy-with-secret.sh` injects `DEEPSEEK_API_KEY` only when the
-`deepseek-api-key` Secret Manager secret exists.
+`deepseek-api-key` Secret Manager secret exists. Experiential is also optional
+and is injected only when `experiential-labs-api-key` has an enabled version.
+
+For production, add the Experiential key without exposing it in shell history:
+
+```bash
+read -r -s EXPLABS_API_KEY
+printf '%s' "$EXPLABS_API_KEY" | gcloud secrets versions add experiential-labs-api-key \
+  --data-file=- --project=PROJECT_ID
+unset EXPLABS_API_KEY
+```
 
 When running `NODE_ENV=production` locally without Redis, set
 `REQUIRE_REDIS_RUNTIME=false`. When testing production mode outside Cloudflare,

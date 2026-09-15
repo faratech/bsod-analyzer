@@ -25,38 +25,38 @@ steps:
   
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - 'run'
-      - 'deploy'
-      - 'bsod-analyzer'
-      - '--image'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/bsod-analyzer:latest'
-      - '--region'
-      - '${_REGION}'
-      - '--platform'
-      - 'managed'
-      - '--allow-unauthenticated'
-      - '--no-default-url'
-      - '--service-account'
-      - 'bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com'
-      - '--port'
-      - '8080'
-      - '--use-http2'
-      - '--max-instances'
-      - '10'
-      - '--concurrency'
-      - '2'
-      - '--min-instances'
-      - '1'
-      - '--memory'
-      - '1Gi'
-      - '--no-cpu-throttling'
-      - '--cpu-boost'
-      - '--update-env-vars'
-      - 'NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED}'
-      - '--update-secrets'
-      - '${_AI_SECRET_BINDING},TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:${_CACHE_ZSTD_DICTIONARY_VERSION}'
+      - '-ceu'
+      - |
+        AI_SECRET_BINDING='${_AI_SECRET_BINDING}'
+        if gcloud secrets versions list experiential-labs-api-key \
+          --project="$PROJECT_ID" \
+          --filter='state=ENABLED' \
+          --limit=1 \
+          --format='value(name)' | grep -q .; then
+          case ",$${AI_SECRET_BINDING}," in
+            *,EXPLABS_API_KEY=experiential-labs-api-key:latest,*) ;;
+            *) AI_SECRET_BINDING="$${AI_SECRET_BINDING},EXPLABS_API_KEY=experiential-labs-api-key:latest" ;;
+          esac
+        fi
+        gcloud run deploy bsod-analyzer \
+          --image "${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/bsod-analyzer:latest" \
+          --region "${_REGION}" \
+          --platform managed \
+          --allow-unauthenticated \
+          --no-default-url \
+          --service-account "bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com" \
+          --port 8080 \
+          --use-http2 \
+          --max-instances 10 \
+          --concurrency 2 \
+          --min-instances 1 \
+          --memory 1Gi \
+          --no-cpu-throttling \
+          --cpu-boost \
+          --update-env-vars "NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED}" \
+          --update-secrets "$${AI_SECRET_BINDING},TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:${_CACHE_ZSTD_DICTIONARY_VERSION}"
 
   # Purge Cloudflare cache after deployment
   - name: 'gcr.io/cloud-builders/curl'
@@ -88,8 +88,9 @@ substitutions:
   # Production completed the reader-first rollout. Override to false only when
   # deliberately staging a new dictionary-aware reader revision.
   _CACHE_ZSTD_WRITES_ENABLED: 'true'
-  # All providers are bound so model.cfg can be hot-swapped between them at
-  # runtime without a redeploy. All secrets must exist in Secret Manager.
+  # All configured providers are bound so model.cfg can be hot-swapped between
+  # them at runtime without a redeploy. Experiential is appended only when its
+  # Secret Manager resource has an enabled version.
   # OPENROUTER_API_KEY additionally powers the AI narrative on /stats.
   _AI_SECRET_BINDING: 'GEMINI_API_KEY=gemini-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,OPENAI_ADMIN_KEY=openai-admin-key:latest,OPENROUTER_API_KEY=openrouter-api-key:latest'
 

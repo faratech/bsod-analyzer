@@ -55,6 +55,16 @@ fi
 if gcloud secrets describe openrouter-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
   RUNTIME_SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,${RUNTIME_SECRETS}"
 fi
+# Optional OpenAI-compatible free-tier route for gpt-5.6-luna. Keep the
+# existing OpenAI binding as the per-request fallback when this is absent or
+# its quota is exhausted.
+if gcloud secrets versions list experiential-labs-api-key \
+  --project="${PROJECT_ID}" \
+  --filter='state=ENABLED' \
+  --limit=1 \
+  --format='value(name)' 2>/dev/null | grep -q .; then
+  RUNTIME_SECRETS="EXPLABS_API_KEY=experiential-labs-api-key:latest,${RUNTIME_SECRETS}"
+fi
 
 if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
   REQUIRED_AI_SECRET="deepseek-api-key"
