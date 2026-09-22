@@ -29,7 +29,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
-    "@fastify/multipart": "^10.1.1",
+    "@fastify/multipart": "^10.1.2",
     "@google/genai": "^2.24.0",
     "@upstash/redis": "^1.39.0",
     "concurrently": "^10.0.5",
