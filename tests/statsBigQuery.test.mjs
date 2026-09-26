@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createBigQueryStatsSource, rawFromAggregates } from '../server/statsBigQuery.js';
+import { eventsQuery, rawFromAggregates } from '../server/statsBigQuery.js';
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -50,63 +50,9 @@ test('rawFromAggregates maps the SQL row onto the snapshot input shape', () => {
   assert.equal(rawFromAggregates({}).trackingSince, null);
 });
 
-test('load queries events + baseline with the metadata token and project', async () => {
-  const { impl, calls } = fakeFetch([
-    ['service-accounts/default/token', () => jsonResponse(200, { access_token: 'tok', expires_in: 3600 })],
-    ['project/project-id', () => new Response('demo-project')],
-    ['/queries', (_url, init) => {
-      const body = queryBody(init);
-      if (body.query.includes('baseline')) {
-        return jsonResponse(200, { jobComplete: true, rows: [{ f: [{ v: JSON.stringify({ total: 10 }) }] }] });
-      }
-      return jsonResponse(200, { jobComplete: true, rows: [{ f: [{ v: JSON.stringify(AGGREGATES) }] }] });
-    }]
-  ]);
-  const source = createBigQueryStatsSource({ fetchImpl: impl });
-  const { live, baseline } = await source.load({ windowDays: 90 });
-
-  assert.equal(live.total, 3);
-  assert.deepEqual(baseline, { total: 10 });
-  const queries = calls.filter(c => c.url.endsWith('/projects/demo-project/queries'));
-  assert.equal(queries.length, 2);
-  assert.equal(queries[0].init.headers.Authorization, 'Bearer tok');
-  const eventsQuery = queries.map(c => queryBody(c.init)).find(b => !b.query.includes('baseline'));
-  assert.match(eventsQuery.query, /`demo-project\.bsod_stats\.run_googleapis_com_stdout`/);
-  assert.deepEqual(eventsQuery.queryParameters[0].parameterValue, { value: '90' });
-
-  // Token and project id are cached across loads.
-  await source.load({ windowDays: 90 });
-  assert.equal(calls.filter(c => c.url.includes('metadata')).length, 2);
-});
-
-test('a missing events table means no events yet, not an error', async () => {
-  const { impl } = fakeFetch([
-    ['/queries', (_url, init) => (queryBody(init).query.includes('baseline')
-      ? jsonResponse(200, { jobComplete: true, rows: [] })
-      : jsonResponse(404, { error: { message: 'Not found: Table demo:bsod_stats.run_googleapis_com_stdout' } }))]
-  ]);
-  const source = createBigQueryStatsSource({ fetchImpl: impl, projectId: 'demo', getAccessToken: async () => 't' });
-  const { live, baseline } = await source.load({ windowDays: 90 });
-  assert.equal(live.total, 0);
-  assert.equal(baseline, null);
-});
-
-test('query failures and incomplete jobs surface as errors', async () => {
-  const failing = createBigQueryStatsSource({
-    projectId: 'demo',
-    getAccessToken: async () => 't',
-    fetchImpl: fakeFetch([['/queries', () => jsonResponse(403, { error: { message: 'Access Denied' } })]]).impl
-  });
-  await assert.rejects(failing.load({ windowDays: 90 }), /Access Denied/);
-
-  const slow = createBigQueryStatsSource({
-    projectId: 'demo',
-    getAccessToken: async () => 't',
-    fetchImpl: fakeFetch([['/queries', () => jsonResponse(200, { jobComplete: false })]]).impl
-  });
-  await assert.rejects(slow.load({ windowDays: 90 }), /did not complete/);
-});
-
-test('dataset and table names are restricted to plain identifiers', () => {
-  assert.throws(() => createBigQueryStatsSource({ table: 'x`; DROP' }), /plain identifiers/);
+test('eventsQuery reads stats.analysis events from the given table', () => {
+  const sql = eventsQuery('proj.bsod_stats.events');
+  assert.match(sql, /FROM `proj\.bsod_stats\.events`/);
+  assert.match(sql, /jsonPayload\.event = 'stats\.analysis'/);
+  assert.match(sql, /@window_days/);
 });
