@@ -65,6 +65,7 @@ import {
   createStatsStore
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
+import { createBigQueryStatsSource } from './server/statsBigQuery.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -123,7 +124,6 @@ import {
   isCacheEnabled,
   disableRedis,
   getRedisDisabledReason,
-  getRedisCommandClient,
   checkCacheConnection,
   incrementRuntimeCounter
 } from './services/cache.js';
@@ -781,12 +781,12 @@ function sessionOwnsHash(sessionId, hash, handle) {
   return timestamp !== undefined && Date.now() - timestamp <= OWNERSHIP_EXPIRY;
 }
 
-function markWinDbgJob(sessionId, uid, upstreamJobId) {
+function markWinDbgJob(sessionId, uid, upstreamJobId, dumpType) {
   if (!sessionId || !uid) return;
   const existing = winDbgJobOwnership.get(uid);
   const sessions = new Set(existing?.sessions || []);
   sessions.add(sessionId);
-  winDbgJobOwnership.set(uid, { sessions: [...sessions], upstreamJobId, timestamp: Date.now() });
+  winDbgJobOwnership.set(uid, { sessions: [...sessions], upstreamJobId, dumpType, timestamp: Date.now() });
   markSessionHash(sessionId, uid);
 }
 
@@ -794,7 +794,7 @@ function markWinDbgJob(sessionId, uid, upstreamJobId) {
 // on any instance, else from this instance's upload record.
 function getOwnedWinDbgJob(sessionId, uid, handle) {
   const claims = handle ? fileHandleCodec.verify(handle, { fileHash: uid, sessionId }) : null;
-  if (claims?.jid) return { upstreamJobId: claims.jid };
+  if (claims?.jid) return { upstreamJobId: claims.jid, dumpType: claims.dt };
   const job = winDbgJobOwnership.get(uid);
   if (!job?.sessions.includes(sessionId) || Date.now() - job.timestamp > OWNERSHIP_EXPIRY) return null;
   return job;
@@ -1867,13 +1867,18 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Crash-statistics aggregation (public GET /api/stats; recording is
-// fire-and-forget from each analysis-completion site — see recordStats).
+// Crash-statistics aggregation (public GET /api/stats). Each completed analysis
+// logs one `stats.analysis` line (see recordStats); the Cloud Logging sink
+// `bsod-stats-events` streams them into BigQuery, where the snapshot is
+// aggregated (server/statsBigQuery.js). Nothing here touches Upstash.
+const STATS_ENABLED = process.env.STATS_ENABLED !== 'false';
 const statsStore = createStatsStore({
-  // Lazy accessor: the Upstash client connects during startServer(), after
-  // module load, so a captured instance would be null forever.
-  getClient: () => getRedisCommandClient(),
-  isEnabled: () => isCacheEnabled() && process.env.STATS_ENABLED !== 'false',
+  source: createBigQueryStatsSource({
+    dataset: process.env.STATS_BIGQUERY_DATASET || undefined,
+    table: process.env.STATS_BIGQUERY_TABLE || undefined
+  }),
+  emit: (event, fields) => log.info(event, fields),
+  isEnabled: () => STATS_ENABLED,
   snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
   dailyWindowDays: readPositiveInt(process.env.STATS_DAILY_WINDOW_DAYS, DEFAULT_DAILY_WINDOW_DAYS)
 });
@@ -1881,11 +1886,7 @@ registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
 
 // AI narrative over the aggregates (OpenRouter free tier, heavily cached).
 const statsInsightService = createStatsInsightService({
-  getClient: () => getRedisCommandClient(),
-  isEnabled: () =>
-    isCacheEnabled() &&
-    process.env.STATS_ENABLED !== 'false' &&
-    process.env.STATS_INSIGHT_ENABLED !== 'false',
+  isEnabled: () => STATS_ENABLED && process.env.STATS_INSIGHT_ENABLED !== 'false',
   getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot(),
   model: process.env.OPENROUTER_FREE_MODEL
 });
@@ -1893,10 +1894,9 @@ registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLim
 
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
-  if (!isCacheEnabled() || process.env.STATS_ENABLED === 'false') return;
+  if (!STATS_ENABLED) return;
   const facts = extractStatsFacts(input);
-  if (!facts) return;
-  statsStore.recordAnalysis(facts).catch(() => {});
+  if (facts) statsStore.recordAnalysis(facts);
 }
 
 // Apply rate limiting to API endpoints
@@ -2969,14 +2969,10 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       fileName,
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
     });
-    markWinDbgJob(req.sessionId, uid, submitResult.job_id);
-    // Hook B: stash the dump type for the stats recorder (buffer only
-    // exists here; the download hook can't classify minidump-vs-kernel).
-    if (isCacheEnabled() && process.env.STATS_ENABLED !== 'false') {
-      try {
-        statsStore.setDumpTypeHint(uid, detectDumpType(fileBuffer));
-      } catch { /* best-effort */ }
-    }
+    // The dump type rides along to the download hook's stats record (the
+    // buffer only exists here, and download may land on another instance).
+    const dumpType = detectDumpType(fileBuffer);
+    markWinDbgJob(req.sessionId, uid, submitResult.job_id, dumpType);
 
     console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id);
     res.json({
@@ -2991,7 +2987,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
         total_pending: undefined,
         // Signed proof of ownership + upstream job id: poll/download/cache
         // reads carry it so any instance can serve them.
-        handle: fileHandleCodec.issue({ fileHash: uid, jobId: submitResult.job_id, sessionId: req.sessionId })
+        handle: fileHandleCodec.issue({ fileHash: uid, jobId: submitResult.job_id, dumpType, sessionId: req.sessionId })
       }
     });
   } catch (error) {
@@ -3121,18 +3117,15 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       windbgDerived: true,
     });
 
-    // Hook A: web WinDBG analysis completed — record crash stats.
-    // Dump-type hint comes from the upload-time meta (hook B); resolve it
-    // out-of-band so the response is never delayed.
-    statsStore.getDumpTypeHint(uid)
-      .then(dt => recordStats({
-        source: 'windbg',
-        fileHash: uid,
-        structured,
-        analysisText,
-        dumpType: dt
-      }))
-      .catch(() => {});
+    // Web WinDBG analysis completed — record crash stats. The dump type was
+    // classified at upload and carried in the handle / upload record.
+    recordStats({
+      source: 'windbg',
+      fileHash: uid,
+      structured,
+      analysisText,
+      dumpType: ownership.dumpType
+    });
 
     res.json({
       success: true,

@@ -1,11 +1,11 @@
 // AI-generated narrative for the crash-statistics page, served through the
 // OpenRouter free tier. Deliberately frugal: the generated text is cached in
-// Redis for hours (stats move slowly), regeneration is single-flight via a
-// SETNX lock, and the prompt contains only anonymous aggregate numbers.
+// process for hours (stats move slowly, and the CDN caches the route too),
+// regeneration is single-flight per instance, and the prompt contains only
+// anonymous aggregate numbers.
 import { generateOpenRouterContent, DEFAULT_OPENROUTER_BASE_URL } from '../services/aiProvider.js';
 
 const DEFAULT_TTL_SECONDS = 6 * 60 * 60;   // fresh for 6h
-const LOCK_TTL_SECONDS = 120;              // concurrent-generation guard
 
 // Free-tier slugs rotate on OpenRouter (deepseek-chat-v3.1:free was retired
 // mid-2026), so the insight tries an ordered list instead of one model.
@@ -71,7 +71,6 @@ function buildDigest(snapshot) {
 }
 
 export function createStatsInsightService({
-  getClient,
   isEnabled = () => true,
   getSnapshot,
   now = () => Date.now(),
@@ -81,11 +80,9 @@ export function createStatsInsightService({
   models = resolveModels(process.env.OPENROUTER_STATS_MODEL || process.env.OPENROUTER_FREE_MODEL),
   ttlSeconds = DEFAULT_TTL_SECONDS
 } = {}) {
-  const active = () => Boolean(getClient?.()) && isEnabled() && Boolean(apiKey);
-
-  function key(suffix) {
-    return `stats:insight${suffix ? `:${suffix}` : ''}`;
-  }
+  const active = () => isEnabled() && Boolean(apiKey);
+  let cached = null; // { text, model, generatedAt }
+  let inFlight = null;
 
   async function generateInsight(snapshot) {
     const prompt = `Aggregate Windows crash statistics (anonymous counts):\n` +
@@ -137,38 +134,28 @@ export function createStatsInsightService({
   // freshly generated insight. Stale text is still served while regenerating.
   async function getInsight() {
     if (!active()) return { available: false };
-    const redis = getClient();
-    try {
-      let cached = null;
-      const raw = await redis.get(key());
-      if (raw) {
-        try {
-          cached = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        } catch { cached = null; }
-      }
-      const ageMs = cached ? now() - Date.parse(cached.generatedAt) : Infinity;
-      if (cached && Number.isFinite(ageMs) && ageMs < ttlSeconds * 1000) {
-        return { ...cached, available: true, cached: true };
-      }
-
-      const lockAcquired = await redis.set(key('lock'), '1', { nx: true, ex: LOCK_TTL_SECONDS });
-      if (!lockAcquired) {
-        if (cached) return { ...cached, available: true, cached: true, stale: true };
-        return { available: false, generating: true };
-      }
+    const ageMs = cached ? now() - Date.parse(cached.generatedAt) : Infinity;
+    if (cached && Number.isFinite(ageMs) && ageMs < ttlSeconds * 1000) {
+      return { ...cached, available: true, cached: true };
+    }
+    if (inFlight) {
+      if (cached) return { ...cached, available: true, cached: true, stale: true };
+      return { available: false, generating: true };
+    }
+    inFlight = (async () => {
       try {
         const snapshot = await getSnapshot();
         if (!snapshot) return cached ? { ...cached, available: true, cached: true } : { available: false };
-        const fresh = await generateInsight(snapshot);
-        await redis.set(key(), JSON.stringify(fresh), { ex: ttlSeconds });
-        return { ...fresh, available: true, cached: false };
+        cached = await generateInsight(snapshot);
+        return { ...cached, available: true, cached: false };
+      } catch (error) {
+        console.error('[Stats] insight failed:', error?.message || error);
+        return cached ? { ...cached, available: true, cached: true, stale: true } : { available: false };
       } finally {
-        await redis.del(key('lock'));
+        inFlight = null;
       }
-    } catch (error) {
-      console.error('[Stats] insight failed:', error?.message || error);
-      return { available: false };
-    }
+    })();
+    return inFlight;
   }
 
   return { getInsight };
