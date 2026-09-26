@@ -94,6 +94,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --use-http2 \
   --concurrency 2 \
   --max-instances 10 \
+  --session-affinity \
   --min-instances 0 \
   --memory 1Gi \
   --cpu 1 \

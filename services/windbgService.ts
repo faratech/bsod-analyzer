@@ -42,6 +42,7 @@ export interface WinDBGUploadResponse {
         status: 'pending' | 'processing' | 'completed' | 'failed';
         queue_position: number;
         total_pending: number;
+        handle?: string;
     };
     error?: string;
     code?: string;
@@ -99,6 +100,20 @@ export interface CachedAnalysisResponse {
     fileHash?: string;
     error?: string;
     code?: string;
+}
+
+// file hash -> signed handle from the upload response. The handle proves this
+// session uploaded the file (and carries the upstream WinDBG job id), so poll,
+// download and cache reads succeed on whichever server instance answers.
+const fileHandles = new Map<string, string>();
+
+export function getFileHandle(hash: string | undefined): string | undefined {
+    return hash ? fileHandles.get(hash) : undefined;
+}
+
+function handleQuery(hash: string): string {
+    const handle = fileHandles.get(hash);
+    return handle ? `&h=${encodeURIComponent(handle)}` : '';
 }
 
 function sleep(ms: number): Promise<void> {
@@ -162,7 +177,12 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ hashes })
+            body: JSON.stringify({
+                hashes,
+                handles: Object.fromEntries(
+                    hashes.filter(hash => fileHandles.has(hash)).map(hash => [hash, fileHandles.get(hash)])
+                )
+            })
         });
 
         if (!response.ok) {
@@ -212,7 +232,7 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
  * WinDBG upload.
  */
 export async function getCachedAnalysisByHash(hash: string): Promise<CachedAnalysisResponse | null> {
-    let response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
+    let response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}${handleQuery(hash)}`, {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store'
@@ -223,7 +243,7 @@ export async function getCachedAnalysisByHash(hash: string): Promise<CachedAnaly
         if (handleSessionError(errorData)) {
             const refreshed = await initializeSession(true);
             if (refreshed) {
-                response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}`, {
+                response = await fetch(`/api/cache/get?hash=${encodeURIComponent(hash)}${handleQuery(hash)}`, {
                     method: 'GET',
                     credentials: 'include',
                     cache: 'no-store'
@@ -298,6 +318,10 @@ export async function uploadToWinDBG(
         throw error;
     }
 
+    if (result.data?.handle) {
+        fileHandles.set(uid, result.data.handle);
+    }
+
     // Handle cached response - always preserve the locally computed uid as the
     // fileHash, even when the server omitted a data object, so the downstream
     // Gemini cache key is never undefined.
@@ -320,7 +344,7 @@ export async function downloadAnalysis(uid: string): Promise<{
 }> {
     console.log(`[WinDBG] Downloading analysis for UID: ${uid}`);
 
-    let response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
+    let response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
         credentials: 'include'
     });
 
@@ -332,7 +356,7 @@ export async function downloadAnalysis(uid: string): Promise<{
             console.log('[WinDBG] Session expired during download, re-initializing...');
             const refreshed = await initializeSession(true);
             if (refreshed) {
-                response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}`, {
+                response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
                     credentials: 'include'
                 });
             }
@@ -444,7 +468,7 @@ export async function analyzeWithWinDBG(
 
             // Add cache-busting timestamp to prevent browser/CDN caching
             const cacheBuster = Date.now();
-            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}&_t=${cacheBuster}`, {
+            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}${handleQuery(uid)}&_t=${cacheBuster}`, {
                 credentials: 'include',
                 cache: 'no-store'
             });

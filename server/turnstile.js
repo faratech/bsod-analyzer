@@ -1,65 +1,46 @@
-// Atomic single-use enforcement for Turnstile tokens (issue #72).
+// Single-use enforcement for Turnstile tokens (issue #72).
 //
-// The reservation is a Redis INCRBY issued BEFORE the siteverify round-trip:
-// concurrent requests carrying the same token cannot both win the race, and
-// the reservation lives in Redis, so it is shared across Cloud Run instances
-// (the previous in-memory Map was neither). Extracted from server.js so the
-// semantics are unit-testable (tests/turnstile.test.mjs).
+// The reservation is taken BEFORE the siteverify round-trip, so concurrent
+// requests carrying the same token on one instance cannot both win the race.
+// It is per-instance by design: Cloudflare's siteverify itself rejects a token
+// that was already redeemed ("timeout-or-duplicate"), which covers replays that
+// land on another Cloud Run instance, so a shared store only added Upstash
+// commands. Extracted from server.js so the semantics are unit-testable
+// (tests/turnstile.test.mjs).
 import crypto from 'crypto';
 
 function fingerprint(token) {
-  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 16);
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 32);
 }
 
-// incrementCounter(key, ttlSeconds, delta?) must be atomic (Redis INCRBY) and
-// return { count } or null when the store is unavailable. redisEnabled() tells
-// the guard whether the shared store is in play; without it the guard degrades
-// to a per-instance Map, which callers must only allow outside production.
-export function createTurnstileReplayGuard({
-  incrementCounter,
-  redisEnabled = () => false,
-  ttlSeconds = 60 * 60,
-  keyPrefix = 'ts:used'
-} = {}) {
-  const memory = new Map(); // token -> first-use timestamp (no-Redis fallback)
+export function createTurnstileReplayGuard() {
+  const reserved = new Map(); // token fingerprint -> first-use timestamp
 
-  function keyFor(token) {
-    return `${keyPrefix}:${fingerprint(token)}`;
-  }
-
-  // Returns { reserved: true }, { duplicate: true }, or { unavailable: true }.
-  async function reserve(token) {
-    if (redisEnabled()) {
-      const reservation = await incrementCounter(keyFor(token), ttlSeconds, 1);
-      if (!reservation) return { unavailable: true };
-      return { reserved: reservation.count === 1, duplicate: reservation.count > 1 };
-    }
-    if (memory.has(token)) return { duplicate: true };
-    memory.set(token, Date.now());
+  // Returns { reserved: true } or { duplicate: true }.
+  function reserve(token, now = Date.now()) {
+    const key = fingerprint(token);
+    if (reserved.has(key)) return { duplicate: true };
+    reserved.set(key, now);
     return { reserved: true };
   }
 
   // Release only when the token did not verify or the transport threw — a
-  // successfully verified token stays consumed for the TTL window.
-  async function release(token) {
-    if (redisEnabled()) {
-      await incrementCounter(keyFor(token), ttlSeconds, -1);
-      return;
-    }
-    memory.delete(token);
+  // successfully verified token stays consumed until pruned.
+  function release(token) {
+    reserved.delete(fingerprint(token));
   }
 
-  function memorySize() {
-    return memory.size;
+  function size() {
+    return reserved.size;
   }
 
-  // Drops fallback-map entries older than maxAgeMs (used by server.js's
-  // periodic sweep; Redis reservations expire via TTL on their own).
+  // Drops reservations older than maxAgeMs (server.js runs this periodically;
+  // Turnstile tokens are only valid for 300 seconds).
   function prune(maxAgeMs, now = Date.now()) {
-    for (const [token, timestamp] of memory.entries()) {
-      if (now - timestamp > maxAgeMs) memory.delete(token);
+    for (const [key, timestamp] of reserved.entries()) {
+      if (now - timestamp > maxAgeMs) reserved.delete(key);
     }
   }
 
-  return { reserve, release, memorySize, prune };
+  return { reserve, release, size, prune };
 }
