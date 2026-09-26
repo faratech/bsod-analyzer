@@ -9,6 +9,22 @@ const distDir = path.join(root, 'dist');
 const indexPath = path.join(distDir, 'index.html');
 const ssrEntry = path.join(root, 'dist-ssr', 'entry-server.js');
 const ROOT_MARKER = '<div id="root"></div>';
+const SITE_URL = 'https://bsod.windowsforum.com';
+const HOME_DESCRIPTION = 'Free AI-powered Blue/Black Screen of Death analyzer. Upload Windows crash dump files or supported archives and get actionable diagnostics. Analyzes both classic blue and modern black crash screens.';
+const HOME_HEAD = [
+  '<title>BSOD AI Analyzer - Instant Windows Crash Dump Analysis</title>',
+  `<meta name="description" content="${HOME_DESCRIPTION}"/>`,
+  '<meta name="robots" content="index, follow"/>',
+  `<link rel="canonical" href="${SITE_URL}/"/>`,
+  '<meta property="og:type" content="website"/>',
+  '<meta property="og:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis"/>',
+  `<meta property="og:description" content="${HOME_DESCRIPTION}"/>`,
+  `<meta property="og:url" content="${SITE_URL}/"/>`,
+  `<meta property="og:image" content="${SITE_URL}/og-image.webp"/>`,
+  '<meta name="twitter:card" content="summary_large_image"/>',
+  '<meta name="twitter:title" content="BSOD AI Analyzer - Instant Windows Crash Dump Analysis"/>',
+  `<meta name="twitter:description" content="${HOME_DESCRIPTION}"/>`,
+].join('\n    ');
 
 function fail(msg) {
   console.error(`[prerender] ${msg}`);
@@ -25,12 +41,34 @@ if (typeof renderAsync !== 'function') fail('entry-server did not export a rende
 const indexHtml = fs.readFileSync(indexPath, 'utf-8');
 if (!indexHtml.includes(ROOT_MARKER)) fail(`root marker "${ROOT_MARKER}" not found in dist/index.html.`);
 
+// React emits route metadata at the start of its rendered app markup. Copy that
+// same metadata into the actual document head so crawlers see it without JS.
+// Keep the app markup intact: removing React-owned nodes breaks hydration.
+function headForRoute(appHtml, route) {
+  if (route === '/') return HOME_HEAD;
+  const start = appHtml.indexOf('<title>');
+  const canonical = start < 0 ? null : /<link rel="canonical"[^>]*\/>/.exec(appHtml.slice(start));
+  if (!canonical) fail(`${route} has no prerendered title and canonical link.`);
+  const head = appHtml.slice(start, start + canonical.index + canonical[0].length);
+  if (!/<meta name="description" content="[^"]+"\/>/.test(head)) {
+    fail(`${route} has no prerendered meta description.`);
+  }
+  if (!head.includes(`href="${SITE_URL}${route}"`)) {
+    fail(`${route} has an unexpected canonical URL.`);
+  }
+  return head;
+}
+
 // Inject rendered app markup into the SRI'd index.html template (prerender runs
 // after generate-sri, so integrity attributes are already present and inherited).
 // A replacer FUNCTION is required: a string replacement would interpret `$&`,
 // "$`", "$'" and $<n> sequences inside appHtml as substitution patterns.
-function writePrerendered(file, appHtml) {
-  const out = indexHtml.replace(ROOT_MARKER, () => `<div id="root">${appHtml}</div>`);
+function writePrerendered(file, appHtml, route) {
+  const head = headForRoute(appHtml, route);
+  const out = indexHtml
+    .replace(/<title>[\s\S]*?<\/title>/i, '')
+    .replace('</head>', () => `    ${head}\n</head>`)
+    .replace(ROOT_MARKER, () => `<div id="root">${appHtml}</div>`);
   fs.writeFileSync(file, out);
   return Buffer.byteLength(out);
 }
@@ -40,7 +78,7 @@ const homeHtml = render('/');
 if (!homeHtml || !homeHtml.includes('Decode Your Windows Crash Screen')) {
   fail('Prerendered homepage HTML is empty or missing the hero — aborting so we never ship a blank page.');
 }
-const homeBytes = writePrerendered(path.join(distDir, 'index.prerendered.html'), homeHtml);
+const homeBytes = writePrerendered(path.join(distDir, 'index.prerendered.html'), homeHtml, '/');
 console.log(`[prerender] / -> index.prerendered.html (${homeBytes} bytes; #root ${homeHtml.length} chars)`);
 
 // --- Inner routes: each page is React.lazy(), so they need the Suspense-aware
@@ -74,7 +112,7 @@ for (const r of ROUTES) {
       skipped++;
       continue;
     }
-    const bytes = writePrerendered(path.join(prerenderedDir, r.file), html);
+    const bytes = writePrerendered(path.join(prerenderedDir, r.file), html, r.path);
     console.log(`[prerender] ${r.path} -> prerendered/${r.file} (${bytes} bytes; #root ${html.length} chars)`);
     ok++;
   } catch (e) {
