@@ -243,3 +243,9 @@ test('recordAiReport logs and returns false on failure, and skips when disabled 
   assert.equal(await enabled.recordAiReport({ ...aiEntry, report: null }), false);
   assert.equal(calls.length, 0);
 });
+
+test('rows record the data-use terms version they were collected under', () => {
+  assert.equal(buildCorpusRow(job, { dataUseTerms: '2026-09' }).data_use_terms, '2026-09');
+  assert.equal(buildCorpusRow(job).data_use_terms, null);
+  assert.equal(buildAiReportRow({ report: { a: 1 }, dataUseTerms: 'api-2026-09' }, { reportId: 'r' }).data_use_terms, 'api-2026-09');
+});

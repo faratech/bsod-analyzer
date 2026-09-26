@@ -43,7 +43,7 @@ echo "Cache dictionary: ${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_
 echo "Compressed cache writes: ${CACHE_ZSTD_WRITES_ENABLED}"
 
 SELECTED_AI_MODEL=$(tr -d '[:space:]' < model.cfg)
-RUNTIME_SECRETS="TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest"
+RUNTIME_SECRETS="TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest"
 
 if gcloud secrets describe gemini-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
   RUNTIME_SECRETS="GEMINI_API_KEY=gemini-api-key:latest,${RUNTIME_SECRETS}"
