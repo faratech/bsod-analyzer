@@ -7,12 +7,12 @@ import { join } from 'node:path';
 import {
   getCacheCompressionStatus,
   getCachedAnalysis,
-  getRuntimeValue,
-  incrementRuntimeCounter,
+  getRedisDisabledReason,
   initCache,
   initCacheCompression,
+  isAnalysisCached,
+  isCacheEnabled,
   setCachedAnalysis,
-  setRuntimeValue,
 } from '../services/cache.js';
 import { isZstdEnvelope } from '../services/cacheCodec.js';
 
@@ -101,7 +101,7 @@ function trainedDictionaryFixture() {
   return dictionary;
 }
 
-test('cache service keeps runtime state plain and publishes dictionaries before zstd entries', async t => {
+test('cache service publishes dictionaries before zstd entries and merges model reports', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bsod-cache-integration-'));
   const dictionaryPath = join(directory, 'cache.zdict');
   await writeFile(dictionaryPath, trainedDictionaryFixture(), { mode: 0o600 });
@@ -169,71 +169,76 @@ test('cache service keeps runtime state plain and publishes dictionaries before 
   assert.equal(merged.aiReports['model-a'].summary, 'first model');
   assert.equal(merged.aiReports['model-b'].summary, 'second model');
 
-  await setRuntimeValue('session:test', { valid: true }, 60);
-  assert.equal(typeof fake.values.get('runtime:session:test'), 'string');
-  assert.equal(isZstdEnvelope(Buffer.from(fake.values.get('runtime:session:test'))), false);
-  assert.deepEqual(await getRuntimeValue('session:test'), { valid: true });
-  const counter = await incrementRuntimeCounter('rate-limit:test', 30);
-  assert.equal(counter.count, 1);
-  assert.ok(counter.resetTime instanceof Date);
-
   // A malformed cache value is disposable and is repaired by the next write.
   fake.values.set(analysisKey, Buffer.from('BSODZSTD\x01'));
   assert.equal(await setCachedAnalysis(hash, { windbgOutput: 'replacement' }), true);
   assert.equal((await getCachedAnalysis(hash)).windbgOutput, 'replacement');
 });
 
-test('concurrent setCachedAnalysis writers both survive via revision retry', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'bsod-cache-merge-'));
-  const dictionaryPath = join(directory, 'cache.zdict');
-  await writeFile(dictionaryPath, trainedDictionaryFixture(), { mode: 0o600 });
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
+test('a cache write is one read plus one write, and existence checks never download values', async () => {
   const fake = createFakeClients();
   initCache({ redisClient: fake.redisClient, analysisClient: fake.analysisClient });
-  assert.equal(
-    await initCacheCompression({ dictionaryPath, writesEnabled: true, flushProbeMs: 0, refreshIntervalMs: 0 }),
-    true,
-  );
+  await initCacheCompression({ dictionaryPath: '/nonexistent/dictionary', writesEnabled: false });
 
-  const hash = 'fedcba9876543210';
-  const analysisKey = `analysis:${hash}`;
+  const hash = '1111222233334444';
+  fake.events.length = 0;
+  assert.equal(await setCachedAnalysis(hash, { windbgOutput: 'BUGCHECK_CODE: 7e' }), true);
+  assert.deepEqual(fake.events.map(([operation]) => operation), ['binary-get', 'binary-set']);
 
-  // Simulate a concurrent publisher that wins the race right after our first
-  // SET: it stores a higher revision with its own model report, so our
-  // confirmation read must detect the bump and redo the merge over its value.
-  let interfered = false;
-  const racingClient = {
-    async get(key) { return fake.analysisClient.get(key); },
-    async setNx(key, value) { return fake.analysisClient.setNx(key, value); },
-    async del(key) { return fake.analysisClient.del?.(key); },
-    async set(key, value, options) {
-      const result = await fake.analysisClient.set(key, value, options);
-      if (!interfered && key === analysisKey) {
-        interfered = true;
-        await fake.analysisClient.set(
-          analysisKey,
-          Buffer.from(JSON.stringify({
-            aiReports: { 'model-racer': { summary: 'racer' } },
-            timestamp: Date.now(),
-            rev: 99,
-          })),
-          options,
-        );
-      }
-      return result;
-    },
+  // Known-cached hashes answer from memory; unknown ones cost one EXISTS.
+  fake.events.length = 0;
+  assert.equal(await isAnalysisCached(hash), true);
+  assert.equal(await isAnalysisCached('5555666677778888'), false);
+  assert.deepEqual(fake.events, [['exists', 'analysis:5555666677778888']]);
+});
+
+test('quota errors trip the breaker, reads fail open, and a re-probe turns the cache back on', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const fake = createFakeClients();
+  let quotaExceeded = true;
+  const flakyAnalysis = {
+    ...fake.analysisClient,
+    async get(key) {
+      if (quotaExceeded) throw new Error('ERR max requests limit exceeded. Limit: 500000, Usage: 500000');
+      return fake.analysisClient.get(key);
+    }
   };
-  initCache({ redisClient: fake.redisClient, analysisClient: racingClient });
+  const flakyRedis = {
+    ...fake.redisClient,
+    async ping() {
+      if (quotaExceeded) throw new Error('ERR max requests limit exceeded. Limit: 500000, Usage: 500000');
+      return 'PONG';
+    }
+  };
+  initCache({ redisClient: flakyRedis, analysisClient: flakyAnalysis });
 
-  assert.equal(await setCachedAnalysis(hash, {
-    aiReport: { summary: 'loser' },
-    aiModel: 'model-loser',
-  }), true);
+  assert.equal(await getCachedAnalysis('9999aaaabbbbcccc'), null);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(isCacheEnabled(), false);
+  assert.match(getRedisDisabledReason(), /max requests limit exceeded/);
 
-  const merged = await getCachedAnalysis(hash);
-  assert.equal(merged.aiReports['model-loser'].summary, 'loser');
-  assert.equal(merged.aiReports['model-racer'].summary, 'racer');
+  // Still over quota at the first re-probe (6h for quota errors): stays off.
+  t.mock.timers.tick(6 * 60 * 60 * 1000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(isCacheEnabled(), false);
+
+  quotaExceeded = false;
+  t.mock.timers.tick(6 * 60 * 60 * 1000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(isCacheEnabled(), true);
+  assert.equal(getRedisDisabledReason(), null);
+});
+
+test('a missing dictionary never blocks startup; writes fall back to plain JSON', async () => {
+  const fake = createFakeClients();
+  initCache({ redisClient: fake.redisClient, analysisClient: fake.analysisClient });
+  assert.equal(await initCacheCompression({ dictionaryPath: '/nonexistent/dictionary', writesEnabled: true }), false);
+  assert.equal(getCacheCompressionStatus().writesEnabled, false);
+
+  const hash = 'abcdabcdabcdabcd';
+  assert.equal(await setCachedAnalysis(hash, { windbgOutput: 'x'.repeat(10_000) }), true);
+  assert.equal(isZstdEnvelope(fake.values.get(`analysis:${hash}`)), false);
+  assert.equal((await getCachedAnalysis(hash)).windbgOutput.length, 10_000);
 });
 
 test('corrupt dictionary registry entry is repaired instead of crash-looping boot', async t => {

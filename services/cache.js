@@ -6,6 +6,8 @@
  * - WinDBG analysis results
  *
  * Cache keys are based on content hashes to ensure deterministic lookups.
+ * Upstash is optional: every helper fails open (a miss or a skipped write),
+ * and no runtime state lives here — correctness never depends on Redis.
  */
 
 import fs from 'node:fs';
@@ -38,79 +40,9 @@ export async function initHashing() {
 // Cache key prefixes
 const CACHE_PREFIX = {
   ANALYSIS: 'analysis',
-  RUNTIME: 'runtime',
   ZSTD_DICTIONARY: 'cachemeta:zstd:dictionary',
 };
 
-const RELEASE_RUNTIME_LEASE_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-`;
-
-const RENEW_RUNTIME_LEASE_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('EXPIRE', KEYS[1], ARGV[2])
-end
-return 0
-`;
-
-const TRANSITION_RUNTIME_JOB_WITH_LEASE_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  local current = redis.call('GET', KEYS[2])
-  if not current then
-    return 0
-  end
-  local decoded = cjson.decode(current)
-  local version = tonumber(decoded.version) or 0
-  if version ~= tonumber(ARGV[2]) then
-    return 0
-  end
-  if decoded.status == 'completed' or decoded.status == 'failed' then
-    return 0
-  end
-  redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
-  return 1
-end
-return 0
-`;
-
-const CREATE_RUNTIME_JOB_WITH_MAPPING_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  local existing = redis.call('GET', KEYS[3])
-  if existing and existing ~= ARGV[2] then
-    return -1
-  end
-  redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
-  redis.call('SET', KEYS[3], ARGV[2], 'EX', ARGV[4])
-  return 1
-end
-return 0
-`;
-
-const DELETE_RUNTIME_VALUE_IF_EQUALS_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-`;
-
-// Atomic session-quota reservation (issue #77). KEYS[1]/KEYS[2] are the
-// request/token counters for one quota window; both are checked AND incremented
-// in a single script so concurrent requests cannot all pass the old
-// read-check-write pattern. On the very first touch the counters adopt the
-// legacy tracking record (ARGV[6]/ARGV[7]) so quotas survive the migration.
-// Refund a reserved request/token bundle, bounded by a per-window refund cap
-// tracked in KEYS[3] so failures cannot be farmed to shift accounting backwards.
-// Each counter is clamped at zero (mirroring the in-memory fallback) so a refund
-// that lands on an already-expired window cannot recreate it as a negative,
-// TTL-less pair; EXPIRE below is a no-op on missing keys, so expired windows
-// stay gone.
-// Provider-level token reservations. These counters cover estimated input and
-// output independently across both the UTC day and current UTC hour. The
-// caller settles the estimate after the provider returns, so Cloud Run
-// instances cannot collectively oversubscribe a provider's free tier.
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
@@ -121,7 +53,6 @@ const CACHE_ZSTD_FLUSH_PROBE_MS_DEFAULT = 60 * 1000;
 let cacheZstdRefreshMs = CACHE_ZSTD_DICTIONARY_REFRESH_MS_DEFAULT;
 let cacheZstdFlushProbeMs = CACHE_ZSTD_FLUSH_PROBE_MS_DEFAULT;
 const CACHE_ZSTD_DICTIONARY_BYTES = 32 * 1024;
-const CACHE_MERGE_MAX_ATTEMPTS = 3;
 
 // Initialize Redis client (lazy initialization)
 let redis = null;
@@ -157,19 +88,44 @@ export function isRedisConfigEnabled({ env = process.env, configPath = REDIS_CON
 }
 
 // Runtime breaker: once Upstash fails in a way that will not clear on its own
-// (plan/quota limit, rejected credentials) or keeps failing, stop using it for
-// the rest of this process — every helper then takes its in-memory branch
-// instead of failing requests. New instances re-probe at startup.
+// (plan/quota limit, rejected credentials) or keeps failing, stop using it —
+// every cache helper then answers as a miss instead of failing requests — and
+// re-probe later. Upstash holds only disposable cache data, so switching back
+// on mid-process is safe.
 const FATAL_REDIS_ERROR = /max (?:daily |monthly )?requests? limit exceeded|bandwidth limit exceeded|WRONGPASS|NOAUTH|NOPERM|\bunauthori[sz]ed\b/i;
 const REDIS_CONSECUTIVE_FAILURE_LIMIT = 10;
+const REPROBE_AFTER_TRANSIENT_MS = 5 * 60 * 1000;
+const REPROBE_AFTER_FATAL_MS = 6 * 60 * 60 * 1000;
 let redisConsecutiveFailures = 0;
 let redisDisabledReason = null;
+let reprobeTimer = null;
+
+function scheduleReprobe(reason) {
+  clearTimeout(reprobeTimer);
+  reprobeTimer = setTimeout(reprobe, FATAL_REDIS_ERROR.test(reason) ? REPROBE_AFTER_FATAL_MS : REPROBE_AFTER_TRANSIENT_MS);
+  reprobeTimer.unref?.();
+}
+
+async function reprobe() {
+  reprobeTimer = null;
+  if (cacheEnabled || !redis || !analysisRedis) return;
+  try {
+    await redis.ping();
+    cacheEnabled = true;
+    redisDisabledReason = null;
+    redisConsecutiveFailures = 0;
+    console.log('[Cache] Redis re-enabled after a successful re-probe');
+  } catch (error) {
+    scheduleReprobe(error?.message || String(error));
+  }
+}
 
 export function disableRedis(reason) {
   if (!cacheEnabled) return;
   cacheEnabled = false;
   redisDisabledReason = String(reason);
-  console.error(`[Cache] Redis disabled for this process (${redisDisabledReason}); using in-memory state`);
+  console.error(`[Cache] Redis disabled (${redisDisabledReason}); analysis cache off until a re-probe succeeds`);
+  scheduleReprobe(redisDisabledReason);
 }
 
 export function getRedisDisabledReason() {
@@ -217,6 +173,8 @@ function withFailureTap(client) {
  * Call this at server startup
  */
 export function initCache({ redisClient, analysisClient } = {}) {
+  clearTimeout(reprobeTimer);
+  reprobeTimer = null;
   redisConsecutiveFailures = 0;
   redisDisabledReason = null;
   if (redisClient || analysisClient) {
@@ -231,7 +189,7 @@ export function initCache({ redisClient, analysisClient } = {}) {
 
   if (!isRedisConfigEnabled()) {
     redisDisabledReason = 'turned off by redis.cfg / REDIS_ENABLED';
-    console.log('[Cache] Upstash Redis turned off (redis.cfg / REDIS_ENABLED) - using in-memory state');
+    console.log('[Cache] Upstash Redis turned off (redis.cfg / REDIS_ENABLED) - analysis cache disabled');
     return false;
   }
 
@@ -268,14 +226,11 @@ export function isCacheEnabled() {
 
 /**
  * JSON-command Redis client (hash/zset/sorted-set ops) for modules that need
- * more than the runtime counter helpers. Returns null while caching is off.
+ * more than the analysis-cache helpers (the stats baseline export). Returns
+ * null while caching is off.
  */
 export function getRedisCommandClient() {
   return isCacheEnabled() ? redis : null;
-}
-
-function getRuntimeKey(key) {
-  return `${CACHE_PREFIX.RUNTIME}:${key}`;
 }
 
 function parseCachedValue(value) {
@@ -386,28 +341,26 @@ export async function initCacheCompression({
     }
 
   } catch (error) {
+    // The cache is optional: without a usable dictionary, write plain JSON
+    // rather than refusing to boot.
     analysisCodec = null;
     dictionaryManager = null;
-    if (cacheZstdWritesEnabled) {
-      throw new Error(`Compressed cache writes require a valid Zstandard dictionary: ${error.message}`, {
-        cause: error,
-      });
-    }
-    console.warn(`[Cache] Zstandard dictionary unavailable; legacy analysis cache only: ${error.message}`);
+    cacheZstdWritesEnabled = false;
+    console.warn(`[Cache] Zstandard dictionary unavailable; uncompressed analysis cache only: ${error.message}`);
     return false;
   }
 
   try {
     await registerCurrentDictionary({ force: true });
   } catch (error) {
+    // Without a registered dictionary other instances could not decode our
+    // values, so publish uncompressed until a later write re-registers it.
     if (cacheZstdWritesEnabled) {
-      analysisCodec = null;
-      dictionaryManager = null;
-      throw new Error(`Compressed cache writes require a valid dictionary registry: ${error.message}`, {
-        cause: error,
-      });
+      cacheZstdWritesEnabled = false;
+      console.warn(`[Cache] Zstandard dictionary registry unavailable; writing uncompressed: ${error.message}`);
+    } else {
+      console.warn(`[Cache] Zstandard dictionary registry unavailable in reader-only mode: ${error.message}`);
     }
-    console.warn(`[Cache] Zstandard dictionary registry unavailable in reader-only mode: ${error.message}`);
   }
 
   console.log(
@@ -433,16 +386,6 @@ async function decodeAnalysisValue(value) {
   return parseCachedValue(value);
 }
 
-function isDisposableAnalysisDecodeError(error) {
-  return error instanceof SyntaxError || [
-    'INVALID_ANALYSIS_CACHE_VALUE',
-    'ANALYSIS_CACHE_VALUE_TOO_LARGE',
-    'INVALID_ZSTD_ENVELOPE',
-    'UNSUPPORTED_ZSTD_ENVELOPE_VERSION',
-    'ZSTD_DECOMPRESSION_FAILED'
-  ].includes(error?.code);
-}
-
 async function encodeAnalysisValue(value) {
   if (analysisCodec) {
     return analysisCodec.encode(value, { compress: cacheZstdWritesEnabled });
@@ -451,209 +394,6 @@ async function encodeAnalysisValue(value) {
     throw new Error('Compressed cache writes are enabled without a loaded dictionary');
   }
   return Buffer.from(JSON.stringify(value), 'utf8');
-}
-
-/**
- * Store short-lived runtime state that must survive Cloud Run instance routing
- * changes, such as verified sessions and per-session upload ownership.
- */
-export async function setRuntimeValue(key, value, ttlSeconds) {
-  if (!isCacheEnabled()) return false;
-
-  try {
-    await redis.set(getRuntimeKey(key), JSON.stringify(value), { ex: ttlSeconds });
-    return true;
-  } catch (error) {
-    console.error('[Cache] Error setting runtime value:', error.message);
-    return false;
-  }
-}
-
-export async function getRuntimeValue(key) {
-  if (!isCacheEnabled()) return null;
-
-  try {
-    const value = await redis.get(getRuntimeKey(key));
-    if (!value) return null;
-    return typeof value === 'string' ? JSON.parse(value) : value;
-  } catch (error) {
-    console.error('[Cache] Error getting runtime value:', error.message);
-    return null;
-  }
-}
-
-/**
- * Read runtime state without collapsing a Redis outage into a cache miss.
- * Durable job/status paths use this variant so callers can return a retryable
- * service error instead of incorrectly reporting that an accepted job vanished.
- */
-export async function getRuntimeValueStrict(key) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-
-  const value = await redis.get(getRuntimeKey(key));
-  if (!value) return null;
-  return typeof value === 'string' ? JSON.parse(value) : value;
-}
-
-function decodeRuntimeString(value) {
-  if (typeof value !== 'string') return value;
-  // @upstash/redis automatically deserializes JSON by default, so a Redis
-  // value stored as `"uid"` may already arrive as the bare `uid` string.
-  return value.startsWith('"') ? JSON.parse(value) : value;
-}
-
-export async function getRuntimeStringValue(key) {
-  if (!isCacheEnabled()) return null;
-
-  try {
-    const value = await redis.get(getRuntimeKey(key));
-    if (value === null || value === undefined) return null;
-    return decodeRuntimeString(value);
-  } catch (error) {
-    console.error('[Cache] Error getting runtime string value:', error.message);
-    return null;
-  }
-}
-
-export async function getRuntimeStringValueStrict(key) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-
-  const value = await redis.get(getRuntimeKey(key));
-  if (value === null || value === undefined) return null;
-  return decodeRuntimeString(value);
-}
-
-/**
- * Acquire a short Redis lease. The caller supplies an opaque random token and
- * must use the token-checked renew/release helpers below.
- */
-export async function tryAcquireRuntimeLease(key, token, ttlSeconds) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-  if (!token || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    throw new TypeError('Runtime lease requires a token and positive TTL');
-  }
-
-  const result = await redis.set(getRuntimeKey(key), token, {
-    nx: true,
-    ex: Math.ceil(ttlSeconds)
-  });
-  return result === 'OK';
-}
-
-export async function renewRuntimeLease(key, token, ttlSeconds) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-  if (!token || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    throw new TypeError('Runtime lease requires a token and positive TTL');
-  }
-
-  const renewed = await redis.eval(
-    RENEW_RUNTIME_LEASE_SCRIPT,
-    [getRuntimeKey(key)],
-    [token, String(Math.ceil(ttlSeconds))]
-  );
-  return Number(renewed) === 1;
-}
-
-export async function releaseRuntimeLease(key, token) {
-  if (!isCacheEnabled()) return false;
-  if (!token) return false;
-
-  try {
-    const released = await redis.eval(
-      RELEASE_RUNTIME_LEASE_SCRIPT,
-      [getRuntimeKey(key)],
-      [token]
-    );
-    return Number(released) === 1;
-  } catch (error) {
-    console.error('[Cache] Error releasing runtime lease:', error.message);
-    return false;
-  }
-}
-
-/**
- * Atomically transition a non-terminal versioned job only while the caller
- * still owns its lease. This closes the expiry race between a separate lease
- * check and a Redis SET and rejects stale/terminal writers.
- */
-export async function transitionRuntimeJobWithLease(key, leaseKey, token, expectedVersion, value, ttlSeconds) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-  if (!token || !Number.isInteger(expectedVersion) || expectedVersion < 0 || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    throw new TypeError('Leased runtime write requires a token, version, and positive TTL');
-  }
-
-  const stored = await redis.eval(
-    TRANSITION_RUNTIME_JOB_WITH_LEASE_SCRIPT,
-    [getRuntimeKey(leaseKey), getRuntimeKey(key)],
-    [token, String(expectedVersion), JSON.stringify(value), String(Math.ceil(ttlSeconds))]
-  );
-  return Number(stored) === 1;
-}
-
-/**
- * Atomically publish an accepted job and its file-hash -> UID reuse mapping
- * while the caller owns the per-file submission lease.
- */
-export async function createRuntimeJobWithMapping(
-  key,
-  mappingKey,
-  leaseKey,
-  token,
-  mappingValue,
-  value,
-  ttlSeconds
-) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis runtime store is not configured');
-  }
-  if (!token || mappingValue === undefined || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    throw new TypeError('Mapped runtime job requires a token, mapping value, and positive TTL');
-  }
-
-  const stored = await redis.eval(
-    CREATE_RUNTIME_JOB_WITH_MAPPING_SCRIPT,
-    [getRuntimeKey(leaseKey), getRuntimeKey(key), getRuntimeKey(mappingKey)],
-    [
-      token,
-      JSON.stringify(mappingValue),
-      JSON.stringify(value),
-      String(Math.ceil(ttlSeconds))
-    ]
-  );
-  return Number(stored) === 1;
-}
-
-/** Delete a JSON runtime value only if it still equals the expected value. */
-export async function deleteRuntimeValueIfEquals(key, expectedValue) {
-  if (!isCacheEnabled()) return false;
-  const deleted = await redis.eval(
-    DELETE_RUNTIME_VALUE_IF_EQUALS_SCRIPT,
-    [getRuntimeKey(key)],
-    [JSON.stringify(expectedValue)]
-  );
-  return Number(deleted) === 1;
-}
-
-export async function deleteRuntimeValue(key) {
-  if (!isCacheEnabled()) return false;
-
-  try {
-    await redis.del(getRuntimeKey(key));
-    return true;
-  } catch (error) {
-    console.error('[Cache] Error deleting runtime value:', error.message);
-    return false;
-  }
 }
 
 export async function checkCacheConnection() {
@@ -665,35 +405,6 @@ export async function checkCacheConnection() {
   } catch (error) {
     console.error('[Cache] Redis health check failed:', error.message);
     return false;
-  }
-}
-
-export async function incrementRuntimeCounter(key, ttlSeconds, delta = 1) {
-  if (!isCacheEnabled()) return null;
-
-  try {
-    const runtimeKey = getRuntimeKey(key);
-    const count = Number(await redis.incrby(runtimeKey, delta));
-    if (!Number.isFinite(count)) {
-      throw new Error('Redis INCR returned a non-numeric counter');
-    }
-    if (count === delta) {
-      await redis.expire(runtimeKey, ttlSeconds);
-    }
-
-    let ttl = Number(await redis.ttl(runtimeKey));
-    if (!Number.isFinite(ttl) || ttl < 0) {
-      await redis.expire(runtimeKey, ttlSeconds);
-      ttl = ttlSeconds;
-    }
-
-    return {
-      count,
-      resetTime: new Date(Date.now() + ttl * 1000)
-    };
-  } catch (error) {
-    console.error('[Cache] Error incrementing runtime counter:', error.message);
-    return null;
   }
 }
 
@@ -777,39 +488,6 @@ export async function getCachedAnalysis(fileHash) {
 }
 
 /**
- * Strict analysis-cache read for resumable workflows. Dependency/configuration
- * failures propagate; values proven corrupt are deleted and become real misses.
- */
-export async function getCachedAnalysisStrict(fileHash) {
-  if (!isCacheEnabled()) {
-    throw new Error('Redis analysis cache is not configured');
-  }
-
-  const key = getAnalysisKey(fileHash);
-  const cached = await analysisRedis.get(key);
-  if (!cached) return null;
-  if (isZstdEnvelope(cached) && !analysisCodec) {
-    const error = new Error('Zstandard analysis cache value cannot be decoded by this revision');
-    error.code = 'ANALYSIS_CACHE_DECODER_UNAVAILABLE';
-    throw error;
-  }
-  try {
-    return await decodeAnalysisValue(cached);
-  } catch (error) {
-    // A fetched value that is provably malformed is disposable cache state.
-    // Remove it so a valid dump can be recomputed instead of deterministically
-    // failing every POST. Dictionary/config/transport failures are deliberately
-    // not classified here and continue to propagate to the caller.
-    if (!isDisposableAnalysisDecodeError(error)) throw error;
-    console.warn(
-      `[Cache] Removing corrupt analysis value for hash ${fileHash.substring(0, 12)}...: ${error.message}`
-    );
-    await analysisRedis.del(key);
-    return null;
-  }
-}
-
-/**
  * Merge and cache complete analysis (WinDBG + AI report)
  * @param {string} fileHash - The file or prompt content hash
  * @param {object} data - { windbgOutput, analysisSignalText, structured, aiReport, aiModel }
@@ -819,99 +497,84 @@ export async function setCachedAnalysis(fileHash, data) {
 
   try {
     const key = getAnalysisKey(fileHash);
-
-    for (let attempt = 1; attempt <= CACHE_MERGE_MAX_ATTEMPTS; attempt += 1) {
-      const existingValue = await analysisRedis.get(key);
-      let existing = {};
-      let previousRevision = 0;
-      if (existingValue) {
-        try {
-          const decoded = await decodeAnalysisValue(existingValue);
-          if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
-            throw new Error('decoded cache value is not an object');
-          }
-          existing = decoded;
-          previousRevision = Number.isFinite(Number(decoded.rev)) ? Number(decoded.rev) : 0;
-        } catch (error) {
-          // Cache values are disposable. A corrupt or unreadable entry should
-          // not permanently prevent a freshly computed result from replacing it.
-          console.warn(
-            `[Cache] Replacing unreadable analysis value for hash ${fileHash.substring(0, 12)}...: ${error.message}`
-          );
-        }
-      }
-      const modelReports = data.aiReport !== undefined && data.aiModel
-        ? {
-            ...(existing.aiReports && typeof existing.aiReports === 'object' ? existing.aiReports : {}),
-            [data.aiModel]: data.aiReport
-          }
-        : existing.aiReports;
-      const revision = previousRevision + 1;
-      const cacheData = {
-        ...existing,
-        ...(data.windbgOutput !== undefined ? { windbgOutput: data.windbgOutput } : {}),
-        ...(data.analysisSignalText !== undefined ? { analysisSignalText: data.analysisSignalText } : {}),
-        ...(data.structured !== undefined ? { structured: data.structured } : {}),
-        ...(data.aiReport !== undefined ? { aiReport: data.aiReport } : {}),
-        ...(data.aiModel !== undefined ? { aiModel: data.aiModel } : {}),
-        ...(modelReports !== undefined ? { aiReports: modelReports } : {}),
-        timestamp: Date.now(),
-        rev: revision
-      };
-
-      const storedValue = await encodeAnalysisValue(cacheData);
-      if (isZstdEnvelope(storedValue)) {
-        // Ensure the dictionary survives independently before publishing an
-        // entry that references it. `ensurePresent` detects a whole-DB flush.
-        await registerCurrentDictionary({ ensurePresent: true });
-      }
-      await analysisRedis.set(key, storedValue, { ex: CACHE_TTL_SECONDS });
-
-      // Confirm this revision survived. A concurrent publisher that wrote
-      // between our GET and SET bumps rev past ours, so its merge wins and we
-      // redo ours over its value instead of silently reverting it.
-      let confirmedRevision = null;
+    // One read to merge per-model reports into the existing entry, one write.
+    // Concurrent writers can race (last write wins); the loser's report is
+    // simply recomputed on a later miss — the cache is disposable.
+    const existingValue = await analysisRedis.get(key);
+    let existing = {};
+    if (existingValue) {
       try {
-        const latestValue = await analysisRedis.get(key);
-        const latest = latestValue ? await decodeAnalysisValue(latestValue) : null;
-        confirmedRevision = latest && Number.isFinite(Number(latest.rev)) ? Number(latest.rev) : null;
-      } catch {
-        confirmedRevision = null;
-      }
-      if (confirmedRevision === revision) {
-        const storage = isZstdEnvelope(storedValue) ? 'zstd' : 'json';
-        console.log(
-          `[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 7d, storage: ${storage}, bytes: ${storedValue.length})`
+        const decoded = await decodeAnalysisValue(existingValue);
+        if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+          throw new Error('decoded cache value is not an object');
+        }
+        existing = decoded;
+      } catch (error) {
+        // A corrupt or unreadable entry must not block a fresh result from replacing it.
+        console.warn(
+          `[Cache] Replacing unreadable analysis value for hash ${fileHash.substring(0, 12)}...: ${error.message}`
         );
-        return true;
       }
-      console.warn(
-        `[Cache] Lost analysis merge race for hash ${fileHash.substring(0, 12)}..., retrying (${attempt}/${CACHE_MERGE_MAX_ATTEMPTS})`
-      );
     }
+    const modelReports = data.aiReport !== undefined && data.aiModel
+      ? {
+          ...(existing.aiReports && typeof existing.aiReports === 'object' ? existing.aiReports : {}),
+          [data.aiModel]: data.aiReport
+        }
+      : existing.aiReports;
+    const cacheData = {
+      ...existing,
+      ...(data.windbgOutput !== undefined ? { windbgOutput: data.windbgOutput } : {}),
+      ...(data.analysisSignalText !== undefined ? { analysisSignalText: data.analysisSignalText } : {}),
+      ...(data.structured !== undefined ? { structured: data.structured } : {}),
+      ...(data.aiReport !== undefined ? { aiReport: data.aiReport } : {}),
+      ...(data.aiModel !== undefined ? { aiModel: data.aiModel } : {}),
+      ...(modelReports !== undefined ? { aiReports: modelReports } : {}),
+      timestamp: Date.now()
+    };
 
-    console.error(
-      `[Cache] Abandoning analysis merge for hash ${fileHash.substring(0, 12)}... after ${CACHE_MERGE_MAX_ATTEMPTS} attempts`
+    const storedValue = await encodeAnalysisValue(cacheData);
+    if (isZstdEnvelope(storedValue)) {
+      // Ensure the dictionary survives independently before publishing an
+      // entry that references it. `ensurePresent` detects a whole-DB flush.
+      await registerCurrentDictionary({ ensurePresent: true });
+    }
+    await analysisRedis.set(key, storedValue, { ex: CACHE_TTL_SECONDS });
+    knownCached.set(fileHash, Date.now());
+    console.log(
+      `[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 7d, storage: ${isZstdEnvelope(storedValue) ? 'zstd' : 'json'}, bytes: ${storedValue.length})`
     );
-    return false;
+    return true;
   } catch (error) {
     console.error('[Cache] Error caching analysis:', error.message);
     return false;
   }
 }
 
+// Hashes known to be cached (fileHash -> when confirmed), so repeated
+// pre-upload checks cost nothing. Entries are written with usable data only,
+// so key existence stands in for "usable" without downloading the value.
+const KNOWN_CACHED_TTL_MS = 10 * 60 * 1000;
+const KNOWN_CACHED_MAX = 5000;
+const knownCached = new Map();
+
 /**
- * Check if analysis is cached with usable data
+ * Check whether an analysis is cached (EXISTS; never downloads the value).
  * @param {string} fileHash - The file content hash
  * @returns {Promise<boolean>}
  */
 export async function isAnalysisCached(fileHash) {
   if (!isCacheEnabled()) return false;
+  const confirmedAt = knownCached.get(fileHash);
+  if (confirmedAt && Date.now() - confirmedAt < KNOWN_CACHED_TTL_MS) return true;
 
   try {
-    // Fetch and verify usable data exists (not just key existence)
-    const cached = await getCachedAnalysis(fileHash);
-    return !!(cached && (cached.windbgOutput || cached.aiReport));
+    const exists = Number(await redis.exists(getAnalysisKey(fileHash))) > 0;
+    if (exists) {
+      if (knownCached.size >= KNOWN_CACHED_MAX) knownCached.delete(knownCached.keys().next().value);
+      knownCached.set(fileHash, Date.now());
+    }
+    return exists;
   } catch (error) {
     console.error('[Cache] Error checking analysis cache:', error.message);
     return false;

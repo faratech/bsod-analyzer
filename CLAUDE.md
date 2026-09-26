@@ -66,8 +66,9 @@ npm run optimize-css     # Apply CSS purging
   optional (`redis.cfg`/`REDIS_ENABLED`, plus a breaker that drops it on
   quota/auth errors or repeated failures). Session and provider quotas live in
   `server/quotaStore.js` (per-instance; provider budgets split by
-  `PROVIDER_QUOTA_SHARDS`). `services/externalAnalyzeJobs.js` owns the
-  upload→lease→job state machine for the external API.
+  `PROVIDER_QUOTA_SHARDS`). The external API (`/api/analyze`) is stateless:
+  `server/externalJobs.js` issues signed job ids carrying the upstream WinDBG
+  job id, and any instance resolves a status poll by asking WinDBG directly.
 - **Dump parsers** (`utils/`): `dumpParser.ts` orchestrates format dispatch and
   imports `minidumpStreams.ts`, `dumpValidator.ts`,
   `kernelDumpModuleParser.ts`. The import direction never reverses —
@@ -170,11 +171,10 @@ prerendered markup — never another route's — or hydration mismatches.
 | `SESSION_SECRET` | Signs session cookies and WinDBG file handles (HKDF key per purpose) | Production |
 | `SESSION_SECRET_PREVIOUS` | Old secret still accepted for verification during rotation (never signs) | No |
 | `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for the optional analysis cache | No (cache off without it) |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
 | `CACHE_ZSTD_DICTIONARY_PATH` | Binary cache dictionary path (`/secrets/redis-zstd/dictionary` in Cloud Run) | Production |
 | `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
-| `REQUIRE_REDIS_RUNTIME` | Fail-closed job/quota paths while Redis is live (never blocks startup) | Defaults `true` in production |
 | `REDIS_ENABLED` | Overrides the committed `redis.cfg` switch without a build | No |
 | `PROVIDER_QUOTA_SHARDS` | Per-instance share divisor for AI free-tier budgets | Defaults `2` |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
@@ -187,10 +187,10 @@ prerendered markup — never another route's — or hydration mismatches.
 | `OPENROUTER_API_KEY` | OpenRouter access (AI failover + stats narrative) | Optional secret `openrouter-api-key` |
 
 For local development, set in `.env.local` or export directly. To run with
-`NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` and
-`REQUIRE_REDIS_RUNTIME=false` unless local Redis/Upstash credentials are configured.
-Otherwise requests may 403 at ingress checks or startup may fail because the
-runtime store is required.
+`NODE_ENV=production` locally, set `CLOUDFLARE_ONLY_INGRESS=false` (requests
+otherwise 403 at the ingress check) and a `SESSION_SECRET`. Redis is optional;
+`/api/stats` needs the Cloud Run metadata server (BigQuery) and answers 503
+locally.
 
 ## Deployment
 
@@ -236,10 +236,10 @@ CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
 - **CSP hashes**: Run `node scripts/hash-inline-scripts.js`
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
-- **Runtime state**: Correctness must never depend on Upstash (2026-09 outage: the free-tier quota ran out and Redis-required startup took the site down). Anything a follow-up request must trust travels with the client, signed: the session cookie, and the WinDBG file handle (`data.handle` from upload, carrying file ownership + the upstream job id; the client sends it back as `h`/`handles`/`fileHandle`). Rate limits, Turnstile replay and SSO nonces are per-instance memory — Cloud Run session affinity keeps a browser on one instance, and Cloudflare siteverify rejects redeemed Turnstile tokens across instances. Upstash is being narrowed to the optional analysis cache; its on/off switch is `redis.cfg` (`REDIS_ENABLED` overrides)
-- **Cache compression**: Compress only `analysis:*` values. Keep raw binary transport, legacy JSON reads, `runtime:*` serialization, counters, and the seven-day TTL intact
+- **Runtime state**: Correctness must never depend on Upstash (2026-09 outage: the free-tier quota ran out and Redis-required startup took the site down). Anything a follow-up request must trust travels with the client, signed: the session cookie, and the WinDBG file handle (`data.handle` from upload, carrying file ownership + the upstream job id; the client sends it back as `h`/`handles`/`fileHandle`). Rate limits, Turnstile replay and SSO nonces are per-instance memory — Cloud Run session affinity keeps a browser on one instance, and Cloudflare siteverify rejects redeemed Turnstile tokens across instances. Upstash holds only the optional analysis cache (`analysis:*` + `cachemeta:zstd:dictionary:*`); every read fails open, a breaker drops it on quota/auth errors or repeated failures and re-probes later, and its on/off switch is `redis.cfg` (`REDIS_ENABLED` overrides). Crash statistics are logged `stats.analysis` events aggregated in BigQuery (`server/statsBigQuery.js`), not Redis
+- **Cache compression**: Compress only `analysis:*` values. Keep raw binary transport, legacy JSON reads, and the seven-day TTL intact
 - **Dictionary secrets**: Pin a numeric `redis-zstd-dictionary` version at `/secrets/redis-zstd/dictionary`; never use `latest`, commit the binary, or log its contents
-- **Redis flushes**: Never automate a whole-database flush. It is user-owned and also deletes sessions, ownership, jobs, quotas, rate-limit/token counters, and in-flight state
+- **Redis flushes**: Never automate a whole-database flush. It is user-owned; it only costs cache misses now, but also drops the pre-cutover `stats:*` counters that `scripts/export-stats-baseline.mjs` exports
 
 ### Session Errors
 
