@@ -140,7 +140,7 @@ function SymbolConsent() {
 ## Data Flow
 
 ```mermaid
-graph LR
+graph TD
     A[Dump Analysis] --> B[Extract Symbols]
     B --> C[Browser Storage]
     C --> D{User Consent?}
@@ -148,7 +148,6 @@ graph LR
     D -->|No| F[Keep Local]
     E --> G[Forward to Storage]
     G --> H[Firestore/GCS/BigQuery]
-    
     I[CDN Symbols] --> J[Cloud Run Memory]
     J --> K[Symbol Resolution]
 ```
