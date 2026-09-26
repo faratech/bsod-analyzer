@@ -45,7 +45,7 @@ function resultObject(result) {
 
 // One corpus row. `result` is the complete job result object; the extracted
 // columns are conveniences for querying and clustering.
-export function buildCorpusRow(job, { ingestSource = 'live', fileHash, fileSizeBytes, now = Date.now() } = {}) {
+export function buildCorpusRow(job, { ingestSource = 'live', fileHash, fileSizeBytes, dataUseTerms, now = Date.now() } = {}) {
   const result = resultObject(job?.result);
   const signal = result?.ai_signal && typeof result.ai_signal === 'object' ? result.ai_signal : {};
   const bugcheck = signal.bugcheck || {};
@@ -81,6 +81,7 @@ export function buildCorpusRow(job, { ingestSource = 'live', fileHash, fileSizeB
     os_version: text(target.os_version),
     arch: text(target.arch),
     raw_output_pruned: result?.raw_output_pruned === true,
+    data_use_terms: text(dataUseTerms),
     result
   };
 }
@@ -125,7 +126,8 @@ export function buildAiReportRow(entry, { now = Date.now(), reportId } = {}) {
     report: jsonValue(entry.report),
     final_report: jsonValue(entry.finalReport),
     usage: jsonValue(entry.usage),
-    prompt_omitted_for_size: false
+    prompt_omitted_for_size: false,
+    data_use_terms: text(entry.dataUseTerms)
   };
 }
 

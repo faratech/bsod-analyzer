@@ -832,11 +832,10 @@ const Documentation: React.FC = () => {
                                 <div className="faq-item">
                                     <h3>Is my dump file data kept private?</h3>
                                     <p>
-                                        Yes. Your dump file is processed by our secure backend. The primary path uses
-                                        the WinDBG server; fallback analysis uses local or sampled evidence. Files are
-                                        not retained after processing. Analysis results are cached temporarily to speed
-                                        up repeat queries. All communications are encrypted via TLS, and no personal
-                                        information is collected.
+                                        We never publish your dump or its contents. Dumps are analyzed by our WinDBG
+                                        server, and we keep analyses to improve our AI and to publish anonymous, aggregate
+                                        statistics. All communications are encrypted via TLS. See our{' '}
+                                        <Link to="/privacy">privacy &amp; data use notice</Link> for the details.
                                     </p>
                                 </div>
                                 

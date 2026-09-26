@@ -8,6 +8,7 @@
  */
 
 import xxhash from 'xxhash-wasm';
+import { dataUseHeaders } from '../utils/dataUse';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { formatHash64 } from '../shared/hash.js';
 
@@ -286,6 +287,9 @@ export async function uploadToWinDBG(
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/windbg/upload');
         xhr.withCredentials = true;
+        for (const [name, value] of Object.entries(dataUseHeaders())) {
+            xhr.setRequestHeader(name, value);
+        }
         xhr.timeout = UPLOAD_TIMEOUT_MS;
 
         xhr.upload.onprogress = (e) => {

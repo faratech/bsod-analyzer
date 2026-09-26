@@ -8,9 +8,11 @@ import { ALLOWED_EXTENSIONS } from '../shared/ingestPolicy.js';
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
   currentFileCount?: number;
+  /** When true (data-use terms unchecked) no files are accepted or uploaded. */
+  disabled?: boolean;
 }
 
-const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentFileCount = 0 }) => {
+const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentFileCount = 0, disabled = false }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isVerified, setIsVerified] = useState(false);
@@ -91,6 +93,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
   }, []);
 
   const processFiles = useCallback(async (files: File[]) => {
+    if (disabled) return;
     setValidationErrors([]);
     
     const { validFiles, errors } = await validateFiles(files, currentFileCount);
@@ -104,7 +107,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
     if (validFiles.length > 0) {
       onFilesAdded(validFiles);
     }
-  }, [onFilesAdded, currentFileCount]);
+  }, [onFilesAdded, currentFileCount, disabled]);
 
   const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -240,11 +243,14 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
-      className={`upload-area ${isDragging ? 'drag-over' : ''}`}
+      className={`upload-area ${isDragging && !disabled ? 'drag-over' : ''}`}
+      data-disabled={disabled ? 'true' : undefined}
+      aria-disabled={disabled || undefined}
     >
       <input
         type="file"
         id="file-upload"
+        disabled={disabled}
         multiple
         accept={ALLOWED_EXTENSIONS.join(',')}
         style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', borderWidth: 0 }}

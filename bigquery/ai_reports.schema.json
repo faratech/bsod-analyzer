@@ -85,5 +85,10 @@
   {
     "name": "prompt_omitted_for_size",
     "type": "BOOLEAN"
+  },
+  {
+    "name": "data_use_terms",
+    "type": "STRING",
+    "description": "Data-use terms version the submission was made under (web: YYYY-MM; API: api-YYYY-MM); NULL = collected before terms existed"
   }
 ]
