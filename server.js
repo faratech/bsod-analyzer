@@ -3636,7 +3636,8 @@ const KNOWN_SPA_ROUTES = new Set([
   '/documentation',
   '/donate',
   '/stats',
-  '/stats/embed'
+  '/stats/embed',
+  '/privacy'
 ]);
 
 function getSpaStatus(pathname) {
