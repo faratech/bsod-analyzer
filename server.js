@@ -69,6 +69,11 @@ import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
 import { createFileHandleCodec, createSessionCodec } from './server/sessionToken.js';
+import {
+  createProviderQuotaStore,
+  createSessionQuotaStore,
+  settleProviderTokenReservation
+} from './server/quotaStore.js';
 import { createArchiveDumpExtractor } from './server/archiveExtract.js';
 import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
@@ -120,13 +125,7 @@ import {
   getRedisDisabledReason,
   getRedisCommandClient,
   checkCacheConnection,
-  incrementRuntimeCounter,
-  reserveSessionQuota,
-  commitSessionTokens,
-  refundSessionQuota,
-  reserveProviderTokenQuota,
-  adjustProviderTokenQuota,
-  settleProviderTokenReservation
+  incrementRuntimeCounter
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -225,8 +224,8 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v
 const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
 const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
 // Experiential Cloud is used only for the BSOD analyzer's OpenAI-compatible
-// Luna leg. It is enabled only when Redis accounting and the Secret Manager
-// key are both present; otherwise the existing OpenAI leg remains authoritative.
+// Luna leg. It is enabled when the Secret Manager key is present; the token
+// budget is tracked per instance (server/quotaStore.js).
 const EXPERIENTIAL_API_KEY = process.env.EXPLABS_API_KEY;
 const EXPERIENTIAL_BASE_URL = process.env.EXPLABS_BASE_URL || 'https://api.experientiallabs.ai/v1';
 const EXPERIENTIAL_MODEL = process.env.EXPLABS_MODEL || 'gpt-5.6-luna';
@@ -238,6 +237,10 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAIL
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
+// Free-tier budgets are split into this many per-instance shares so several
+// Cloud Run instances cannot overshoot a provider's free tier by the instance
+// count; each provider's own quota errors still latch its route off.
+const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, 2);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
 // has ever sent, so a lower setting is opt-in and instantly revertible via env
@@ -432,8 +435,8 @@ const fileHandleCodec = createFileHandleCodec({
   ttlMs: SESSION_MAX_AGE_MS
 });
 
-// Track API requests per session (prevent rapid abuse)
-const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
+// Per-session AI request/token quotas (server/quotaStore.js)
+const sessionQuota = createSessionQuotaStore();
 const REQUEST_LIMIT_PER_SESSION = 50; // Legacy flat cap; superseded by TIER_LIMITS below.
 const TOKEN_LIMIT_PER_SESSION = 500000;
 
@@ -759,26 +762,6 @@ async function loadExternalWinDbgAnalysis(fileHash) {
   return externalJobAnalysisCache.get(fileHash) || null;
 }
 
-function runtimeSessionTrackingKey(sessionId) {
-  return `session-tracking:${sessionId}`;
-}
-
-async function loadSessionTracking(sessionId) {
-  if (isCacheEnabled()) {
-    return await getRuntimeValue(runtimeSessionTrackingKey(sessionId));
-  }
-  return sessionRequestTracking.get(sessionId);
-}
-
-// Legacy JSON tracking records are read once for migration into the atomic
-// quota counters, then deleted (issue #77).
-async function deleteSessionTracking(sessionId) {
-  if (isCacheEnabled()) {
-    await deleteRuntimeValue(runtimeSessionTrackingKey(sessionId));
-  }
-  sessionRequestTracking.delete(sessionId);
-}
-
 // File ownership ("this session uploaded bytes hashing to X") gates cached
 // analysis reads (issue #40). The proof is the signed file handle the upload
 // returned; the per-instance map only serves clients that predate handles.
@@ -848,6 +831,8 @@ setInterval(() => {
   for (const [jti, expiresAt] of usedSsoNonces.entries()) {
     if (expiresAt <= now) usedSsoNonces.delete(jti);
   }
+  sessionQuota.prune(now);
+  providerQuota.prune(now);
   for (const [uid, job] of externalJobs.entries()) {
     if (now - job.timestamp > JOB_EXPIRY_SECONDS * 1000) {
       externalJobs.delete(uid);
@@ -948,24 +933,30 @@ function normalizeAIResponse(response, cacheModel) {
 // to the response shape already consumed by the rest of the application.
 // ---------------------------------------------------------------------------
 // OpenAI complimentary-token (free tier) routing helpers.
-// Three layers of quota detection: (1) per-response service_tier, (2) a Redis
-// UTC-day token tally, (3) an optional org-wide Usage API cross-check.
+// Three layers of quota detection: (1) per-response service_tier, (2) the
+// org-wide Usage API, (3) this instance's UTC-day token tally when the Usage
+// API is unavailable (checked against its share of the daily budget).
 // ---------------------------------------------------------------------------
+
+const providerQuota = createProviderQuotaStore({ shards: PROVIDER_QUOTA_SHARDS });
+const openAILocalTally = { day: '', used: 0 };
 
 function openAIFreeDateKey(now = new Date()) {
   return now.toISOString().slice(0, 10).replace(/-/g, '');
 }
 
-function secondsUntilUtcMidnight(now = new Date()) {
-  const next = Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0
-  );
-  return Math.max(60, Math.ceil((next - now.getTime()) / 1000));
+function recordOpenAIFreeTokens(tokens) {
+  const day = openAIFreeDateKey();
+  if (openAILocalTally.day !== day) {
+    openAILocalTally.day = day;
+    openAILocalTally.used = 0;
+  }
+  openAILocalTally.used += tokens;
 }
 
-async function markOpenAIExhausted(reason) {
-  const key = `openai-exhausted:${openAIFreeDateKey()}`;
-  await setRuntimeValue(key, { reason, timestamp: Date.now() }, secondsUntilUtcMidnight());
+// Latch the free route off until UTC midnight.
+function markOpenAIExhausted() {
+  providerQuota.markExhausted('openai-free', 'day');
 }
 
 let openaiUsageApi = { attemptedAt: 0, used: null };
@@ -1016,62 +1007,30 @@ async function fetchOpenAIIncentiveTokensUsed() {
 // Returns true when the free-tier path should be attempted for a request with
 // the given projected token usage.
 async function openAIFreeGate(estimatedTokens) {
-  if (!OPENAI_API_KEY || !isCacheEnabled()) return false;
-  const dateKey = openAIFreeDateKey();
-  if (await getRuntimeValue(`openai-exhausted:${dateKey}`)) return false;
-
+  if (!OPENAI_API_KEY || providerQuota.isExhausted('openai-free')) return false;
   const threshold = OPENAI_FREE_DAILY_TOKEN_CAP - OPENAI_FREE_SAFETY_BUFFER;
-  let used = await fetchOpenAIIncentiveTokensUsed();
-  if (used === null) {
-    used = Number(await getRuntimeValue(`openai-free:${dateKey}`)) || 0;
-  }
-  return used + estimatedTokens <= threshold;
+  const orgUsed = await fetchOpenAIIncentiveTokensUsed();
+  if (orgUsed !== null) return orgUsed + estimatedTokens <= threshold;
+  const localUsed = openAILocalTally.day === openAIFreeDateKey() ? openAILocalTally.used : 0;
+  return localUsed + estimatedTokens <= threshold / PROVIDER_QUOTA_SHARDS;
 }
 
-function experientialWindowKey(now = new Date()) {
-  const date = now.toISOString();
-  return {
-    day: date.slice(0, 10).replaceAll('-', ''),
-    hour: `${date.slice(0, 10).replaceAll('-', '')}${date.slice(11, 13)}`
-  };
+// Latch the Experiential route off until the end of the UTC hour or day.
+function markExperientialExhausted(scope = 'hour') {
+  providerQuota.markExhausted('experiential-luna', scope);
 }
 
-function secondsUntilExperientialWindow(window, now = new Date()) {
-  const current = now.getTime();
-  const next = window === 'hour'
-    ? Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1)
-    : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
-  return Math.max(60, Math.ceil((next - current) / 1000));
-}
-
-async function markExperientialExhausted(reason, scope = 'hour') {
-  const now = new Date();
-  const key = experientialWindowKey(now);
-  await setRuntimeValue(
-    `experiential-exhausted:${scope}:${scope === 'hour' ? key.hour : key.day}`,
-    { reason, timestamp: Date.now() },
-    secondsUntilExperientialWindow(scope, now)
-  );
-}
-
-async function reserveExperientialQuota(inputTokens, outputTokens) {
-  if (!EXPERIENTIAL_API_KEY || !isCacheEnabled() || EXPERIENTIAL_MODEL !== 'gpt-5.6-luna') {
+function reserveExperientialQuota(inputTokens, outputTokens) {
+  if (!EXPERIENTIAL_API_KEY || EXPERIENTIAL_MODEL !== 'gpt-5.6-luna') {
     return null;
   }
-  const now = new Date();
-  const window = experientialWindowKey(now);
-  if (await getRuntimeValue(`experiential-exhausted:day:${window.day}`)
-      || await getRuntimeValue(`experiential-exhausted:hour:${window.hour}`)) {
-    return null;
-  }
-  return reserveProviderTokenQuota('experiential-luna', {
+  return providerQuota.reserve('experiential-luna', {
     inputCost: inputTokens,
     outputCost: outputTokens,
     dailyInputLimit: EXPERIENTIAL_DAILY_INPUT_LIMIT - EXPERIENTIAL_DAILY_INPUT_BUFFER,
     dailyOutputLimit: EXPERIENTIAL_DAILY_OUTPUT_LIMIT - EXPERIENTIAL_DAILY_OUTPUT_BUFFER,
     hourlyInputLimit: EXPERIENTIAL_HOURLY_INPUT_LIMIT - EXPERIENTIAL_HOURLY_INPUT_BUFFER,
-    hourlyOutputLimit: EXPERIENTIAL_HOURLY_OUTPUT_LIMIT - EXPERIENTIAL_HOURLY_OUTPUT_BUFFER,
-    now
+    hourlyOutputLimit: EXPERIENTIAL_HOURLY_OUTPUT_LIMIT - EXPERIENTIAL_HOURLY_OUTPUT_BUFFER
   });
 }
 
@@ -1110,7 +1069,7 @@ async function generateAIContent(request) {
     // the existing OpenAI data-sharing incentive route. Both routes preserve
     // the same model contract; only the provider endpoint changes.
     const estimate = requestTokenEstimate(request);
-    const experientialReservation = await reserveExperientialQuota(
+    const experientialReservation = reserveExperientialQuota(
       estimate.experientialInputReservation,
       estimate.outputTokens
     );
@@ -1130,7 +1089,7 @@ async function generateAIContent(request) {
           inputTokens: response.usageMetadata?.promptTokenCount,
           outputTokens: response.usageMetadata?.candidatesTokenCount
         });
-        await adjustProviderTokenQuota(experientialReservation, {
+        providerQuota.adjust(experientialReservation, {
           inputDelta: settlement.inputDelta,
           outputDelta: settlement.outputDelta
         });
@@ -1142,17 +1101,14 @@ async function generateAIContent(request) {
         });
         return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
       } catch (error) {
-        await adjustProviderTokenQuota(experientialReservation, {
+        providerQuota.adjust(experientialReservation, {
           inputDelta: -experientialReservation.reservedInput,
           outputDelta: -experientialReservation.reservedOutput
         });
         const exhausted = error instanceof AIProviderError
           && ['AI_QUOTA_EXHAUSTED', 'AI_DAILY_QUOTA_EXHAUSTED', 'AI_AUTH_FAILED'].includes(error.code);
         if (exhausted) {
-          await markExperientialExhausted(
-            error.code,
-            error.code === 'AI_QUOTA_EXHAUSTED' ? 'hour' : 'day'
-          );
+          markExperientialExhausted(error.code === 'AI_QUOTA_EXHAUSTED' ? 'hour' : 'day');
         }
         log.warn(exhausted ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
           message: error.message?.slice(0, 140)
@@ -1175,9 +1131,7 @@ async function generateAIContent(request) {
           'OpenAI free request timed out'
         );
         const used = response.usageMetadata?.totalTokenCount || 0;
-        if (used > 0) {
-          await incrementRuntimeCounter(`openai-free:${openAIFreeDateKey()}`, 172800, used);
-        }
+        if (used > 0) recordOpenAIFreeTokens(used);
         log.info('ai.openai.free', {
           model: OPENAI_FREE_MODEL,
           used,
@@ -1187,14 +1141,14 @@ async function generateAIContent(request) {
         if (response.serviceTier && !isOpenAIFreeTier(response.serviceTier)) {
           // We expected complimentary tokens but got billed-tier traffic: the
           // org quota was consumed elsewhere today. Stop routing here.
-          await markOpenAIExhausted('billed-service-tier');
+          markOpenAIExhausted();
           log.warn('ai.openai.free.billed', { serviceTier: response.serviceTier });
         }
         return normalizeAIResponse(response, `openai:${OPENAI_FREE_MODEL}`);
       } catch (error) {
         const exhausted = error instanceof AIProviderError
           && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
-        if (exhausted) await markOpenAIExhausted(error.code);
+        if (exhausted) markOpenAIExhausted();
         log.warn(exhausted ? 'ai.openai.free.exhausted' : 'ai.openai.free.error', {
           message: error.message?.slice(0, 140)
         });
@@ -2557,34 +2511,18 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       fileHash: ownedFileHash ? fileHash : undefined
     });
 
-    // SECURITY: reserve the request + token bundle ATOMICALLY (issue #77).
-    // The Redis script checks both caps and increments both counters in one
-    // EVAL, so concurrent requests can no longer all pass a read-then-write
-    // limit check. The reservation happens after the cache-miss check, so
-    // cached answers still cost nothing.
-    const legacyTracking = await loadSessionTracking(quotaKey);
-    const legacyQuota = legacyTracking && Date.now() <= legacyTracking.resetTime
-      ? { requests: legacyTracking.count, tokens: legacyTracking.totalTokens }
-      : { requests: 0, tokens: 0 };
-    const reserved = await reserveSessionQuota(quotaKey, {
+    // SECURITY: reserve the request + token bundle in one step (issue #77):
+    // both caps are checked before either counter moves, so concurrent
+    // requests cannot all pass a read-then-write limit check. The reservation
+    // happens after the cache-miss check, so cached answers still cost nothing.
+    const reserved = sessionQuota.reserve(quotaKey, {
       requestCost: 1,
       tokenCost: estimatedInputTokens,
       requestLimit: limits.requests,
       tokenLimit: limits.tokens,
-      windowSeconds: quotaWindowSeconds,
-      legacy: legacyQuota
+      windowSeconds: quotaWindowSeconds
     });
-    if (legacyTracking) {
-      // Migrated: the old JSON record is superseded by the atomic counters.
-      await deleteSessionTracking(quotaKey);
-    }
     if (!reserved.allowed) {
-      if (reserved.reason === 'unavailable') {
-        return res.status(503).json({
-          error: 'Quota accounting is temporarily unavailable. Please try again later.',
-          code: 'QUOTA_UNAVAILABLE'
-        });
-      }
       const tokenExhausted = reserved.reason === 'tokens';
       log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
@@ -2648,9 +2586,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
-    await commitSessionTokens(quotaKey, {
-      tokenDelta: actualInputTokens + outputTokens - estimatedInputTokens,
-      windowSeconds: quotaWindowSeconds
+    sessionQuota.commit(quotaKey, {
+      tokenDelta: actualInputTokens + outputTokens - estimatedInputTokens
     });
 
     // Log finish reason to diagnose truncation issues
@@ -2725,10 +2662,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // window (issue #77).
     if (quotaKey && shouldRefund(error)) {
       try {
-        const refund = await refundSessionQuota(quotaKey, {
+        const refund = sessionQuota.refund(quotaKey, {
           requestCost: 1,
           tokenCost: estimatedInputTokens,
-          windowSeconds: quotaWindowSeconds,
           refundCap: quotaRefundCap
         });
         if (!refund.refunded) {

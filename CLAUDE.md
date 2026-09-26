@@ -59,16 +59,15 @@ npm run optimize-css     # Apply CSS purging
   Express on the raw Node response, with h2c support and compression. The compat
   `res.set` accepts both a headers object and the `(name, value)` pair form.
   `server.js` has no unit tests; testable logic belongs in `server/*.js`
-  modules (`statsStore`, `stats`, `quotaPolicy`, `archiveExtract`, `peerIp`,
-  `turnstile`, `securityHeaders`, `bugcheckKnowledge`, `fastifyCompat`), which
-  the monolith imports.
-- **`services/cache.js`** is the only Redis/Upstash boundary for runtime state
-  (sessions, jobs, quota counters, leases) plus the analysis cache. Multi-step
-  invariants are atomic Lua scripts (`QUOTA_RESERVE_SCRIPT`,
-  `QUOTA_REFUND_SCRIPT`) — keep counter clamping, TTL repair, and the refund
-  cap inside the scripts, and mirror the semantics in the in-memory fallback
-  branches. `services/externalAnalyzeJobs.js` owns the upload→lease→job state
-  machine for the external API.
+  modules (`statsStore`, `stats`, `quotaPolicy`, `quotaStore`, `sessionToken`,
+  `rateLimit`, `archiveExtract`, `peerIp`, `turnstile`, `securityHeaders`,
+  `bugcheckKnowledge`, `fastifyCompat`), which the monolith imports.
+- **`services/cache.js`** is the only Redis/Upstash boundary. Upstash is
+  optional (`redis.cfg`/`REDIS_ENABLED`, plus a breaker that drops it on
+  quota/auth errors or repeated failures). Session and provider quotas live in
+  `server/quotaStore.js` (per-instance; provider budgets split by
+  `PROVIDER_QUOTA_SHARDS`). `services/externalAnalyzeJobs.js` owns the
+  upload→lease→job state machine for the external API.
 - **Dump parsers** (`utils/`): `dumpParser.ts` orchestrates format dispatch and
   imports `minidumpStreams.ts`, `dumpValidator.ts`,
   `kernelDumpModuleParser.ts`. The import direction never reverses —
@@ -87,13 +86,14 @@ npm run optimize-css     # Apply CSS purging
 1. `model.cfg` names the primary model (re-read with a 30s cache; currently
    `deepseek-v4-flash`). Gemini models fall back to `gemini-2.5-flash-lite`.
 2. DeepSeek requests first try **Experiential Cloud** (`gpt-5.6-luna`) when
-   `EXPLABS_API_KEY` is bound. Redis atomically reserves estimated input and
-   output tokens against the provider's daily/hourly free-tier limits, then
-   settles to reported usage. Quota/auth failures latch for the current window
-   and fall through to the existing OpenAI Luna route.
+   `EXPLABS_API_KEY` is bound. `server/quotaStore.js` reserves estimated input
+   and output tokens against this instance's share of the provider's
+   daily/hourly free-tier limits, then settles to reported usage. Quota/auth
+   failures latch for the current window and fall through to the existing
+   OpenAI Luna route.
 3. The existing **OpenAI free tier** (`gpt-5.6-luna`) remains the next leg,
-   metered by the `openai-free:<date>` Redis counter; billed-tier responses mark
-   that gate exhausted for the day.
+   gated by the org-wide OpenAI Usage API (a per-instance tally when it is
+   unavailable); billed-tier responses latch that gate off for the day.
 4. Then DeepSeek itself. Fatal DeepSeek failures (out of credits, auth revoked)
    fail over to the **OpenRouter free tier** when `OPENROUTER_API_KEY` is set.
 5. All adapters (`services/aiProvider.js`) share the same retry contract:
@@ -151,9 +151,9 @@ prerendered markup — never another route's — or hydration mismatches.
   return false instead of failing. Beware `resultValue()`: it collapses arrays
   to their first element (it exists for `[value, err]` tuples), so pipeline
   results that are legitimately arrays must be read raw.
-- The Lua quota scripts have no test fake; verify script semantics by
-  extracting them and running under `lua`/`luac` with a stubbed `redis.call`
-  (Upstash is Lua 5.1).
+- The Lua lease/job scripts in `services/cache.js` have no test fake; verify
+  script semantics by extracting them and running under `lua`/`luac` with a
+  stubbed `redis.call` (Upstash is Lua 5.1).
 
 ## Security Architecture (6 Layers)
 
@@ -179,6 +179,7 @@ prerendered markup — never another route's — or hydration mismatches.
 | `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
 | `REQUIRE_REDIS_RUNTIME` | Fail-closed job/quota paths while Redis is live (never blocks startup) | Defaults `true` in production |
 | `REDIS_ENABLED` | Overrides the committed `redis.cfg` switch without a build | No |
+| `PROVIDER_QUOTA_SHARDS` | Per-instance share divisor for AI free-tier budgets | Defaults `2` |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 | `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
