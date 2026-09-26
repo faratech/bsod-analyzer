@@ -1,21 +1,8 @@
-// Crash-statistics aggregation over BigQuery.
-//
-// Each completed analysis writes one `stats.analysis` log line; the Cloud
-// Logging sink `bsod-stats-events` streams those lines into
-// <project>.<dataset>.<table> (partitioned by timestamp). Aggregates are
-// computed here with SQL, so they are durable, exact across instances and
-// restarts, and never depend on Upstash. The dataset also holds `baseline`:
-// a one-time export of the pre-cutover Upstash aggregates
-// (scripts/export-stats-baseline.mjs), merged in by server/statsStore.js.
-//
-// Talks to the BigQuery REST API with the Cloud Run service account's token
-// from the metadata server — no client library needed.
-
-import { createGcpMetadataAuth } from './gcpMetadata.js';
-
-const BIGQUERY = 'https://bigquery.googleapis.com/bigquery/v2';
-const QUERY_TIMEOUT_MS = 20_000;
-const IDENTIFIER_RE = /^[A-Za-z0-9_-]+$/;
+// Live crash-statistics SQL and row shaping. eventsQuery() is the single source
+// of truth for bigquery/live_stats.sql (scripts/build-live-stats-sql.mjs), which a
+// BigQuery scheduled query runs hourly and publishes to Cloud Storage;
+// rawFromAggregates() shapes the exported row for server/statsStore.js. Cloud
+// Run itself never queries BigQuery (see server/statsGcsSource.js).
 
 // Aggregates mirror the previous Upstash counters: one counted event per
 // (file hash, UTC day) — the first one — for every breakdown; the activity
@@ -92,80 +79,4 @@ export function rawFromAggregates(row) {
     runsToday: Number(row.runs_today) || 0,
     trackingSince: since && !Number.isNaN(since.getTime()) ? since.toISOString() : null
   };
-}
-
-const EMPTY_LIVE = rawFromAggregates({});
-
-export function createBigQueryStatsSource({
-  dataset = 'bsod_stats',
-  table = 'run_googleapis_com_stdout',
-  projectId,
-  fetchImpl = globalThis.fetch,
-  getAccessToken
-} = {}) {
-  if (!IDENTIFIER_RE.test(dataset) || !IDENTIFIER_RE.test(table)) {
-    throw new TypeError('BigQuery dataset/table names must be plain identifiers');
-  }
-  const { accessToken, projectIdentifier } = createGcpMetadataAuth({ projectId, getAccessToken, fetchImpl });
-
-  // Runs one standard-SQL query and returns its rows' first column values.
-  async function runQuery(query, parameters = []) {
-    const projectName = await projectIdentifier();
-    const res = await fetchImpl(`${BIGQUERY}/projects/${projectName}/queries`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${await accessToken()}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        query,
-        useLegacySql: false,
-        parameterMode: 'NAMED',
-        queryParameters: parameters,
-        timeoutMs: QUERY_TIMEOUT_MS
-      }),
-      signal: AbortSignal.timeout(QUERY_TIMEOUT_MS + 5000)
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const error = new Error(body?.error?.message || `BigQuery HTTP ${res.status}`);
-      error.status = res.status;
-      throw error;
-    }
-    if (!body.jobComplete) throw new Error('BigQuery query did not complete in time');
-    return (body.rows || []).map(row => row.f?.[0]?.v ?? null);
-  }
-
-  // Returns { live, baseline } raw aggregates. A missing events table means
-  // no analysis has been logged since the sink was created.
-  async function load({ windowDays }) {
-    const projectName = await projectIdentifier();
-    const events = `${projectName}.${dataset}.${table}`;
-    const [liveRows, baselineRows] = await Promise.all([
-      runQuery(eventsQuery(events), [{
-        name: 'window_days',
-        parameterType: { type: 'INT64' },
-        parameterValue: { value: String(windowDays) }
-      }]).catch(error => {
-        if (error.status === 404) return null;
-        throw error;
-      }),
-      runQuery(baselineQuery(`${projectName}.${dataset}.baseline`)).catch(error => {
-        console.warn('[Stats] baseline read failed:', error?.message || error);
-        return [];
-      })
-    ]);
-    const live = liveRows?.[0] ? rawFromAggregates(JSON.parse(liveRows[0])) : EMPTY_LIVE;
-    let baseline = null;
-    if (baselineRows[0]) {
-      try {
-        baseline = JSON.parse(baselineRows[0]);
-      } catch {
-        console.warn('[Stats] baseline row is not valid JSON; ignoring it');
-      }
-    }
-    return { live, baseline };
-  }
-
-  return { load };
 }

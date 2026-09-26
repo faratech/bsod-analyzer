@@ -1,7 +1,8 @@
 // Crash-statistics store. Recording is one structured log line per completed
 // analysis (see toStatsEvent) — no network call, nothing to rate-limit, and
 // the Cloud Logging sink makes it durable in BigQuery. Snapshots are computed
-// by the injected source (server/statsBigQuery.js) and memoized per instance;
+// by the injected source (server/statsGcsSource.js: JSON that BigQuery scheduled
+// queries publish to Cloud Storage) and memoized per instance;
 // if a rebuild fails, the last good snapshot keeps being served.
 import {
   STATS_EVENT,
@@ -52,11 +53,11 @@ export function createStatsStore({
     if (!inFlight) {
       inFlight = (async () => {
         try {
-          const { live, baseline } = await source.load({ windowDays: dailyWindowDays });
-          const snapshot = shapeSnapshot(mergeStatsRaw(baseline, live), {
-            now: now(),
-            windowDays: dailyWindowDays
-          });
+          const { live, baseline, insights = null } = await source.load({ windowDays: dailyWindowDays });
+          const snapshot = {
+            ...shapeSnapshot(mergeStatsRaw(baseline, live), { now: now(), windowDays: dailyWindowDays }),
+            insights
+          };
           memo = { snapshot, builtAt: now() };
           return snapshot;
         } catch (error) {

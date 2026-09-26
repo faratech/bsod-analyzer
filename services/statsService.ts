@@ -12,6 +12,41 @@ export interface RankedFamily {
   total: number;
 }
 
+export interface KeyCount {
+  k: string;
+  n: number;
+}
+
+/** Daily-built aggregates over the full WinDBG corpus (bigquery/crash_insights.sql). */
+export interface CorpusInsights {
+  schema: string;
+  totals: {
+    analyses: number;
+    distinct_modules: number;
+    median_analysis_seconds: number | null;
+    median_uptime_seconds: number | null;
+    crashes_within_first_minute: number;
+    ai_hardware_share: number | null;
+    since: string | null;
+  };
+  uptime: KeyCount[];
+  /** d: 0=Monday..6=Sunday, h: 0-23, both UTC. */
+  utc_heatmap: { d: number; h: number; n: number }[];
+  windows_releases: KeyCount[];
+  product_types: KeyCount[];
+  cpu_threads: (KeyCount & { o: number })[];
+  gpu_stacks: KeyCount[];
+  ai_driver_categories: KeyCount[];
+  ai_manufacturers: KeyCount[];
+  ai_hardware_split: { hardware: number; software: number };
+  ai_hardware_types: KeyCount[];
+  processes: KeyCount[];
+  stop_code_trends: { code: string; name: string | null; weeks: { w: string; n: number }[] }[];
+  weekly_totals: { w: string; n: number }[];
+  code_module_matrix: { codes: string[]; modules: string[]; cells: { c: string; m: string; n: number }[] };
+  dump_types: (KeyCount & { median_bytes: number | null })[];
+}
+
 export interface StatsSnapshot {
   success: boolean;
   schema: string;
@@ -28,6 +63,8 @@ export interface StatsSnapshot {
   osVersions: RankedFamily;
   dumpTypes: RankedFamily;
   sources: RankedFamily;
+  /** Corpus-wide insights; null until the first daily build is published. */
+  insights?: CorpusInsights | null;
 }
 
 export class StatsUnavailableError extends Error {

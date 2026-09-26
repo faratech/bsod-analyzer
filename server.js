@@ -64,7 +64,8 @@ import {
   createStatsStore
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
-import { createBigQueryStatsSource } from './server/statsBigQuery.js';
+import { createGcsJsonReader } from './server/gcsJson.js';
+import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
@@ -1622,11 +1623,10 @@ app.get('/health', (req, res) => {
 // `bsod-stats-events` streams them into BigQuery, where the snapshot is
 // aggregated (server/statsBigQuery.js). Nothing here touches Upstash.
 const STATS_ENABLED = process.env.STATS_ENABLED !== 'false';
+// Exported stats/insights/priors JSON (bigquery/*.sql scheduled queries).
+const statsFilesReader = createGcsJsonReader({ bucket: process.env.STATS_BUCKET || 'project-bigfoot-bsod-stats' });
 const statsStore = createStatsStore({
-  source: createBigQueryStatsSource({
-    dataset: process.env.STATS_BIGQUERY_DATASET || undefined,
-    table: process.env.STATS_BIGQUERY_TABLE || undefined
-  }),
+  source: createGcsStatsSource({ reader: statsFilesReader }),
   emit: (event, fields) => log.info(event, fields),
   isEnabled: () => STATS_ENABLED,
   snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
