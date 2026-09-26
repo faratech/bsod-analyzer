@@ -1,446 +1,101 @@
-# BSOD AI Analyzer
+# 💥 BSOD AI Analyzer
 
-Enterprise-grade Windows crash dump analyzer powered by server-selected AI and real WinDBG debugging. Instantly diagnose Blue/Black Screen of Death errors with professional-grade analysis. Supports both classic blue screens and Windows 11's modern black screens.
+Drop in a Windows crash dump, get a plain-English answer. The analyzer runs **real WinDBG** (`!analyze -v`) on your dump, then an AI model turns the debugger output into a friendly report: what crashed, the likely culprit, and what to do next.
 
-**Live:** [bsod.windowsforum.com](https://bsod.windowsforum.com)
+🌐 **Live:** [bsod.windowsforum.com](https://bsod.windowsforum.com) · 📊 [Crash statistics](https://bsod.windowsforum.com/stats) · 🔒 [Privacy & data use](https://bsod.windowsforum.com/privacy)
 
-## Features
+## ✨ Features
 
-- **Real WinDBG Analysis**: Server-side WinDBG debugging with `!analyze -v` on actual crash dumps
-- **AI-Powered Reports**: Gemini or DeepSeek interprets WinDBG output into user-friendly diagnostics
-- **Content-Addressed Caching**: XXHash-based deduplication with Upstash Redis; identical dumps return instant results
-- **Dictionary-Compressed Cache**: Analysis values use zstd with a private dictionary trained from recent cache data
-- **Dual Analysis Paths**: WinDBG server primary path with AI fallback when WinDBG is unavailable
-- **Multiple Formats**: Supports `.dmp`, `.mdmp`, `.hdmp`, `.kdmp` files and `.zip`, `.7z`, `.rar` archives
-- **External API**: REST endpoint for programmatic access with API key authentication
-- **6-Layer Security**: CSP, SRI, prompt validation, session management, rate limiting, Cloudflare Turnstile
-- **Validated Reports**: Server-owned JSON schemas normalize AI output before it reaches users
+- 🐞 **Real debugging.** Dumps are analyzed by a WinDBG server, not guessed at.
+- 🤖 **AI reports.** Stop code, culprit driver, probable cause and step-by-step fixes, validated against a strict schema.
+- 🧠 **Learns from history.** Prompts include anonymous stats from 15,000+ past analyses, such as which drivers usually cause each stop code.
+- 📦 **Many formats.** `.dmp`, `.mdmp`, `.hdmp`, `.kdmp`, plus `.zip`, `.7z` and `.rar` archives.
+- 📊 **Public crash stats.** Top stop codes, drivers, Windows builds, heatmaps and trends at `/stats`.
+- 🔌 **REST API.** Async upload-and-poll endpoint for your own tools.
+- 🛡️ **Locked down.** CSP + SRI, Cloudflare Turnstile, signed sessions, rate limits, prompt and response validation.
 
-## Quick Start
+## 🔄 How it works
 
-### Prerequisites
+```
+Browser ──▶ Fastify on Cloud Run ──▶ WinDBG server ──▶ AI model ──▶ your report
+                 │
+                 ├─▶ BigQuery corpus (private): analyses + AI reports, used to improve the AI
+                 └─◀ Cloud Storage JSON: /stats data + AI priors (built by scheduled BigQuery queries)
+```
 
-- Node.js `^22.19.0` or `>=24.6.0` (dictionary-capable built-in zstd)
-- npm 11
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/) or a DeepSeek API key
+If the WinDBG server is unavailable, the analyzer falls back to local analysis of the dump. Cloud Run never queries BigQuery directly: scheduled queries publish small JSON files, which keeps costs in the free tier.
 
-### Local Development
+## 🚀 Quick start
+
+Needs Node.js `^22.19.0 || >=24.6.0` and npm 11.
 
 ```bash
 git clone https://github.com/faratech/bsod-analyzer.git
 cd bsod-analyzer
 npm install
-
-# Configure the key for the model selected in model.cfg
-echo "GEMINI_API_KEY=your-gemini-api-key" > .env.local
-
-# Start backend (8080) + frontend concurrently
-npm run dev
+echo "DEEPSEEK_API_KEY=your-key" > .env.local   # key for the model in model.cfg
+npm run dev                                   # backend :8080 + Vite frontend
 ```
 
-### Commands
+| Command | What it does |
+|---|---|
+| `npm run dev` | 🧪 Backend + frontend with hot reload |
+| `npm test` | ✅ Node test suite |
+| `npm run typecheck` | 🔍 TypeScript check |
+| `npm run build` | 🏗️ Production build + SRI hashes + prerendered pages |
+| `npm run check` | 🚦 Everything CI runs (test + typecheck + build) |
+| `npm start` | ▶️ Production server |
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start backend + frontend concurrently |
-| `npm run dev:backend` | Start Fastify-backed API server only |
-| `npm run dev:frontend` | Start Vite dev server only |
-| `npm run build` | Build production frontend + generate SRI hashes |
-| `npm run build:no-sri` | Build without SRI generation |
-| `npm start` | Run production server (`NODE_ENV=production`) |
-| `npm test` | Run Node test suite |
-| `npm run typecheck` | Run TypeScript without emitting files |
-| `npm run check` | Run tests, typecheck, production build, and SRI generation |
-| `npm run analyze-css` | Analyze unused CSS |
-| `npm run optimize-css` | Apply CSS purging |
+## ⚙️ Configuration
 
-## Architecture
+`model.cfg` picks the AI model (currently `deepseek-v4-flash`); the browser can never choose one. Key environment variables:
 
-### System Overview
+| Variable | Purpose |
+|---|---|
+| `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` | Key for the selected model |
+| `EXPLABS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | Optional free-tier and failover AI routes |
+| `WINDBG_API_KEY`, `WINDBG_API_BASE_URL` | WinDBG server access (without it, local fallback only) |
+| `SESSION_SECRET`, `TURNSTILE_SECRET_KEY` | Sessions and bot protection (production) |
+| `BSOD_API_KEY` | Enables the external REST API |
+| `STATS_BUCKET` | Cloud Storage bucket with the published stats JSON |
+| `CORPUS_ENABLED`, `CORPUS_PRIORS_ENABLED` | Corpus recording and AI priors (both on by default) |
+| `MAINTENANCE_MODE` | `true` serves a friendly 503 page |
 
-```
-┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Browser   │────▶│   Fastify   │────▶│ AI Provider  │     │ Upstash Redis│
-│   (React)   │◀────│   Server    │◀────│Gemini/DeepSeek│    │   (Cache)    │
-└─────────────┘     └──────┬──────┘     └──────────────┘     └──────────────┘
-     Frontend              │                 AI Service           Cache Layer
-                           │
-                           ▼
-                    ┌──────────────┐
-                    │ WinDBG Server│
-                    │  (External)  │
-                    └──────────────┘
-                     Debug Service
-```
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `server.js` | Fastify-backed API server — security middleware, session management, rate limiting, AI provider routing, WinDBG proxy, external API, caching |
-| `services/aiProvider.js` | Backend-only model allowlist and DeepSeek API adapter |
-| `services/cache.js` | Upstash Redis cache layer for WinDBG analysis and AI reports |
-| `services/geminiProxy.ts` | Client-side service routing API calls through backend with session cookies |
-| `services/windbgService.ts` | Client-side WinDBG integration (upload, poll, download via backend proxy) |
-| `utils/sessionManager.ts` | Client-side session initialization and error handling |
-| `serverConfig.js` | Security configuration constants |
-
-### WinDBG Analysis Pipeline
-
-The primary analysis path uses a remote WinDBG server to perform real debugging on crash dumps. This produces professional-grade output identical to running WinDBG locally.
-
-```
-User uploads dump/archive
-        │
-        ▼
-  ┌─────────────┐     ┌──────────────┐
-  │ Compute file│────▶│ Check Redis  │──── Cache HIT ──▶ Fetch cached result
-  │ XXHash64    │     │ cache by hash│     by hash-only GET
-  └─────────────┘     └──────┬───────┘
-                             │ Cache MISS
-                             ▼
-                    ┌──────────────────┐
-                    │ Upload to WinDBG │
-                    │ server           │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │ Poll status every│
-                    │ 10s (max 5 min)  │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │ Download WinDBG  │
-                    │ analysis output  │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │ Cache WinDBG     │
-                    │ output in Redis  │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │ Selected AI      │
-                    │ interprets output│
-                    │ into user report │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │ Cache AI report  │
-                    │ Return to user   │
-                    └──────────────────┘
-```
-
-**Key details:**
-- Files are identified by XXHash64 content hash — previously analyzed dumps load from Upstash by hash after session validation
-- WinDBG server upload uses multipart form data proxied through the backend
-- Polling uses cache-busting timestamps to prevent browser/CDN caching of status responses
-- 5-minute hard timeout wraps the entire pipeline with `Promise.race`
-- Browser analysis is queued with limited concurrency to avoid overloading the WinDBG proxy
-- If WinDBG is unavailable or fails, the client falls back to AI analysis using local dump evidence
-
-### Fallback Analysis Path
-
-When the WinDBG server is not configured (`WINDBG_API_KEY` not set) or fails:
-
-1. Minidumps and other files at or below the 5MB full-local threshold use local dump parsing, string extraction, hex evidence, and direct AI analysis.
-2. Large dumps avoid full browser-side parsing. The client samples bounded head/tail byte ranges, extracts limited strings/hex evidence, and sends a clearly marked lightweight fallback prompt.
-3. Extracted evidence is sent to the backend AI proxy endpoint.
-4. Backend validates the session, rate limits, prompt shape, and response schema.
-5. Backend forwards to the model selected in `model.cfg` using only its server-side API key.
-6. AI returns a best-effort report. These results are less complete than full WinDBG output, especially for large sampled dumps.
-
-### External REST API
-
-A separate `POST /api/analyze` endpoint provides programmatic access:
-
-- Accepts multipart file uploads (`.dmp`, `.mdmp`, `.hdmp`, `.kdmp`, `.zip`, `.7z`, `.rar`)
-- Authenticated via `BSOD_API_KEY` header
-- Runs the full server-side pipeline: upload → WinDBG → AI report
-- Handles ZIP, 7z, and RAR extraction automatically (analyzes first dump found)
-- Asynchronous: answers `202` with a signed job `uid` and `checkStatusUrl`; poll
-  `GET /api/analyze/status/:uid` until `completed` (report + metadata) or
-  `failed`. Job ids are stateless, so any server instance answers a poll.
-
-### Caching Architecture
-
-Upstash Redis is an optional performance cache with content-addressed keys —
-correctness never depends on it:
-
-| Cache Layer | Key | Value | Purpose |
-|-------------|-----|-------|---------|
-| Analysis | `analysis:<file-or-prompt-hash>` | Dictionary-zstd WinDBG + model-report envelope | Reuse completed analysis and avoid repeated external work |
-
-Only `analysis:*` values are eligible for dictionary-zstd compression. They are
-sent to Upstash as raw binary values, with legacy JSON remaining readable. The
-seven-day analysis TTL is unchanged. Every read fails open; a breaker turns the
-cache off on quota/auth errors or repeated failures and re-probes later; the
-committed `redis.cfg` switch (`REDIS_ENABLED` overrides) turns it off entirely.
-
-Runtime state does not use Redis: sessions are HMAC-signed cookies, WinDBG
-uploads return a signed handle (file ownership + upstream job id), rate limits
-and quotas are per-instance memory (Cloud Run session affinity keeps a browser
-on one instance), and crash statistics are logged events aggregated in BigQuery.
-
-### Security Architecture (6 Layers)
-
-1. **Content Security Policy** — Script validation via hashes, strict `form-action`, no `unsafe-eval`
-2. **Subresource Integrity** — SHA-384 hashes for all production assets via `generate-sri.js`
-3. **Prompt Validation** — BSOD keyword requirements, abuse pattern blocking
-4. **Session Management** — XXHash session IDs, HttpOnly/Secure/SameSite cookies, 1-hour expiry
-5. **Rate Limiting** — 50 requests/hour, 500K tokens/hour per session
-6. **Cloudflare Turnstile** — Bot protection on session creation with token replay prevention
-
-## Environment Variables
-
-| Variable | Purpose | Required |
-|----------|---------|----------|
-| `GEMINI_API_KEY` | Gemini API access | When a Gemini model is selected |
-| `DEEPSEEK_API_KEY` | DeepSeek API access | When `deepseek-v4-flash` is selected |
-| `DEEPSEEK_API_BASE_URL` | DeepSeek API base URL | No; defaults to `https://api.deepseek.com` |
-| `DEEPSEEK_TIMEOUT_MS` | DeepSeek request timeout | No; defaults to the Gemini timeout or 60 seconds |
-| `DEEPSEEK_THINKING` | DeepSeek thinking toggle | No; defaults to `enabled` |
-| `DEEPSEEK_REASONING_EFFORT` | DeepSeek reasoning effort (`high` or `max`) | No; defaults to `high` |
-| `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
-| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile verification | Production |
-| `SESSION_SECRET` | Session cookie signing | Production |
-| `BSOD_API_KEY` | External REST API authentication | No (disables `/api/analyze` if unset) |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for the optional analysis cache | No |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | No |
-| `CACHE_ZSTD_DICTIONARY_PATH` | Mounted binary zstd dictionary path | Production; `/secrets/redis-zstd/dictionary` in Cloud Run |
-| `CACHE_ZSTD_WRITES_ENABLED` | Enable compressed `analysis:*` writes after reader verification | No; defaults to `false` |
-| `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests | Defaults `true` in production |
-| `TRUST_PROXY_HOPS` | Fastify trust-proxy hop count | Defaults `2` |
-
-For local development, set in `.env.local` or export directly.
-When running `NODE_ENV=production` locally without Cloudflare ingress, set
-`CLOUDFLARE_ONLY_INGRESS=false`.
-
-Model selection is backend-only. Keep `model.cfg` at its default Gemini value,
-or set its single line to `deepseek-v4-flash`. The browser cannot override the
-selected provider or model.
-
-## Deployment
-
-Pushes to `main` automatically deploy to Cloud Run. Secrets are managed via Google Secret Manager.
-The supported manual deployment path is `deploy-with-secret.sh`; `deploy.sh`
-delegates to it. Static-only upload packages are not supported because the app
-requires the Node/Fastify backend for uploads, archive extraction, WinDBG
-proxying, AI proxying, sessions, and rate limits.
-
-### Quick Deploy
+## 🔌 API
 
 ```bash
-export PROJECT_ID="your-gcp-project-id"
+# Submit a dump (returns 202 with a job uid)
+curl -H "x-api-key: $BSOD_API_KEY" -F "file=@MEMORY.DMP" https://bsod.windowsforum.com/api/analyze
 
-# Create secrets
-echo -n "your-gemini-api-key" | gcloud secrets create gemini-api-key --data-file=-
-
-# Provision the remaining secrets/IAM, train from the current cache, and upload
-./setup-all-secrets.sh
-node scripts/cache-zstd-dictionary.mjs --upload --project="$PROJECT_ID"
-
-# First deployment is reader-only for the compressed format
-CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
-  CACHE_ZSTD_WRITES_ENABLED=false ./deploy-with-secret.sh
+# Poll until status is "completed" (or "failed")
+curl -H "x-api-key: $BSOD_API_KEY" https://bsod.windowsforum.com/api/analyze/status/<uid>
 ```
 
-The dictionary command requires the Upstash URL/token in the environment and
-prints the numeric Secret Manager version to pin. Its default mode (without
-`--upload`) is a read-only benchmark. After verifying legacy reads and the
-mounted dictionary, redeploy with `CACHE_ZSTD_WRITES_ENABLED=true` and persist
-that flag plus the numeric version in the automatic-deployment configuration. See
-[`docs/SECRET-MANAGEMENT.md`](docs/SECRET-MANAGEMENT.md) for the complete staged
-rollout, rotation, and whole-Redis-flush warnings.
+A completed job returns the AI report in `data`. API use is covered by the [privacy & data-use notice](https://bsod.windowsforum.com/privacy).
 
-To deploy with DeepSeek V4 Flash, create the optional secret and change the
-single line in `model.cfg` before building:
+## 🔒 Privacy
 
-```bash
-echo -n "your-deepseek-api-key" | gcloud secrets create deepseek-api-key --data-file=-
-printf 'deepseek-v4-flash\n' > model.cfg
-./deploy-with-secret.sh
-```
+Analyzing a dump requires keeping **"Use my crash analysis to improve BSOD AI"** checked. We keep analyses to improve the AI and publish only anonymous, aggregate statistics; we never publish dumps or their contents. Details are at [/privacy](https://bsod.windowsforum.com/privacy).
 
-`deploy-with-secret.sh` binds whichever provider secrets exist and verifies that
-the selected model's secret is present. For a DeepSeek Cloud Build trigger, set
-`_AI_SECRET_BINDING` to `DEEPSEEK_API_KEY=deepseek-api-key:latest`.
+## ☁️ Deployment
 
-Cloudflare cache purge runs after deploy. Missing purge credentials are treated
-as a deploy failure unless `SKIP_CF_PURGE=true` is set explicitly.
+Merging to `main` deploys automatically: Cloud Build builds the image and ships it to Cloud Run (`us-east1`). Secrets live in Google Secret Manager; `deploy-with-secret.sh` is the manual path. Uptime and upload-failure alerts run in Cloud Monitoring.
 
-### Manual Container Deploy
+📚 More detail: [`CLAUDE.md`](CLAUDE.md) (architecture and operations), [`bigquery/`](bigquery/) (stats pipeline SQL), [`docs/SECRET-MANAGEMENT.md`](docs/SECRET-MANAGEMENT.md).
 
-```bash
-# Build and push
-docker build -t us-east1-docker.pkg.dev/$PROJECT_ID/bsod-analyzer/app:latest .
-docker push us-east1-docker.pkg.dev/$PROJECT_ID/bsod-analyzer/app:latest
+## 🤝 Contributing
 
-# Deploy to Cloud Run
-gcloud run deploy bsod-analyzer \
-  --image us-east1-docker.pkg.dev/$PROJECT_ID/bsod-analyzer/app:latest \
-  --region us-east1 \
-  --allow-unauthenticated \
-  --service-account bsod-analyzer-runtime@$PROJECT_ID.iam.gserviceaccount.com \
-  --set-env-vars CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=false \
-  --update-secrets GEMINI_API_KEY=gemini-api-key:latest,TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,UPSTASH_REDIS_REST_URL=upstash-redis-url:latest,UPSTASH_REDIS_REST_TOKEN=upstash-redis-token:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:NUMERIC_VERSION
-```
+PRs are welcome! Branch off `main`, run `npm run check`, and open a pull request. Issues go to the [GitHub tracker](https://github.com/faratech/bsod-analyzer/issues).
 
-### CI/CD
+## 📄 License
 
-GitHub Actions installs npm 11 and runs `npm run check` on pushes to `main` and pull requests.
-Cloud Build can be used for deployment:
+[CC BY 4.0](LICENSE). Share and adapt freely, with attribution:
 
-```bash
-# Submit a build
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION,_CACHE_ZSTD_WRITES_ENABLED=false
-
-# Set up automatic deployments on push
-gcloud builds triggers create github \
-  --repo-name=bsod-analyzer \
-  --repo-owner=faratech \
-  --branch-pattern="^main$" \
-  --build-config=cloudbuild.yaml
-```
-
-### Secret Management Scripts
-
-- `setup-all-secrets.sh` — Initial setup of all secrets in Google Secret Manager
-- `scripts/cache-zstd-dictionary.mjs` — Read-only cache benchmark and explicit dictionary training/upload
-- `update-turnstile-secret.sh` — Update Turnstile secret when regenerating keys
-- `deploy-with-secret.sh` — Deploy to Cloud Run with secrets from Secret Manager
-- `scripts/purge-cloudflare-cache.sh` — Purge CDN cache after deployment; set `SKIP_CF_PURGE=true` to skip intentionally
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 19, TypeScript, Vite |
-| Backend | Fastify 5 (ES modules), Node.js `^22.19.0` or `>=24.6.0` |
-| Compression | Adapter-level zstd/br/gzip/deflate; Cloudflare-origin requests force zstd |
-| AI | Google Gemini via `@google/genai`, or DeepSeek V4 Flash via its OpenAI-compatible API |
-| Cache | Upstash Redis (`@upstash/redis`) with raw binary dictionary-zstd analysis values |
-| Hashing | XXHash64 via `xxhash-wasm` (file dedup + sessions) |
-| File Processing | FileReader API, JSZip, `@fastify/multipart` |
-| Markdown | Report export generated in-app |
-| Deployment | Docker, Google Cloud Run, Secret Manager |
-| Security | Cloudflare Turnstile, CSP, SRI |
-
-## API Reference
-
-### POST /api/gemini/generateContent
-
-Compatibility endpoint used by the web UI. The backend routes the validated
-request to the model selected in `model.cfg`; the browser cannot select a model.
-
-**Requires:** Valid session cookie
-
-### POST /api/analyze
-
-Server-side crash dump analysis (external API).
-
-**Requires:** `x-api-key` header with `BSOD_API_KEY`
-
-**Request:** Multipart form with `file` field (`.dmp`, `.mdmp`, `.hdmp`, `.kdmp`, `.zip`, `.7z`, or `.rar`; max 500MB)
-
-**Response:** `202 {"success": true, "status": "processing", "uid": "APIv2....", "checkStatusUrl": "/api/analyze/status/APIv2...."}`
-
-### GET /api/analyze/status/:uid
-
-**Requires:** `x-api-key` header with `BSOD_API_KEY`
-
-**Response:** `200 {"success": true, "status": "processing"}` (with `Retry-After`) until done;
-`500 {"success": false, "status": "failed", "code": "ANALYSIS_FAILED"}` on failure; when complete:
-```json
-{
-  "success": true,
-  "status": "completed",
-  "data": {
-    "summary": "...",
-    "probableCause": "...",
-    "culprit": "driver.sys",
-    "recommendations": ["..."]
-  },
-  "analysisMethod": "windbg",
-  "processingTime": 45.2,
-  "metadata": {
-    "fileName": "MEMORY.DMP",
-    "fileSize": 1048576,
-    "dumpType": "kernel",
-    "uid": "APIv2....",
-    "originalZip": "dumps.zip"
-  }
-}
-```
-
-### WinDBG Proxy Endpoints
-
-These are used internally by the web UI:
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/windbg/upload` | POST | Upload dump file to WinDBG server |
-| `/api/windbg/status` | GET | Poll analysis status |
-| `/api/windbg/download` | GET | Download completed analysis |
-| `/api/cache/check` | POST | Check cache status hints for file hashes |
-| `/api/cache/get` | GET | Retrieve cached analysis by hash for a valid session |
-| `/api/cache/set` | POST | Disabled; cache writes happen server-side |
-
-## Troubleshooting
-
-### Common Issues
-
-1. **API Key Errors** — Ensure the key for the selected model (`GEMINI_API_KEY` or `DEEPSEEK_API_KEY`) is set. For production: `gcloud secrets list`
-2. **WinDBG Fallback** — If WinDBG is unavailable, minidumps use full local evidence and large dumps use sampled AI fallback
-3. **Container Failures** — Check logs: `gcloud logging read --limit 50`. Verify PORT=8080
-4. **Build Failures** — Ensure Node.js is `^22.19.0` or `>=24.6.0`: `node --version`
-5. **Session Errors** — Check cookie attributes are consistent; Turnstile must be configured for production
-6. **Cache Misses Everywhere** — Upstash is optional; `/health` reports `"redis": false` when the cache is off (switched off in `redis.cfg`, unconfigured, or tripped by the breaker after quota/auth errors — it re-probes on its own)
-7. **Cache Dictionary Errors** — Verify the mounted secret uses the pinned numeric version and keep compressed writes disabled until startup/read checks pass
-
-### Monitoring
-
-```bash
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=bsod-analyzer" --limit 50
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit changes: `git commit -am 'Add your feature'`
-4. Push to branch: `git push origin feature/your-feature`
-5. Submit a pull request
-
-Contributions are welcome! By contributing, you agree to license your contributions under the same CC BY 4.0 license.
-
-## Support
-
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/faratech/bsod-analyzer/issues).
-
-## License
-
-This project is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.
-
-**You are free to:**
-- **Share** — copy and redistribute the material in any medium or format
-- **Adapt** — remix, transform, and build upon the material for any purpose, even commercially
-
-**Under the following terms:**
-- **Attribution** — You must give appropriate credit, provide a link to the license, and indicate if changes were made
-
-**How to Attribute:**
 ```
 BSOD Analyzer by the BSOD Analyzer Contributors, licensed under CC BY 4.0
 Source: https://github.com/faratech/bsod-analyzer
 ```
 
-See the [LICENSE](LICENSE) file for full details.
+## 🙏 Thanks
 
-## Acknowledgments
-
-- Powered by Google Gemini AI for intelligent crash analysis
-- WinDBG analysis provided by [stack-tech.net](https://windbg.stack-tech.net)
-- Built with React, TypeScript, and Vite
-- Deployed on Google Cloud Run
+WinDBG analysis by [Stack-Tech](https://www.stack-tech.com) · Built with React, TypeScript, Vite and Fastify · Hosted on Google Cloud Run
