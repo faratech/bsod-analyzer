@@ -7,7 +7,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyMultipart from '@fastify/multipart';
 import crypto from 'crypto';
 import { SECURITY_CONFIG } from './serverConfig.js';
-import { PROMPT_SHAPES, SYSTEM_INSTRUCTION_ANALYSIS, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from './shared/promptTemplates.js';
+import { PROMPT_SHAPES, SYSTEM_INSTRUCTION_ANALYSIS, WINDBG_PREFIX, wrapWithEvidence } from './shared/promptTemplates.js';
 import fs from 'fs';
 import os from 'os';
 import JSZip from 'jszip';
@@ -66,6 +66,7 @@ import {
 import { extractStatsFacts } from './server/stats.js';
 import { createBigQueryStatsSource } from './server/statsBigQuery.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
+import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -672,6 +673,7 @@ function normalizeAIResponse(response, cacheModel) {
     text: response?.text ?? '',
     usageMetadata: response?.usageMetadata,
     modelVersion: response?.modelVersion || cacheModel,
+    serviceTier: response?.serviceTier ?? null,
     candidates: response?.candidates,
     cacheModel
   };
@@ -1661,8 +1663,13 @@ function recordCorpus(job, meta) {
 
 // Every freshly generated AI report, joinable to its WinDBG row (bsod_corpus.ai_reports).
 function recordAiReport(entry) {
-  const provider = entry.provider || (entry.model ? getAIProviderForModel(entry.model) : undefined);
-  windbgCorpus.recordAiReport({ ...entry, provider })
+  // cacheModel names the serving leg as "<route>:<model>" (experiential:, openai:,
+  // openrouter:) or a bare DeepSeek/Gemini model.
+  const requested = String(entry.model || '');
+  const sep = requested.indexOf(':');
+  const model = sep > 0 ? requested.slice(sep + 1) : requested || undefined;
+  const provider = entry.provider || (sep > 0 ? requested.slice(0, sep) : model ? getAIProviderForModel(model) : undefined);
+  windbgCorpus.recordAiReport({ ...entry, model, provider })
     .catch(error => log.warn('corpus.ai_record_failed', { error: error?.message || String(error) }));
 }
 
@@ -1981,119 +1988,6 @@ function validateAnalysisPrompt(contents) {
   return { valid: true, promptText, promptType: match.type };
 }
 
-function extractJsonText(text) {
-  let jsonText = String(text || '').trim();
-  if (jsonText.startsWith('```json')) {
-    jsonText = jsonText.replace(/^```json\s*/i, '').replace(/\s*```$/, '');
-  } else if (jsonText.startsWith('```')) {
-    jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
-  }
-  jsonText = jsonText.trim();
-  if (!jsonText.startsWith('{')) {
-    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) jsonText = jsonMatch[0];
-  }
-  return jsonText;
-}
-
-function sanitizeString(value, maxLength) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, maxLength);
-}
-
-function sanitizeStringArray(value, maxItems = 12, maxLength = 600) {
-  if (!Array.isArray(value)) return null;
-  const sanitized = value
-    .map(item => sanitizeString(item, maxLength))
-    .filter(Boolean)
-    .slice(0, maxItems);
-  return sanitized.length > 0 ? sanitized : null;
-}
-
-function normalizeAnalysisReport(report) {
-  if (!report || typeof report !== 'object' || Array.isArray(report)) return null;
-
-  const summary = sanitizeString(report.summary, 1000);
-  const probableCause = sanitizeString(report.probableCause, 4000);
-  const culprit = sanitizeString(report.culprit, 512);
-  const recommendations = sanitizeStringArray(report.recommendations, 12, 800);
-
-  if (!summary || !probableCause || !culprit || !recommendations) {
-    return null;
-  }
-
-  const normalized = {
-    ...report,
-    summary,
-    probableCause,
-    culprit,
-    recommendations
-  };
-
-  if (Array.isArray(normalized.driverWarnings)) {
-    // Filter out malformed driver warnings (AI sometimes returns entries with empty fields)
-    normalized.driverWarnings = normalized.driverWarnings
-      .map(w => ({
-        driverName: sanitizeString(w.driverName || w.name, 256),
-        displayName: sanitizeString(w.displayName || w.name || w.driverName, 512),
-        manufacturer: sanitizeString(w.manufacturer, 256) || 'Unknown',
-        category: sanitizeString(w.category, 128) || 'other',
-        issues: sanitizeStringArray(w.issues, 10, 500) ||
-          (sanitizeString(w.description, 500) ? [sanitizeString(w.description, 500)] : []),
-        recommendations: sanitizeStringArray(w.recommendations, 10, 500) || [],
-        isAssociatedWithBugCheck: !!w.isAssociatedWithBugCheck
-      }))
-      .filter(w => w.driverName && w.displayName && w.manufacturer)
-      .slice(0, 20);
-  }
-  if (Array.isArray(normalized.parameterAnalysis)) {
-    // Filter out malformed parameter analysis entries
-    normalized.parameterAnalysis = normalized.parameterAnalysis
-      .filter(p => p && typeof p === 'object' &&
-        p.rawValue && typeof p.rawValue === 'string' && p.rawValue.trim() &&
-        p.decoded && typeof p.decoded === 'string' && p.decoded.trim()
-      )
-      .slice(0, 12);
-  }
-  // Ensure hardwareError has valid structure if present
-  if (normalized.hardwareError && typeof normalized.hardwareError === 'object') {
-    if (normalized.hardwareError.type && !normalized.hardwareError.errorType) {
-      normalized.hardwareError.errorType = sanitizeString(normalized.hardwareError.type, 256) || 'Hardware error';
-    }
-    if (typeof normalized.hardwareError.details === 'string') {
-      normalized.hardwareError.details = [normalized.hardwareError.details];
-    }
-    normalized.hardwareError.details = sanitizeStringArray(normalized.hardwareError.details, 12, 800) || [];
-    normalized.hardwareError.recommendations = sanitizeStringArray(normalized.hardwareError.recommendations, 10, 800) || [];
-    normalized.hardwareError.component = sanitizeString(normalized.hardwareError.component, 256) || 'Unknown';
-    normalized.hardwareError.severity = sanitizeString(normalized.hardwareError.severity, 128) || 'fatal';
-    normalized.hardwareError.isHardwareError = !!normalized.hardwareError.isHardwareError || !!normalized.hardwareError.errorType;
-    if (!normalized.hardwareError.isHardwareError) {
-      delete normalized.hardwareError; // Remove if not actually a hardware error
-    }
-  }
-
-  return normalized;
-}
-
-function parseAndValidateAnalysisReport(text) {
-  const jsonText = extractJsonText(text);
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return { valid: false, reason: 'AI response was not valid JSON' };
-  }
-
-  const report = normalizeAnalysisReport(parsed);
-  if (!report) {
-    return { valid: false, reason: 'AI response did not match the analysis report schema' };
-  }
-
-  return { valid: true, report, text: JSON.stringify(report) };
-}
 
 const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
@@ -2423,6 +2317,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       fileHash: ownedFileHash ? fileHash : undefined,
       jobId: ownedFileHash ? getOwnedWinDbgJob(req.sessionId, fileHash, fileHandle)?.upstreamJobId : undefined,
       model: response.cacheModel || modelName,
+      modelVersion: response.modelVersion,
+      serviceTier: response.serviceTier,
+      route: response.cacheModel || modelName,
       promptText: serverPrompt,
       responseText: validatedText,
       report: reportValidation.report,
@@ -3193,16 +3090,13 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
   // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
   // the tail so provider-side prefix caching can be reused across analyses.
-  const evidence = `**File Information:**
-- Filename: ${fileName}
-- Dump Type: ${dumpType}
-- File Size: ${fileSize} bytes
-
-${WINDBG_OUTPUT_MARKER}
-${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
-\`\`\`${structuredSignal ? 'json' : ''}
-${analysisForPrompt}
-\`\`\``;
+  const evidence = buildWinDbgEvidence({
+    fileName,
+    dumpType,
+    fileSize,
+    analysisForPrompt,
+    structured: Boolean(structuredSignal)
+  });
   const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
 
   try {
@@ -3241,6 +3135,9 @@ ${analysisForPrompt}
       fileHash,
       jobId: options.jobId,
       model: response.cacheModel || modelName,
+      modelVersion: response.modelVersion,
+      serviceTier: response.serviceTier,
+      route: response.cacheModel || modelName,
       promptText: prompt,
       responseText,
       report: aiReport,
