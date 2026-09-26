@@ -1,0 +1,3 @@
+[submodule "windbg-server"]
+	path = windbg-server
+	url = https://github.com/faratech/WinDbg-API.git
