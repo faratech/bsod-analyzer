@@ -50,6 +50,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --chown=nodejs:nodejs server.js ./
 COPY --chown=nodejs:nodejs serverConfig.js ./
 COPY --chown=nodejs:nodejs model.cfg ./
+COPY --chown=nodejs:nodejs redis.cfg ./
 COPY --chown=nodejs:nodejs server ./server
 COPY --chown=nodejs:nodejs services ./services
 COPY --chown=nodejs:nodejs shared ./shared
