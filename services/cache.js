@@ -8,6 +8,8 @@
  * Cache keys are based on content hashes to ensure deterministic lookups.
  */
 
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Redis } from '@upstash/redis';
 import xxhash from 'xxhash-wasm';
 import { hashBytes, hashString } from '../shared/hash.js';
@@ -224,19 +226,107 @@ let dictionaryManager = null;
 let lastDictionaryRegistration = 0;
 let cacheZstdWritesEnabled = DEFAULT_CACHE_ZSTD_WRITES_ENABLED;
 
+// On/off switch for Upstash. REDIS_ENABLED (true/false) wins so a live service
+// can be flipped without a build; otherwise the committed redis.cfg decides
+// ("enabled" / "disabled"). A missing or blank switch means enabled.
+const REDIS_CONFIG_PATH = fileURLToPath(new URL('../redis.cfg', import.meta.url));
+const REDIS_OFF_VALUES = new Set(['disabled', 'off', 'false', '0']);
+
+function parseRedisSwitch(raw) {
+  const value = String(raw ?? '')
+    .split('\n')
+    .map(line => line.replace(/#.*/, '').trim().toLowerCase())
+    .find(Boolean);
+  return value ? !REDIS_OFF_VALUES.has(value) : null;
+}
+
+export function isRedisConfigEnabled({ env = process.env, configPath = REDIS_CONFIG_PATH } = {}) {
+  const fromEnv = parseRedisSwitch(env.REDIS_ENABLED);
+  if (fromEnv !== null) return fromEnv;
+  try {
+    return parseRedisSwitch(fs.readFileSync(configPath, 'utf8')) ?? true;
+  } catch {
+    return true;
+  }
+}
+
+// Runtime breaker: once Upstash fails in a way that will not clear on its own
+// (plan/quota limit, rejected credentials) or keeps failing, stop using it for
+// the rest of this process — every helper then takes its in-memory branch
+// instead of failing requests. New instances re-probe at startup.
+const FATAL_REDIS_ERROR = /max (?:daily |monthly )?requests? limit exceeded|bandwidth limit exceeded|WRONGPASS|NOAUTH|NOPERM|\bunauthori[sz]ed\b/i;
+const REDIS_CONSECUTIVE_FAILURE_LIMIT = 10;
+let redisConsecutiveFailures = 0;
+let redisDisabledReason = null;
+
+export function disableRedis(reason) {
+  if (!cacheEnabled) return;
+  cacheEnabled = false;
+  redisDisabledReason = String(reason);
+  console.error(`[Cache] Redis disabled for this process (${redisDisabledReason}); using in-memory state`);
+}
+
+export function getRedisDisabledReason() {
+  return redisDisabledReason;
+}
+
+function noteRedisSuccess() {
+  redisConsecutiveFailures = 0;
+}
+
+function noteRedisFailure(error) {
+  const message = error?.message || String(error);
+  redisConsecutiveFailures += 1;
+  if (FATAL_REDIS_ERROR.test(message)) {
+    disableRedis(message);
+  } else if (redisConsecutiveFailures >= REDIS_CONSECUTIVE_FAILURE_LIMIT) {
+    disableRedis(`${redisConsecutiveFailures} consecutive failures, last: ${message}`);
+  }
+}
+
+// Observes every promise-returning client call (pipeline/multi exec included)
+// for the breaker without changing what the caller receives.
+function withFailureTap(client) {
+  const tapped = new Proxy(client, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop);
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        const result = value.apply(target, args);
+        if (result === target) return tapped;
+        if (result && typeof result.then === 'function') {
+          result.then(noteRedisSuccess, noteRedisFailure);
+        } else if (result && typeof result === 'object' && (prop === 'pipeline' || prop === 'multi')) {
+          return withFailureTap(result);
+        }
+        return result;
+      };
+    }
+  });
+  return tapped;
+}
+
 /**
  * Initialize the Redis cache connection
  * Call this at server startup
  */
 export function initCache({ redisClient, analysisClient } = {}) {
+  redisConsecutiveFailures = 0;
+  redisDisabledReason = null;
   if (redisClient || analysisClient) {
     if (!redisClient || !analysisClient) {
       throw new TypeError('Both redisClient and analysisClient are required when injecting cache clients');
     }
-    redis = redisClient;
-    analysisRedis = analysisClient;
+    redis = withFailureTap(redisClient);
+    analysisRedis = withFailureTap(analysisClient);
     cacheEnabled = true;
     return true;
+  }
+
+  if (!isRedisConfigEnabled()) {
+    redisDisabledReason = 'turned off by redis.cfg / REDIS_ENABLED';
+    console.log('[Cache] Upstash Redis turned off (redis.cfg / REDIS_ENABLED) - using in-memory state');
+    return false;
   }
 
   const url = process.env.UPSTASH_REDIS_REST_URL;
@@ -249,11 +339,11 @@ export function initCache({ redisClient, analysisClient } = {}) {
   }
 
   try {
-    redis = new Redis({
+    redis = withFailureTap(new Redis({
       url,
       token,
-    });
-    analysisRedis = createUpstashBinaryClient({ url, token });
+    }));
+    analysisRedis = withFailureTap(createUpstashBinaryClient({ url, token }));
     cacheEnabled = true;
     console.log('[Cache] Upstash Redis initialized successfully');
     return true;

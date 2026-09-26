@@ -116,6 +116,8 @@ import {
   renewRuntimeLease,
   releaseRuntimeLease,
   isCacheEnabled,
+  disableRedis,
+  getRedisDisabledReason,
   getRedisCommandClient,
   checkCacheConnection,
   incrementRuntimeCounter,
@@ -328,11 +330,16 @@ function rateLimitKey(req) {
   return normalizeRateLimitIp(getClientIp(req));
 }
 
-// Whether the runtime store is mandatory. Declared BEFORE makeLimiter (which
-// reads it for fail-open/fail-closed selection) — a later declaration would be
-// a temporal-dead-zone crash at module load.
-const REQUIRE_REDIS_RUNTIME =
+// Fail-closed runtime-store policy (REQUIRE_REDIS_RUNTIME, default on in
+// production). It applies only while Redis is live: when Redis is turned off
+// (redis.cfg / REDIS_ENABLED), unconfigured, fails its startup probe, or trips
+// the runtime breaker in services/cache.js, every path serves from the
+// in-memory fallbacks instead of refusing requests. Declared BEFORE
+// makeLimiter (which reads it for fail-open/fail-closed selection) — a later
+// declaration would be a temporal-dead-zone crash at module load.
+const STRICT_REDIS_RUNTIME =
   (process.env.REQUIRE_REDIS_RUNTIME ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
+const requireRedisRuntime = () => STRICT_REDIS_RUNTIME && isCacheEnabled();
 
 const makeLimiter = createRateLimiterFactory({
   isCacheEnabled,
@@ -343,7 +350,7 @@ const makeLimiter = createRateLimiterFactory({
   // Dev/no-Redis mode fails open on store errors; production keeps fail-closed
   // (Redis is required anyway) and /health probes Redis so Cloud Run stops
   // routing to an instance whose runtime store is down.
-  failOpenOnStoreError: !REQUIRE_REDIS_RUNTIME
+  failOpenOnStoreError: !STRICT_REDIS_RUNTIME
 });
 
 function createConcurrencyLimiter(max, code) {
@@ -557,20 +564,18 @@ function externalInflightKey(fileHash) {
 async function storeJob(uid, jobData) {
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(`job:${uid}`, jobData, JOB_EXPIRY_SECONDS);
-    if (!stored && REQUIRE_REDIS_RUNTIME) {
+    if (stored) return;
+    if (requireRedisRuntime()) {
       throw new Error('Runtime store unavailable while saving analysis job');
     }
-  } else {
-    if (REQUIRE_REDIS_RUNTIME) {
-      throw new Error('Runtime store required but Redis cache is not configured');
-    }
-    externalJobs.set(uid, jobData);
+    // The failed write took Redis offline (or strict mode is off): keep it locally.
   }
+  externalJobs.set(uid, jobData);
 }
 
 async function loadJob(uid) {
   if (isCacheEnabled()) {
-    return REQUIRE_REDIS_RUNTIME
+    return requireRedisRuntime()
       ? await getRuntimeValueStrict(`job:${uid}`)
       : await getRuntimeValue(`job:${uid}`);
   }
@@ -586,9 +591,6 @@ async function acquireExternalJobLease(uid) {
       EXTERNAL_JOB_LEASE_SECONDS
     );
     return acquired ? token : null;
-  }
-  if (REQUIRE_REDIS_RUNTIME) {
-    throw new Error('Runtime store required but Redis cache is not configured');
   }
 
   const existing = externalJobLeases.get(uid);
@@ -628,12 +630,9 @@ async function releaseExternalJobLease(uid, token) {
 
 async function loadExternalInflightJob(fileHash) {
   if (isCacheEnabled()) {
-    return REQUIRE_REDIS_RUNTIME
+    return requireRedisRuntime()
       ? await getRuntimeStringValueStrict(externalInflightKey(fileHash))
       : await getRuntimeStringValue(externalInflightKey(fileHash));
-  }
-  if (REQUIRE_REDIS_RUNTIME) {
-    throw new Error('Runtime store required but Redis cache is not configured');
   }
   return externalInflightJobs.get(fileHash) || null;
 }
@@ -657,9 +656,6 @@ async function acquireExternalSubmissionLease(fileHash) {
       EXTERNAL_SUBMISSION_LEASE_SECONDS
     );
     return acquired ? token : null;
-  }
-  if (REQUIRE_REDIS_RUNTIME) {
-    throw new Error('Runtime store required but Redis cache is not configured');
   }
 
   const existing = externalSubmissionLeases.get(fileHash);
@@ -707,9 +703,6 @@ async function storeAcceptedExternalJobWithMapping(fileHash, uid, jobData, token
       JOB_EXPIRY_SECONDS
     );
   }
-  if (REQUIRE_REDIS_RUNTIME) {
-    throw new Error('Runtime store required but Redis cache is not configured');
-  }
 
   const lease = externalSubmissionLeases.get(fileHash);
   const existingUid = externalInflightJobs.get(fileHash);
@@ -730,9 +723,6 @@ async function storeLeasedJob(uid, jobData, token, expectedVersion) {
       jobData,
       JOB_EXPIRY_SECONDS
     );
-  }
-  if (REQUIRE_REDIS_RUNTIME) {
-    throw new Error('Runtime store required but Redis cache is not configured');
   }
 
   const lease = externalJobLeases.get(uid);
@@ -784,15 +774,13 @@ function runtimeSessionTrackingKey(sessionId) {
 async function storeSession(sessionId, sessionData) {
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
-    if (!stored && REQUIRE_REDIS_RUNTIME) {
+    if (stored) return;
+    if (requireRedisRuntime()) {
       throw new Error('Runtime store unavailable while saving session');
     }
-  } else {
-    if (REQUIRE_REDIS_RUNTIME) {
-      throw new Error('Runtime store required but Redis cache is not configured');
-    }
-    validSessions.set(sessionId, sessionData);
+    // The failed write took Redis offline (or strict mode is off): keep it locally.
   }
+  validSessions.set(sessionId, sessionData);
 }
 
 async function loadSessionTracking(sessionId) {
@@ -838,7 +826,7 @@ async function markSessionHash(sessionId, hash) {
   hashes.set(hash, timestamp);
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeSessionHashKey(sessionId, hash), { timestamp }, OWNERSHIP_EXPIRY_SECONDS);
-    if (!stored && REQUIRE_REDIS_RUNTIME) {
+    if (!stored && requireRedisRuntime()) {
       throw new Error('Runtime store unavailable while saving file ownership');
     }
   }
@@ -892,7 +880,7 @@ async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
   winDbgJobOwnership.set(uid, ownership);
   if (isCacheEnabled()) {
     const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
-    if (!stored && REQUIRE_REDIS_RUNTIME) {
+    if (!stored && requireRedisRuntime()) {
       throw new Error('Runtime store unavailable while saving WinDBG job ownership');
     }
   }
@@ -907,7 +895,7 @@ async function loadWinDbgJobOwnership(uid) {
   // other instances still need. The in-process Map is only the no-Redis
   // fallback, mirroring loadJob().
   if (isCacheEnabled()) {
-    return REQUIRE_REDIS_RUNTIME
+    return requireRedisRuntime()
       ? await getRuntimeValueStrict(runtimeWinDbgJobKey(uid))
       : await getRuntimeValue(runtimeWinDbgJobKey(uid));
   }
@@ -2113,7 +2101,7 @@ app.get('/health', async (req, res) => {
   const redisOk = await probeRedisHealth();
   res.status(redisOk ? 200 : 503).json({
     status: redisOk ? 'ok' : 'degraded',
-    redis: redisOk,
+    redis: isCacheEnabled() ? redisOk : 'disabled',
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -4481,14 +4469,13 @@ async function startServer() {
   ]);
   console.log('XXHash initialized for session management');
 
-  if (REQUIRE_REDIS_RUNTIME && !isCacheEnabled()) {
-    throw new Error('REQUIRE_REDIS_RUNTIME is enabled but Upstash Redis is not configured');
-  }
+  // Never crash-loop over Redis (2026-09 outage: an exhausted Upstash quota
+  // failed this probe on every cold start). Serve from in-memory state instead.
   if (isCacheEnabled() && !(await checkCacheConnection())) {
-    if (REQUIRE_REDIS_RUNTIME) {
-      throw new Error('REQUIRE_REDIS_RUNTIME is enabled but Redis health check failed');
-    }
-    log.warn('redis.health.failed', { runtimeRequired: false });
+    disableRedis('startup health check failed');
+  }
+  if (!isCacheEnabled()) {
+    log.warn('redis.off', { reason: getRedisDisabledReason() || 'not configured' });
   }
   await initCacheCompression();
 
