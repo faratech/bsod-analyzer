@@ -67,7 +67,6 @@ import { extractStatsFacts } from './server/stats.js';
 import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
-import { createGcsJsonReader } from './server/gcsJson.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
 import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
@@ -1644,20 +1643,18 @@ const statsInsightService = createStatsInsightService({
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
-// Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
-// acknowledged to WinDbg-API so it can prune its raw output after retention.
 // Corpus priors (per stop code / per driver statistics from the daily BigQuery
 // build, read from Cloud Storage) appended to the end of WinDBG prompts.
 const crashPriors = process.env.CORPUS_PRIORS_ENABLED === 'false'
   ? null
-  : createCrashPriors({
-    reader: createGcsJsonReader({ bucket: process.env.STATS_BUCKET || 'project-bigfoot-bsod-stats' })
-  });
+  : createCrashPriors({ reader: statsFilesReader });
 
 async function priorContextFor(signal) {
   return crashPriors ? crashPriors.contextFor(signal) : '';
 }
 
+// Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
+// acknowledged to WinDbg-API so it can prune its raw output after retention.
 const windbgCorpus = createWinDbgCorpusRecorder({
   dataset: process.env.CORPUS_BIGQUERY_DATASET || undefined,
   table: process.env.CORPUS_BIGQUERY_TABLE || undefined,
