@@ -10,6 +10,7 @@
 //
 // Best-effort: failures are logged and never affect the analysis response; a job
 // that is not acknowledged simply stays on the WinDBG server.
+import { randomUUID } from 'node:crypto';
 import { createGcpMetadataAuth } from './gcpMetadata.js';
 import { mapWinDbgJobStatus } from '../shared/windbgApiClient.js';
 
@@ -97,9 +98,52 @@ export function toInsertAllRow(row) {
   return { ...row, result: json };
 }
 
+function jsonValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return { text: value }; }
+  }
+  return value;
+}
+
+export function buildAiReportRow(entry, { now = Date.now(), reportId } = {}) {
+  return {
+    report_id: reportId,
+    created_at: new Date(now).toISOString(),
+    origin: text(entry.origin) || 'web',
+    source: text(entry.source),
+    prompt_type: text(entry.promptType),
+    job_id: text(entry.jobId),
+    file_hash: text(entry.fileHash),
+    provider: text(entry.provider),
+    model: text(entry.model),
+    prompt_text: typeof entry.promptText === 'string' ? entry.promptText : entry.promptText == null ? null : JSON.stringify(entry.promptText),
+    response_text: text(entry.responseText),
+    report: jsonValue(entry.report),
+    final_report: jsonValue(entry.finalReport),
+    usage: jsonValue(entry.usage),
+    prompt_omitted_for_size: false
+  };
+}
+
+// JSON columns travel as strings in insertAll; the prompt is the only field
+// dropped (and flagged) if a row would exceed the request limit.
+export function toAiInsertAllRow(row) {
+  const out = { ...row };
+  for (const key of ['report', 'final_report', 'usage']) {
+    out[key] = row[key] === null ? null : JSON.stringify(row[key]);
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > MAX_ROW_BYTES) {
+    out.prompt_text = null;
+    out.prompt_omitted_for_size = true;
+  }
+  return out;
+}
+
 export function createWinDbgCorpusRecorder({
   dataset = 'bsod_corpus',
   table = 'windbg_analyses',
+  aiTable = 'ai_reports',
   projectId,
   getAccessToken,
   fetchImpl = globalThis.fetch,
@@ -108,20 +152,20 @@ export function createWinDbgCorpusRecorder({
   logger = console,
   now = () => Date.now()
 } = {}) {
-  if (!IDENTIFIER_RE.test(dataset) || !IDENTIFIER_RE.test(table)) {
+  if (![dataset, table, aiTable].every(name => IDENTIFIER_RE.test(name))) {
     throw new TypeError('BigQuery dataset/table names must be plain identifiers');
   }
   const { accessToken, projectIdentifier } = createGcpMetadataAuth({ projectId, getAccessToken, fetchImpl });
   const recent = new Set(); // job ids already recorded by this instance
 
-  async function insert(row) {
+  async function insert(targetTable, insertId, json) {
     const projectName = await projectIdentifier();
     const res = await fetchImpl(
-      `${BIGQUERY}/projects/${projectName}/datasets/${dataset}/tables/${table}/insertAll`,
+      `${BIGQUERY}/projects/${projectName}/datasets/${dataset}/tables/${targetTable}/insertAll`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: [{ insertId: row.job_id, json: toInsertAllRow(row) }] }),
+        body: JSON.stringify({ rows: [{ insertId, json }] }),
         signal: AbortSignal.timeout(INSERT_TIMEOUT_MS)
       }
     );
@@ -143,7 +187,7 @@ export function createWinDbgCorpusRecorder({
     if (!isEnabled() || !job?.id || mapWinDbgJobStatus(job.status) !== 'completed' || recent.has(job.id)) return false;
     const row = buildCorpusRow(job, { ...meta, ingestSource: 'live', now: now() });
     try {
-      await insert(row);
+      await insert(table, row.job_id, toInsertAllRow(row));
     } catch (error) {
       logger.warn?.('corpus.insert_failed', { jobId: row.job_id, error: error?.message || String(error) });
       return false;
@@ -157,5 +201,18 @@ export function createWinDbgCorpusRecorder({
     return true;
   }
 
-  return { record };
+  // One freshly generated AI report, joinable to windbg_analyses by job_id / file_hash.
+  async function recordAiReport(entry = {}) {
+    if (!isEnabled() || !entry.report) return false;
+    const row = buildAiReportRow(entry, { now: now(), reportId: randomUUID() });
+    try {
+      await insert(aiTable, row.report_id, toAiInsertAllRow(row));
+      return true;
+    } catch (error) {
+      logger.warn?.('corpus.ai_insert_failed', { jobId: row.job_id, error: error?.message || String(error) });
+      return false;
+    }
+  }
+
+  return { record, recordAiReport };
 }
