@@ -42,6 +42,7 @@ import {
   jsonParser,
   staticMiddleware
 } from './server/fastifyCompat.js';
+import { createMaintenanceMiddleware } from './server/maintenance.js';
 import {
   createRateLimiterFactory,
   jsonRateLimitHandler,
@@ -312,6 +313,12 @@ if (CLOUDFLARE_ONLY_INGRESS) {
     return res.status(403).send('Forbidden');
   });
 }
+
+// Maintenance gate: MAINTENANCE_MODE=true serves a 503 page for everything
+// except /health. Flip it without a redeploy via
+//   gcloud run services update bsod-analyzer --region=us-east1 \
+//     --update-env-vars MAINTENANCE_MODE=true|false
+app.use(createMaintenanceMiddleware());
 
 function rateLimitKey(req) {
   return normalizeRateLimitIp(getClientIp(req));
