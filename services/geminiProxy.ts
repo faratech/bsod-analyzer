@@ -10,7 +10,7 @@ import { FILE_SIZE_THRESHOLDS, PROCESSING_LIMITS } from '../constants';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
-import { analyzeWithWinDBG, getCachedAnalysisByHash, WinDBGAnalysisResult } from './windbgService';
+import { analyzeWithWinDBG, getCachedAnalysisByHash, getFileHandle, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
 import {
     mapStructuredSignalToReport,
@@ -47,6 +47,7 @@ interface GenerateContentParams {
     };
     tools?: any[];
     fileHash?: string; // For cache key consistency
+    fileHandle?: string; // Signed upload handle proving ownership of fileHash
 }
 
 // Format a bug check code as 0x-prefixed uppercase hex (e.g., 0x0000007E)
@@ -694,7 +695,8 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
                 // AI_MAX_OUTPUT_TOKENS default, which must also cover the
                 // DeepSeek reasoning trace.
             },
-            fileHash // Pass fileHash for cache key consistency
+            fileHash, // Pass fileHash for cache key consistency
+            fileHandle: getFileHandle(fileHash) // Proves this session uploaded it
             // Note: Grounding with Google Search cannot be used with JSON response format
             // To use grounding, we would need to remove responseMimeType and responseSchema
         });
@@ -964,7 +966,8 @@ ${analysisForPrompt}
                 // No maxOutputTokens: let the server's AI_MAX_OUTPUT_TOKENS
                 // default govern the output budget.
             },
-            fileHash // Pass fileHash for cache key consistency
+            fileHash, // Pass fileHash for cache key consistency
+            fileHandle: getFileHandle(fileHash) // Proves this session uploaded it
         });
 
         const responseText = response.text;

@@ -6,7 +6,6 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyCors from '@fastify/cors';
 import fastifyMultipart from '@fastify/multipart';
 import crypto from 'crypto';
-import xxhash from 'xxhash-wasm';
 import { SECURITY_CONFIG } from './serverConfig.js';
 import { PROMPT_SHAPES, SYSTEM_INSTRUCTION_ANALYSIS, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from './shared/promptTemplates.js';
 import fs from 'fs';
@@ -69,6 +68,7 @@ import { extractStatsFacts } from './server/stats.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
+import { createFileHandleCodec, createSessionCodec } from './server/sessionToken.js';
 import { createArchiveDumpExtractor } from './server/archiveExtract.js';
 import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
@@ -342,15 +342,8 @@ const STRICT_REDIS_RUNTIME =
 const requireRedisRuntime = () => STRICT_REDIS_RUNTIME && isCacheEnabled();
 
 const makeLimiter = createRateLimiterFactory({
-  isCacheEnabled,
-  incrementRuntimeCounter,
-  deleteRuntimeValue,
   defaultKeyGenerator: rateLimitKey,
-  defaultHandler: jsonRateLimitHandler,
-  // Dev/no-Redis mode fails open on store errors; production keeps fail-closed
-  // (Redis is required anyway) and /health probes Redis so Cloud Run stops
-  // routing to an instance whose runtime store is down.
-  failOpenOnStoreError: !STRICT_REDIS_RUNTIME
+  defaultHandler: jsonRateLimitHandler
 });
 
 function createConcurrencyLimiter(max, code) {
@@ -402,9 +395,6 @@ function timingSafeEqualString(a, b) {
   return crypto.timingSafeEqual(aHash, bHash);
 }
 
-// Initialize xxhash (awaited before server starts listening)
-let hasher;
-
 // Initialize Upstash Redis cache
 initCache();
 
@@ -419,14 +409,28 @@ if (!SESSION_SECRET) {
 // Use the secret (either from env or temporary)
 const ACTUAL_SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
-// Store valid sessions. Redis is the source of truth across Cloud Run
-// instances; these maps are just per-instance hot caches.
-const validSessions = new Map(); // sessionId -> { hash, timestamp, turnstileVerified }
-const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour
-const SESSION_EXPIRY_SECONDS = Math.ceil(SESSION_EXPIRY / 1000);
-// Absolute cap: the sliding SESSION_EXPIRY renews on every request, so without a
-// hard ceiling an actively-used session would never expire.
+// Sessions are stateless HMAC-signed cookies (server/sessionToken.js), valid on
+// every Cloud Run instance with no shared store.
+const SESSION_EXPIRY = 60 * 60 * 1000; // 1 hour idle
+// Absolute cap: the idle window slides on re-issue, so without a hard ceiling
+// an actively-used session would never expire.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+// requireSession re-issues the cookie once it is this old, sliding the idle
+// window for tabs whose periodic /api/auth/session refresh is paused (hidden).
+const SESSION_REISSUE_AFTER_MS = 30 * 60 * 1000;
+const sessionCodec = createSessionCodec({
+  secret: ACTUAL_SESSION_SECRET,
+  previousSecret: process.env.SESSION_SECRET_PREVIOUS,
+  idleMs: SESSION_EXPIRY,
+  maxAgeMs: SESSION_MAX_AGE_MS
+});
+// Signed per-upload proof of file ownership + upstream WinDBG job id, so poll,
+// download and cache reads work on an instance that never saw the upload.
+const fileHandleCodec = createFileHandleCodec({
+  secret: ACTUAL_SESSION_SECRET,
+  previousSecret: process.env.SESSION_SECRET_PREVIOUS,
+  ttlMs: SESSION_MAX_AGE_MS
+});
 
 // Track API requests per session (prevent rapid abuse)
 const sessionRequestTracking = new Map(); // sessionId -> { count, resetTime, totalTokens }
@@ -500,6 +504,7 @@ const WF_SSO_ISSUER = 'windowsforum.com';
 const WF_SSO_AUDIENCE = 'bsod';
 const WF_SSO_MAX_AGE_MS = 5 * 60 * 1000; // reject tokens older than this regardless of exp
 const WF_SSO_NONCE_TTL_SECONDS = 10 * 60; // single-use window for a token's jti
+const usedSsoNonces = new Map(); // jti -> expiresAt (pruned by the periodic sweep)
 // An elevated tier (forum/premium) is only honored for this long after the SSO
 // exchange that established it. The session itself may live up to SESSION_EXPIRY,
 // but premium privileges expire independently so a cancelled/refunded/expired
@@ -514,7 +519,6 @@ if (process.env.NODE_ENV === 'production' && !WF_SSO_SECRET) {
 const sessionHashOwnership = new Map(); // sessionId -> Map(hash -> timestamp)
 const winDbgJobOwnership = new Map(); // uid -> { sessionId, fileHash, timestamp }
 const OWNERSHIP_EXPIRY = SESSION_EXPIRY;
-const OWNERSHIP_EXPIRY_SECONDS = Math.ceil(OWNERSHIP_EXPIRY / 1000);
 
 // Track external asynchronous analysis jobs (fallback when Redis is not enabled)
 const externalJobs = new Map(); // uid -> jobData
@@ -755,32 +759,8 @@ async function loadExternalWinDbgAnalysis(fileHash) {
   return externalJobAnalysisCache.get(fileHash) || null;
 }
 
-function runtimeSessionKey(sessionId) {
-  return `session:${sessionId}`;
-}
-
-function runtimeSessionHashKey(sessionId, hash) {
-  return `session-hash:${sessionId}:${hash}`;
-}
-
-function runtimeWinDbgJobKey(uid) {
-  return `windbg-job:${uid}`;
-}
-
 function runtimeSessionTrackingKey(sessionId) {
   return `session-tracking:${sessionId}`;
-}
-
-async function storeSession(sessionId, sessionData) {
-  if (isCacheEnabled()) {
-    const stored = await setRuntimeValue(runtimeSessionKey(sessionId), sessionData, SESSION_EXPIRY_SECONDS);
-    if (stored) return;
-    if (requireRedisRuntime()) {
-      throw new Error('Runtime store unavailable while saving session');
-    }
-    // The failed write took Redis offline (or strict mode is off): keep it locally.
-  }
-  validSessions.set(sessionId, sessionData);
 }
 
 async function loadSessionTracking(sessionId) {
@@ -799,122 +779,41 @@ async function deleteSessionTracking(sessionId) {
   sessionRequestTracking.delete(sessionId);
 }
 
-async function loadSession(sessionId) {
-  if (isCacheEnabled()) {
-    return await getRuntimeValue(runtimeSessionKey(sessionId));
-  }
-  return validSessions.get(sessionId);
-}
-
-async function deleteSession(sessionId) {
-  if (isCacheEnabled()) {
-    await deleteRuntimeValue(runtimeSessionKey(sessionId));
-  } else {
-    validSessions.delete(sessionId);
-  }
-  sessionHashOwnership.delete(sessionId);
-}
-
-async function markSessionHash(sessionId, hash) {
+// File ownership ("this session uploaded bytes hashing to X") gates cached
+// analysis reads (issue #40). The proof is the signed file handle the upload
+// returned; the per-instance map only serves clients that predate handles.
+function markSessionHash(sessionId, hash) {
   if (!sessionId || !hash || !HASH_RE.test(hash)) return;
   let hashes = sessionHashOwnership.get(sessionId);
   if (!hashes) {
     hashes = new Map();
     sessionHashOwnership.set(sessionId, hashes);
   }
-  const timestamp = Date.now();
-  hashes.set(hash, timestamp);
-  if (isCacheEnabled()) {
-    const stored = await setRuntimeValue(runtimeSessionHashKey(sessionId, hash), { timestamp }, OWNERSHIP_EXPIRY_SECONDS);
-    if (!stored && requireRedisRuntime()) {
-      throw new Error('Runtime store unavailable while saving file ownership');
-    }
-  }
+  hashes.set(hash, Date.now());
 }
 
-async function sessionOwnsHash(sessionId, hash) {
-  const hashes = sessionHashOwnership.get(sessionId);
-  if (hashes?.has(hash)) {
-    if (Date.now() - hashes.get(hash) > OWNERSHIP_EXPIRY) {
-      hashes.delete(hash);
-      await deleteRuntimeValue(runtimeSessionHashKey(sessionId, hash));
-      return false;
-    }
-    return true;
-  }
-
-  const stored = await getRuntimeValue(runtimeSessionHashKey(sessionId, hash));
-  if (!stored?.timestamp || Date.now() - stored.timestamp > OWNERSHIP_EXPIRY) {
-    await deleteRuntimeValue(runtimeSessionHashKey(sessionId, hash));
-    return false;
-  }
-
-  let sessionHashes = sessionHashOwnership.get(sessionId);
-  if (!sessionHashes) {
-    sessionHashes = new Map();
-    sessionHashOwnership.set(sessionId, sessionHashes);
-  }
-  sessionHashes.set(hash, stored.timestamp);
-  return true;
+function sessionOwnsHash(sessionId, hash, handle) {
+  if (handle && fileHandleCodec.verify(handle, { fileHash: hash, sessionId })) return true;
+  const timestamp = sessionHashOwnership.get(sessionId)?.get(hash);
+  return timestamp !== undefined && Date.now() - timestamp <= OWNERSHIP_EXPIRY;
 }
 
-function ownershipIncludesSession(job, sessionId) {
-  if (!job || !sessionId) return false;
-  // Current shape tracks every session that uploaded this identical dump so a
-  // second uploader cannot steal ownership out from under the first.
-  if (Array.isArray(job.sessions)) return job.sessions.includes(sessionId);
-  return job.sessionId === sessionId; // legacy single-session entries
+function markWinDbgJob(sessionId, uid, upstreamJobId) {
+  if (!sessionId || !uid) return;
+  const existing = winDbgJobOwnership.get(uid);
+  const sessions = new Set(existing?.sessions || []);
+  sessions.add(sessionId);
+  winDbgJobOwnership.set(uid, { sessions: [...sessions], upstreamJobId, timestamp: Date.now() });
+  markSessionHash(sessionId, uid);
 }
 
-async function markWinDbgJob(sessionId, uid, fileHash, upstreamJobId = uid) {
-  if (!sessionId || !uid || !fileHash) return;
-  // Merge from the authoritative record (see loadWinDbgJobOwnership): merging
-  // into a stale process-local snapshot would silently drop sessions another
-  // instance added.
-  const existing = await loadWinDbgJobOwnership(uid);
-  const ownership = existing
-    ? { ...existing,
-        sessions: [...new Set([...(Array.isArray(existing.sessions) ? existing.sessions : [existing.sessionId].filter(Boolean)), sessionId])],
-        timestamp: Date.now() }
-    : { sessions: [sessionId], fileHash, upstreamJobId, timestamp: Date.now() };
-  winDbgJobOwnership.set(uid, ownership);
-  if (isCacheEnabled()) {
-    const stored = await setRuntimeValue(runtimeWinDbgJobKey(uid), ownership, OWNERSHIP_EXPIRY_SECONDS);
-    if (!stored && requireRedisRuntime()) {
-      throw new Error('Runtime store unavailable while saving WinDBG job ownership');
-    }
-  }
-  await markSessionHash(sessionId, fileHash);
-}
-
-async function loadWinDbgJobOwnership(uid) {
-  // Redis is the authority when it is available. markWinDbgJob() merges an
-  // extra session on whichever instance handles the second upload, so serving
-  // a process-local snapshot in preference would 403 the merged session
-  // intermittently and let a stale local timestamp expire a shared record
-  // other instances still need. The in-process Map is only the no-Redis
-  // fallback, mirroring loadJob().
-  if (isCacheEnabled()) {
-    return requireRedisRuntime()
-      ? await getRuntimeValueStrict(runtimeWinDbgJobKey(uid))
-      : await getRuntimeValue(runtimeWinDbgJobKey(uid));
-  }
-  return winDbgJobOwnership.get(uid);
-}
-
-async function getOwnedWinDbgJob(sessionId, uid) {
-  const job = await loadWinDbgJobOwnership(uid);
-  if (!ownershipIncludesSession(job, sessionId)) return null;
-  if (Date.now() - job.timestamp > OWNERSHIP_EXPIRY) {
-    winDbgJobOwnership.delete(uid);
-    // Expire the shared record only while it is still the expired one just
-    // read — a concurrent markWinDbgJob() may have refreshed it for a new
-    // session, and an unconditional delete would drop that fresh ownership.
-    if (isCacheEnabled()) {
-      await deleteRuntimeValueIfEquals(runtimeWinDbgJobKey(uid), job);
-    }
-    return null;
-  }
+// Resolves the upstream WinDBG job for a poll/download: from the signed handle
+// on any instance, else from this instance's upload record.
+function getOwnedWinDbgJob(sessionId, uid, handle) {
+  const claims = handle ? fileHandleCodec.verify(handle, { fileHash: uid, sessionId }) : null;
+  if (claims?.jid) return { upstreamJobId: claims.jid };
+  const job = winDbgJobOwnership.get(uid);
+  if (!job?.sessions.includes(sessionId) || Date.now() - job.timestamp > OWNERSHIP_EXPIRY) return null;
   return job;
 }
 
@@ -943,14 +842,11 @@ const upload = createUploadHandler({
   }
 });
 
-// Clean up expired sessions periodically
+// Bound the per-instance maps periodically
 setInterval(() => {
   const now = Date.now();
-  for (const [sessionId, data] of validSessions.entries()) {
-    if (now - data.timestamp > SESSION_EXPIRY) {
-      validSessions.delete(sessionId);
-      sessionHashOwnership.delete(sessionId);
-    }
+  for (const [jti, expiresAt] of usedSsoNonces.entries()) {
+    if (expiresAt <= now) usedSsoNonces.delete(jti);
   }
   for (const [uid, job] of externalJobs.entries()) {
     if (now - job.timestamp > JOB_EXPIRY_SECONDS * 1000) {
@@ -1695,28 +1591,18 @@ if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
 // Turnstile secret key from environment/Secret Manager
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
 
-// Replay protection for verified tokens lives in server/turnstile.js (atomic
-// Redis reservation shared across instances). The sweep below only bounds the
-// no-Redis fallback map that guard keeps for development.
+// Single-use enforcement happens BEFORE the siteverify round-trip
+// (server/turnstile.js), so concurrent requests carrying the same token on this
+// instance cannot both win. Replays on another instance are rejected by
+// Cloudflare itself (siteverify answers timeout-or-duplicate for a redeemed
+// token). The reservation is released only when the token did not verify or
+// the transport threw — a successfully verified token stays consumed.
+const turnstileReplayGuard = createTurnstileReplayGuard();
 setInterval(() => {
   turnstileReplayGuard.prune(5 * 60 * 1000);
-}, 60 * 1000); // Clean every minute
+}, 60 * 1000); // Turnstile tokens are only valid for 300s
 
-// Verify Turnstile token with proper Siteverify implementation
-//
-// Single-use enforcement is ATOMIC and happens BEFORE the siteverify round-trip
-// (server/turnstile.js): incrementRuntimeCounter() is a Redis INCRBY, so
-// concurrent requests carrying the same token cannot both win the race, and the
-// reservation lives in Redis, so it is shared across Cloud Run instances (the
-// previous in-memory Map was neither). The reservation is released only when
-// the token did not verify or the transport threw — a successfully verified
-// token stays consumed.
-const turnstileReplayGuard = createTurnstileReplayGuard({
-  incrementCounter: incrementRuntimeCounter,
-  redisEnabled: isCacheEnabled
-});
-
-async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
+async function verifyTurnstileToken(token, ip) {
   if (!TURNSTILE_SECRET_KEY) {
     console.error('TURNSTILE_SECRET_KEY not configured');
     return {
@@ -1734,8 +1620,8 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
     };
   }
 
-  // Reserve the token atomically before talking to Cloudflare (issue #72).
-  const reservation = await turnstileReplayGuard.reserve(token);
+  // Reserve the token before talking to Cloudflare (issue #72).
+  const reservation = turnstileReplayGuard.reserve(token);
   if (reservation.duplicate) {
     console.warn('Turnstile token replay blocked:', safeToken(token));
     return {
@@ -1744,17 +1630,6 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
       error: 'Token already used'
     };
   }
-  if (reservation.unavailable) {
-    // Fail closed: without the atomic reservation a replay could mint extra
-    // sessions, so no verification is attempted during a Redis outage.
-    console.error('Turnstile reservation unavailable (runtime store down)');
-    return {
-      success: false,
-      'error-codes': ['internal-error'],
-      error: 'Verification temporarily unavailable'
-    };
-  }
-
   try {
     // Build form data as required by Siteverify API
     const formData = new URLSearchParams();
@@ -1763,11 +1638,6 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
 
     if (ip) {
       formData.append('remoteip', ip);
-    }
-
-    // Add idempotency key for retry support
-    if (idempotencyKey) {
-      formData.append('idempotency_key', idempotencyKey);
     }
 
     const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
@@ -1781,7 +1651,7 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
 
     if (!response.ok) {
       console.error('Siteverify HTTP error:', response.status);
-      await turnstileReplayGuard.release(token);
+      turnstileReplayGuard.release(token);
       return {
         success: false,
         'error-codes': ['internal-error'],
@@ -1801,15 +1671,15 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
       });
     } else {
       // The token did not verify, so it carries no value — release the
-      // reservation so a client retry (or idempotency-key retry) can proceed.
-      await turnstileReplayGuard.release(token);
+      // reservation so a client retry can proceed.
+      turnstileReplayGuard.release(token);
       console.error('Turnstile verification failed:', result['error-codes']);
     }
 
     return result;
   } catch (error) {
     console.error('Turnstile Siteverify error:', error);
-    await turnstileReplayGuard.release(token);
+    turnstileReplayGuard.release(token);
     return {
       success: false,
       'error-codes': ['internal-error'],
@@ -1818,39 +1688,26 @@ async function verifyTurnstileToken(token, ip, idempotencyKey = null) {
   }
 }
 
-// Generate session cookie. Keep xxhash signing, but do not bind the session to
-// the observed request IP: Cloudflare may send successive browser requests
-// through different edge IPs, which would invalidate legitimate long polls.
-function generateSessionCookie(turnstileVerified = false) {
-  if (!hasher) {
-    console.error('XXHash not initialized when trying to generate session');
-    throw new Error('XXHash not initialized');
-  }
-  
-  const sessionId = crypto.randomBytes(32).toString('hex');
-  const timestamp = Date.now();
-  const dataToHash = `${sessionId}:${timestamp}:${ACTUAL_SESSION_SECRET}`;
-  const sessionHash = hasher.h64ToString(dataToHash);
-  const sessionData = {
-    hash: sessionHash,
-    timestamp,
-    // Absolute-lifetime anchor (survives sliding renewals of `timestamp`).
-    createdAt: timestamp,
-    turnstileVerified
-  };
-  if (!isCacheEnabled()) {
-    validSessions.set(sessionId, sessionData);
-  }
-  
+// Mint a new verified session. The session is deliberately not bound to the
+// observed request IP: Cloudflare may send successive browser requests through
+// different edge IPs, which would invalidate legitimate long polls.
+function createSession() {
+  const now = Date.now();
   return {
-    sessionId,
-    sessionHash,
-    sessionData
+    sessionId: crypto.randomBytes(32).toString('hex'),
+    sessionData: {
+      timestamp: now,
+      // Absolute-lifetime anchor (survives sliding renewals of `timestamp`).
+      createdAt: now,
+      turnstileVerified: true
+    }
   };
 }
 
-// Set session cookies on a response
-function setSessionCookies(res, sessionId, sessionHash) {
+const LEGACY_SESSION_COOKIES = ['bsod_session_id', 'bsod_session_hash'];
+
+// (Re-)issue the signed session cookie, sliding the idle window.
+function setSessionCookies(res, sessionId, sessionData) {
   const cookieOptions = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -1858,8 +1715,8 @@ function setSessionCookies(res, sessionId, sessionHash) {
     maxAge: SESSION_EXPIRY,
     path: '/',
   };
-  res.cookie('bsod_session_id', sessionId, cookieOptions);
-  res.cookie('bsod_session_hash', sessionHash, cookieOptions);
+  sessionData.timestamp = Date.now();
+  res.cookie('bsod_session', sessionCodec.issue(sessionId, sessionData), cookieOptions);
   return cookieOptions;
 }
 
@@ -1870,41 +1727,15 @@ function clearSessionCookies(res) {
     path: '/',
   };
 
-  res.clearCookie('bsod_session_id', { ...baseOptions, httpOnly: true });
-  res.clearCookie('bsod_session_hash', { ...baseOptions, httpOnly: true });
+  for (const name of ['bsod_session', ...LEGACY_SESSION_COOKIES]) {
+    res.clearCookie(name, { ...baseOptions, httpOnly: true });
+  }
   res.clearCookie('bsod_turnstile_verified', { ...baseOptions, httpOnly: false });
 }
 
-// Validate session cookie
-async function validateSession(sessionId, sessionHash) {
-  const sessionData = await loadSession(sessionId);
-  
-  if (!sessionData) {
-    return { valid: false, reason: 'Session not found' };
-  }
-  
-  // Check expiry
-  if (Date.now() - sessionData.timestamp > SESSION_EXPIRY) {
-    await deleteSession(sessionId);
-    return { valid: false, reason: 'Session expired' };
-  }
-
-  // Absolute lifetime cap: sessions created before this field existed fall back
-  // to their last-renewal timestamp, so the cap tightens rather than loosens.
-  const sessionCreatedAt = Number.isFinite(sessionData.createdAt)
-    ? sessionData.createdAt
-    : sessionData.timestamp;
-  if (Date.now() - sessionCreatedAt > SESSION_MAX_AGE_MS) {
-    await deleteSession(sessionId);
-    return { valid: false, reason: 'Session expired' };
-  }
-
-  // Verify hash
-  if (!timingSafeEqualString(sessionData.hash, sessionHash)) {
-    return { valid: false, reason: 'Invalid session hash' };
-  }
-
-  return { valid: true, sessionData };
+// Validate the signed session cookie: { valid, reason?, sessionId, sessionData }.
+function validateSession(token) {
+  return sessionCodec.verify(token);
 }
 
 // Verify a WindowsForum SSO identity token: a compact HS256 JWS minted by the
@@ -1949,17 +1780,11 @@ async function verifyWfSsoToken(token) {
   if (now - iatMs > WF_SSO_MAX_AGE_MS) return null; // too old regardless of exp
   if (typeof claims.jti !== 'string' || !/^[a-f0-9]{16,64}$/i.test(claims.jti)) return null;
 
-  // Single-use: the first INCR wins; any later use of the same jti is a replay.
-  const nonce = await incrementRuntimeCounter(`sso-nonce:${claims.jti}`, WF_SSO_NONCE_TTL_SECONDS);
-  if (!nonce) {
-    // incrementRuntimeCounter returns null when the cache is disabled OR on any
-    // Redis error. If the runtime store is in use we cannot guarantee single-use,
-    // so FAIL CLOSED rather than silently allowing replay. Only when no cache is
-    // configured at all (local dev) is replay protection moot.
-    if (isCacheEnabled()) return null;
-  } else if (nonce.count > 1) {
-    return null; // replay
-  }
+  // Single-use per instance: the first exchange of a jti wins. A token (<= 5
+  // min old, see above) replayed on another instance can only re-mint the same
+  // forum identity it already proves.
+  if (usedSsoNonces.has(claims.jti)) return null; // replay
+  usedSsoNonces.set(claims.jti, now + WF_SSO_NONCE_TTL_SECONDS * 1000);
 
   const isPremium = claims.pre === true;
   return {
@@ -1973,8 +1798,7 @@ async function verifyWfSsoToken(token) {
 
 // Middleware to validate session for analyzer API
 const requireSession = async (req, res, next) => {
-  const sessionId = req.cookies.bsod_session_id;
-  const sessionHash = req.cookies.bsod_session_hash;
+  const sessionToken = req.cookies.bsod_session;
   const clientIp = getClientIp(req);
 
   try {
@@ -1986,25 +1810,21 @@ const requireSession = async (req, res, next) => {
       return next();
     }
 
-    if (!sessionId || !sessionHash) {
-      console.log('Session validation failed - missing cookies:', {
-        sessionId: !!sessionId,
-        sessionHash: !!sessionHash,
-        cookies: Object.keys(req.cookies || {})
-      });
+    if (!sessionToken) {
       clearSessionCookies(res);
+      // Cookies from the pre-stateless scheme cannot be honored: ask for a
+      // fresh Turnstile verification instead of a bare re-init.
+      if (LEGACY_SESSION_COOKIES.some(name => req.cookies?.[name])) {
+        return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
+      }
       return res.status(401).json({ error: 'Session required', code: 'NO_SESSION' });
     }
 
-    const validation = await validateSession(sessionId, sessionHash);
+    const validation = validateSession(sessionToken);
     if (!validation.valid) {
-      console.log('Session validation failed:', {
-        reason: validation.reason,
-        sessionId: sessionId.substring(0, 10) + '...',
-        clientIp
-      });
-      if (validation.reason === 'Session not found' || validation.reason === 'Session expired') {
-        clearSessionCookies(res);
+      console.log('Session validation failed:', { reason: validation.reason, clientIp });
+      clearSessionCookies(res);
+      if (validation.reason === 'Session expired') {
         return res.status(401).json({
           error: 'Turnstile verification required',
           code: 'TURNSTILE_REQUIRED'
@@ -2017,16 +1837,17 @@ const requireSession = async (req, res, next) => {
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
-    const sessionData = validation.sessionData;
-    sessionData.timestamp = Date.now();
-    await storeSession(sessionId, sessionData);
+    const { sessionId, sessionData } = validation;
+    if (Date.now() - sessionData.timestamp > SESSION_REISSUE_AFTER_MS) {
+      setSessionCookies(res, sessionId, sessionData);
+    }
 
     req.sessionId = sessionId;
     req.sessionData = sessionData;
     req.clientIp = clientIp;
     // Forum SSO identity (if this session was established via /api/auth/wf/exchange).
     // effectiveTier() downgrades to 'anon' once the re-verification window elapses,
-    // even though the session itself is renewed on every request.
+    // even though the session itself keeps being renewed.
     req.tier = effectiveTier(sessionData);
     req.wfUserId = sessionData.wfUserId || null;
 
@@ -2073,35 +1894,16 @@ const requireApiKey = (req, res, next) => {
   next();
 };
 
-// Health check endpoint for Cloud Run (not rate limited)
-// Redis health is probed (result cached briefly) so the load balancer stops
-// routing to an instance whose runtime store is down instead of serving 503s
-// from every /api route until the blip passes on its own.
-let lastRedisProbe = { at: 0, ok: true };
-async function probeRedisHealth() {
-  if (!isCacheEnabled()) return true;
-  const now = Date.now();
-  if (now - lastRedisProbe.at < 5000) return lastRedisProbe.ok;
-  try {
-    const ok = await Promise.race([
-      checkCacheConnection(),
-      new Promise(resolve => setTimeout(() => resolve(false), 1000))
-    ]);
-    lastRedisProbe = { at: now, ok: ok === true };
-  } catch {
-    lastRedisProbe = { at: now, ok: false };
-  }
-  return lastRedisProbe.ok;
-}
-
-app.get('/health', async (req, res) => {
+// Health check endpoint for Cloud Run (not rate limited). Deliberately does not
+// touch Redis: the analysis cache is optional, so its state is reported, never
+// allowed to fail the probe (and a probe must not cost an Upstash command).
+app.get('/health', (req, res) => {
   res.set({
     'Cache-Control': 'no-store, max-age=0'
   });
-  const redisOk = await probeRedisHealth();
-  res.status(redisOk ? 200 : 503).json({
-    status: redisOk ? 'ok' : 'degraded',
-    redis: isCacheEnabled() ? redisOk : 'disabled',
+  res.json({
+    status: 'ok',
+    redis: isCacheEnabled(),
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -2152,13 +1954,8 @@ app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (re
     const { token, action } = req.body;
     const clientIp = getClientIp(req);
     
-    const idempotencyKey = typeof req.body?.idempotencyKey === 'string' &&
-      /^[a-f0-9-]{16,64}$/i.test(req.body.idempotencyKey)
-      ? req.body.idempotencyKey
-      : null;
-    
     // Verify the Turnstile token with Siteverify
-    const verification = await verifyTurnstileToken(token, clientIp, idempotencyKey);
+    const verification = await verifyTurnstileToken(token, clientIp);
     
     if (!verification.success) {
       // Log detailed error for debugging
@@ -2228,10 +2025,8 @@ app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (re
     }
     
     // If verification successful, create session
-    const { sessionId, sessionHash, sessionData } = generateSessionCookie(true);
-    await storeSession(sessionId, sessionData);
-
-    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
+    const { sessionId, sessionData } = createSession();
+    const cookieOptions = setSessionCookies(res, sessionId, sessionData);
     res.cookie('bsod_turnstile_verified', 'true', {
       ...cookieOptions,
       httpOnly: false,
@@ -2260,16 +2055,15 @@ app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (re
 // mint sessions; Turnstile verification is the only session creation path.
 app.get('/api/auth/session', authLimiter, async (req, res) => {
   try {
-    const sessionId = req.cookies.bsod_session_id;
-    const sessionHash = req.cookies.bsod_session_hash;
+    const sessionToken = req.cookies.bsod_session;
     const clientIp = getClientIp(req);
 
-    if (!sessionId || !sessionHash) {
+    if (!sessionToken) {
       clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
-    const validation = await validateSession(sessionId, sessionHash);
+    const validation = validateSession(sessionToken);
     if (!validation.valid || !validation.sessionData?.turnstileVerified) {
       clearSessionCookies(res);
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
@@ -2305,9 +2099,7 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
       }
     }
 
-    validation.sessionData.timestamp = Date.now();
-    await storeSession(sessionId, validation.sessionData);
-    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
+    const cookieOptions = setSessionCookies(res, validation.sessionId, validation.sessionData);
     res.cookie('bsod_turnstile_verified', 'true', {
       ...cookieOptions,
       httpOnly: false,
@@ -2383,7 +2175,7 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
       return res.status(403).json({ success: false, error: 'Not available', code: 'SSO_NOT_ALLOWED' });
     }
 
-    const { sessionId, sessionHash, sessionData } = generateSessionCookie(true);
+    const { sessionId, sessionData } = createSession();
     sessionData.tier = identity.tier; // 'premium' | 'forum'
     sessionData.wfUserId = identity.uid;
     sessionData.wfUsername = identity.username;
@@ -2391,9 +2183,8 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
     sessionData.wfVerifiedAt = Date.now();
     // The elevated tier is only honored until this; the client re-verifies before it.
     sessionData.tierExpiresAt = Date.now() + PREMIUM_REVERIFY_MS;
-    await storeSession(sessionId, sessionData);
 
-    const cookieOptions = setSessionCookies(res, sessionId, sessionHash);
+    const cookieOptions = setSessionCookies(res, sessionId, sessionData);
     res.cookie('bsod_turnstile_verified', 'true', {
       ...cookieOptions,
       httpOnly: false,
@@ -2411,9 +2202,10 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
 app.post('/api/auth/wf/clear', authLimiter, requireSession, async (req, res) => {
   try {
     if (req.sessionData) {
+      // Re-issue without the identity. An older copy of the cookie keeps its
+      // tier only until tierExpiresAt (PREMIUM_REVERIFY_MS).
       clearForumIdentity(req.sessionData);
-      req.sessionData.timestamp = Date.now();
-      await storeSession(req.sessionId, req.sessionData);
+      setSessionCookies(res, req.sessionId, req.sessionData);
     }
     res.json({ success: true, ...sessionIdentity(req.sessionData || {}) });
   } catch (error) {
@@ -2655,8 +2447,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         error: `Request too large. Maximum size is ${SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024}MB` 
       });
     }
-    const { contents, generationConfig, config, fileHash } = req.body;
-    const sessionId = req.cookies.bsod_session_id;
+    const { contents, generationConfig, config, fileHash, fileHandle } = req.body;
+    const sessionId = req.sessionId;
 
     // Security: Session validation is handled by requireSession middleware
     // Additional security layers: rate limiting, prompt validation, system instruction
@@ -2711,7 +2503,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // uploaders of the same dump would be served.
     let ownedFileHash = false;
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
-      ownedFileHash = await sessionOwnsHash(req.sessionId, fileHash);
+      ownedFileHash = sessionOwnsHash(req.sessionId, fileHash, fileHandle);
     }
     let cacheKey = getPromptCacheKey(hashContent(requestText));
     let cachedAnalysis = null;
@@ -3009,7 +2801,7 @@ function winDbgUpstreamHttpStatus(error) {
 // Returns combined WinDBG analysis and AI report from single cache key
 app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
   try {
-    const { hash } = req.query;
+    const { hash, h } = req.query;
     res.set({
       'Cache-Control': 'no-store',
       'Pragma': 'no-cache',
@@ -3026,7 +2818,7 @@ app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
     // Ownership gate: cached analyses may only be read by the session that
     // uploaded the dump. Un-owned hashes answer with the standard miss shape
     // so callers learn nothing about other users' cache entries.
-    if (!(await sessionOwnsHash(req.sessionId, hash))) {
+    if (!sessionOwnsHash(req.sessionId, hash, typeof h === 'string' ? h : undefined)) {
       console.log(`[Cache] GET denied for unowned hash ${hash.substring(0, 12)}...`);
       return res.json({
         success: false,
@@ -3082,7 +2874,7 @@ app.post('/api/cache/set', cacheLimiter, requireSession, defaultJsonParser, asyn
 // Check cache for file hashes (pre-upload detection)
 app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, async (req, res) => {
   try {
-    const { hashes } = req.body;
+    const { hashes, handles } = req.body;
 
     if (!hashes || !Array.isArray(hashes)) {
       return res.status(400).json({
@@ -3102,9 +2894,12 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
     // GET /api/cache/get: a hash this session never uploaded reports cached:false,
     // so the endpoint cannot be used as a cross-user "has anyone analyzed this
     // dump?" oracle. The client only probes hashes it has uploaded itself.
+    const handleFor = hash => (
+      handles && typeof handles === 'object' && typeof handles[hash] === 'string' ? handles[hash] : undefined
+    );
     const checkPromises = hashesToCheck
       .map(async (hash) => {
-        if (!(await sessionOwnsHash(req.sessionId, hash))) {
+        if (!sessionOwnsHash(req.sessionId, hash, handleFor(hash))) {
           results[hash] = false;
           return;
         }
@@ -3192,7 +2987,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       });
     }
     uid = serverHash;
-    await markSessionHash(req.sessionId, uid);
+    markSessionHash(req.sessionId, uid);
 
     // UID is now the file hash (computed client-side), use it directly for caching
     console.log('[WinDBG] File hash UID:', uid, 'Size:', fileBuffer.length);
@@ -3214,7 +3009,11 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
         cachedAnalysis: cachedAnalysis.windbgOutput,
         cachedSignal: cachedAnalysis.analysisSignalText,
         cachedStructured: cachedAnalysis.structured,
-        data: { uid, queue_position: 0 }
+        data: {
+          uid,
+          queue_position: 0,
+          handle: fileHandleCodec.issue({ fileHash: uid, sessionId: req.sessionId })
+        }
       });
     }
 
@@ -3234,7 +3033,7 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
       fileName,
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
     });
-    await markWinDbgJob(req.sessionId, uid, uid, submitResult.job_id);
+    markWinDbgJob(req.sessionId, uid, submitResult.job_id);
     // Hook B: stash the dump type for the stats recorder (buffer only
     // exists here; the download hook can't classify minidump-vs-kernel).
     if (isCacheEnabled() && process.env.STATS_ENABLED !== 'false') {
@@ -3253,7 +3052,10 @@ app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_R
         size: fileBuffer.length,
         status: 'pending',
         queue_position: submitResult.queue_position ?? 0,
-        total_pending: undefined
+        total_pending: undefined,
+        // Signed proof of ownership + upstream job id: poll/download/cache
+        // reads carry it so any instance can serve them.
+        handle: fileHandleCodec.issue({ fileHash: uid, jobId: submitResult.job_id, sessionId: req.sessionId })
       }
     });
   } catch (error) {
@@ -3275,7 +3077,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
       });
     }
 
-    const { uid } = req.query;
+    const { uid, h } = req.query;
 
     if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
       return res.status(400).json({
@@ -3283,7 +3085,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
         error: 'Invalid or missing parameter: uid'
       });
     }
-    const ownership = await getOwnedWinDbgJob(req.sessionId, uid);
+    const ownership = getOwnedWinDbgJob(req.sessionId, uid, typeof h === 'string' ? h : undefined);
     if (!ownership) {
       return res.status(403).json({
         success: false,
@@ -3292,7 +3094,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
       });
     }
 
-    const upstreamJobId = ownership.upstreamJobId || uid;
+    const { upstreamJobId } = ownership;
     console.log('[WinDBG] Checking status for UID:', uid, 'Upstream job:', upstreamJobId);
 
     const job = await getWinDbgJob({
@@ -3331,7 +3133,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       });
     }
 
-    const { uid } = req.query;
+    const { uid, h } = req.query;
 
     if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
       return res.status(400).json({
@@ -3339,7 +3141,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
         error: 'Invalid or missing parameter: uid'
       });
     }
-    const ownership = await getOwnedWinDbgJob(req.sessionId, uid);
+    const ownership = getOwnedWinDbgJob(req.sessionId, uid, typeof h === 'string' ? h : undefined);
     if (!ownership) {
       return res.status(403).json({
         success: false,
@@ -3348,7 +3150,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       });
     }
 
-    const upstreamJobId = ownership.upstreamJobId || uid;
+    const { upstreamJobId } = ownership;
     const job = await getWinDbgJob({
       baseUrl: WINDBG_API_BASE_URL,
       apiKey: WINDBG_API_KEY,
@@ -4462,12 +4264,8 @@ async function startServer() {
     throw new Error('WF_DEV_TIER is a development-only escape hatch and must not be set in production');
   }
 
-  // Initialize xxhash before accepting requests
-  [hasher] = await Promise.all([
-    xxhash(),
-    initHashing()
-  ]);
-  console.log('XXHash initialized for session management');
+  // Content hashing (analysis cache keys) must be ready before accepting requests
+  await initHashing();
 
   // Never crash-loop over Redis (2026-09 outage: an exhausted Upstash quota
   // failed this probe on every cold start). Serve from in-memory state instead.

@@ -12,7 +12,6 @@
 // Dormant until FORUM_VALIDATE_URL is set AND an xf_* cookie actually arrives, so
 // shipping this changes nothing until the cookie-domain migration happens.
 import { createHash } from 'node:crypto';
-import { getRuntimeValue, setRuntimeValue } from './cache.js';
 
 const ENDPOINT = process.env.FORUM_VALIDATE_URL || '';
 // Reuse the existing shared secret (also mounted for the legacy token path).
@@ -20,6 +19,34 @@ const KEY = process.env.WF_SSO_SECRET || '';
 const POS_TTL_SECONDS = 45;   // positive identity: forum logout/expiry surfaces within ~45s
 const NEG_TTL_SECONDS = 10;   // negatives expire fast so a transient blip can't pin a user to guest
 const TIMEOUT_MS = 2000;      // never let a slow forum hang a bsod auth check
+const CACHE_MAX_ENTRIES = 5000;
+
+// Per-instance decision cache (cookie+ip -> { identity, expiresAt }). The TTLs
+// are seconds, so a shared store bought nothing but Upstash commands.
+const identityCache = new Map();
+
+function readCachedIdentity(key, now = Date.now()) {
+  const entry = identityCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= now) {
+    identityCache.delete(key);
+    return undefined;
+  }
+  return entry.identity;
+}
+
+function writeCachedIdentity(key, identity, ttlSeconds, now = Date.now()) {
+  if (identityCache.size >= CACHE_MAX_ENTRIES) {
+    for (const [existingKey, entry] of identityCache) {
+      if (entry.expiresAt <= now) identityCache.delete(existingKey);
+    }
+    // Still full of live entries: drop the oldest insertion.
+    if (identityCache.size >= CACHE_MAX_ENTRIES) {
+      identityCache.delete(identityCache.keys().next().value);
+    }
+  }
+  identityCache.set(key, { identity, expiresAt: now + ttlSeconds * 1000 });
+}
 
 // Reject any cookie/IP value that could break out of a header (defense-in-depth:
 // undici already rejects these, but this keeps fail-closed independent of the
@@ -58,10 +85,8 @@ export async function resolveForumIdentityFromCookies(cookies, clientIp) {
   }
 
   const cacheKey = cacheKeyFor(xfSession || xfUser, clientIp);
-  try {
-    const cached = await getRuntimeValue(cacheKey);
-    if (cached != null) return cached.userId ? cached : null;
-  } catch { /* fall through to a live lookup */ }
+  const cached = readCachedIdentity(cacheKey);
+  if (cached !== undefined) return cached;
 
   let identity = null;
   try {
@@ -100,8 +125,6 @@ export async function resolveForumIdentityFromCookies(cookies, clientIp) {
     identity = null; // fail closed
   }
 
-  try {
-    await setRuntimeValue(cacheKey, identity || { userId: 0 }, identity ? POS_TTL_SECONDS : NEG_TTL_SECONDS);
-  } catch { /* cache write is best-effort */ }
+  writeCachedIdentity(cacheKey, identity, identity ? POS_TTL_SECONDS : NEG_TTL_SECONDS);
   return identity;
 }

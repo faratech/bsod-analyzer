@@ -16,43 +16,18 @@ export function jsonRateLimitHandler(_req, res) {
   });
 }
 
-export function createRuntimeRateLimitStore({
-  name,
-  windowMs,
-  isCacheEnabled,
-  incrementRuntimeCounter,
-  deleteRuntimeValue
-}) {
-  if (typeof isCacheEnabled !== 'function' || !isCacheEnabled()) return undefined;
-  const ttlSeconds = Math.ceil(windowMs / 1000);
-  return {
-    async increment(key) {
-      const result = await incrementRuntimeCounter(`rate-limit:${name}:${key}`, ttlSeconds);
-      if (!result) {
-        throw new Error('Runtime store unavailable while updating rate limit');
-      }
-      return {
-        totalHits: result.count,
-        resetTime: result.resetTime
-      };
-    },
-    async decrement() {
-      // Limits in this service do not use skipSuccessfulRequests/skipFailedRequests.
-    },
-    async resetKey(key) {
-      await deleteRuntimeValue?.(`rate-limit:${name}:${key}`);
-    }
-  };
-}
-
-export function createMemoryRateLimitStore(windowMs) {
+// Per-instance fixed-window counters. Limits are deliberately not shared
+// across Cloud Run instances: a shared store cost ~2 Upstash commands per
+// limiter per request, and session affinity keeps a client on one instance.
+export function createMemoryRateLimitStore(windowMs, { sweepIntervalMs = 60 * 1000 } = {}) {
   const hits = new Map();
+  let nextSweepAt = 0;
   return {
     async increment(key) {
       const now = Date.now();
-      // Opportunistic sweep so expired keys cannot accumulate forever when the
-      // memory store is active (dev/no-Redis mode).
-      if (hits.size > 0) {
+      // Periodic (not per-request) sweep so expired keys cannot accumulate.
+      if (now >= nextSweepAt) {
+        nextSweepAt = now + sweepIntervalMs;
         for (const [existingKey, entry] of hits) {
           if (entry.resetTime.getTime() <= now) hits.delete(existingKey);
         }
@@ -60,10 +35,13 @@ export function createMemoryRateLimitStore(windowMs) {
       let entry = hits.get(key);
       if (!entry || entry.resetTime.getTime() <= now) {
         entry = { totalHits: 0, resetTime: new Date(now + windowMs) };
+        hits.set(key, entry);
       }
       entry.totalHits += 1;
-      hits.set(key, entry);
       return entry;
+    },
+    size() {
+      return hits.size;
     }
   };
 }
@@ -90,8 +68,7 @@ export function createRateLimiter({
   handler = jsonRateLimitHandler,
   skip = () => false,
   name = 'generic',
-  store,
-  failOpenOnStoreError = false
+  store
 }) {
   if (typeof keyGenerator !== 'function') {
     throw new TypeError('createRateLimiter requires a keyGenerator function');
@@ -114,27 +91,14 @@ export function createRateLimiter({
       if (totalHits > max) return handler(req, res);
       next();
     } catch (error) {
-      if (failOpenOnStoreError) {
-        // Transient runtime-store failure: allow the request instead of
-        // failing the whole /api surface with 503s. Production keeps this off
-        // (REQUIRE_REDIS_RUNTIME already hard-requires Redis for sessions) and
-        // relies on /health probing Redis so the load balancer stops routing
-        // to a broken instance.
-        console.error(`[RateLimit] ${name} store error, failing open:`, error.message);
-        return next();
-      }
       next(error);
     }
   };
 }
 
 export function createRateLimiterFactory({
-  isCacheEnabled,
-  incrementRuntimeCounter,
-  deleteRuntimeValue,
   defaultKeyGenerator,
-  defaultHandler = jsonRateLimitHandler,
-  failOpenOnStoreError = false
+  defaultHandler = jsonRateLimitHandler
 }) {
   return function makeLimiter({
     windowMs,
@@ -144,13 +108,6 @@ export function createRateLimiterFactory({
     skip,
     name = 'generic'
   }) {
-    const store = createRuntimeRateLimitStore({
-      name,
-      windowMs,
-      isCacheEnabled,
-      incrementRuntimeCounter,
-      deleteRuntimeValue
-    }) || createMemoryRateLimitStore(windowMs);
     return createRateLimiter({
       windowMs,
       max,
@@ -158,8 +115,7 @@ export function createRateLimiterFactory({
       handler,
       skip,
       name,
-      store,
-      failOpenOnStoreError
+      store: createMemoryRateLimitStore(windowMs)
     });
   };
 }

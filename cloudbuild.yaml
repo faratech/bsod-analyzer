@@ -50,6 +50,7 @@ steps:
           --port 8080 \
           --use-http2 \
           --max-instances 10 \
+          --session-affinity \
           --concurrency 2 \
           --min-instances 1 \
           --memory 1Gi \

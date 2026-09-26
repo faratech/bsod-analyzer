@@ -160,7 +160,7 @@ prerendered markup — never another route's — or hydration mismatches.
 1. **Content Security Policy** - Script validation, no unsafe-eval
 2. **Subresource Integrity** - SHA-384 hashes for all assets via `generate-sri.js`
 3. **Prompt Validation** - BSOD keyword requirements, abuse pattern blocking
-4. **Session Management** - XXHash session IDs, HttpOnly/Secure/SameSite cookies
+4. **Session Management** - Stateless HMAC-SHA256 signed session cookie (`server/sessionToken.js`), HttpOnly/Secure/SameSite
 5. **Rate Limiting** - 50 requests/hour, 100K tokens/hour per session
 6. **Cloudflare Turnstile** - Bot protection on session creation
 
@@ -170,13 +170,15 @@ prerendered markup — never another route's — or hydration mismatches.
 |----------|---------|----------|
 | `GEMINI_API_KEY` | Gemini AI API access | Yes |
 | `TURNSTILE_SECRET_KEY` | Cloudflare verification | Production |
-| `SESSION_SECRET` | Session security | Production |
+| `SESSION_SECRET` | Signs session cookies and WinDBG file handles (HKDF key per purpose) | Production |
+| `SESSION_SECRET_PREVIOUS` | Old secret still accepted for verification during rotation (never signs) | No |
 | `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
 | `CACHE_ZSTD_DICTIONARY_PATH` | Binary cache dictionary path (`/secrets/redis-zstd/dictionary` in Cloud Run) | Production |
 | `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
-| `REQUIRE_REDIS_RUNTIME` | Require Redis-backed sessions/jobs/limits | Defaults `true` in production |
+| `REQUIRE_REDIS_RUNTIME` | Fail-closed job/quota paths while Redis is live (never blocks startup) | Defaults `true` in production |
+| `REDIS_ENABLED` | Overrides the committed `redis.cfg` switch without a build | No |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 | `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
@@ -235,7 +237,7 @@ CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
 - **CSP hashes**: Run `node scripts/hash-inline-scripts.js`
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
-- **Runtime state**: Keep sessions, ownership, jobs, rate limits, and token accounting Redis-backed in production. Where a process-local Map mirrors Redis state (sessions, WinDBG job ownership), Redis is the authority when `isCacheEnabled()` — read it as such and use compare-and-delete (`deleteRuntimeValueIfEquals`) when expiring shared records, or multi-instance deployments serve stale ownership
+- **Runtime state**: Correctness must never depend on Upstash (2026-09 outage: the free-tier quota ran out and Redis-required startup took the site down). Anything a follow-up request must trust travels with the client, signed: the session cookie, and the WinDBG file handle (`data.handle` from upload, carrying file ownership + the upstream job id; the client sends it back as `h`/`handles`/`fileHandle`). Rate limits, Turnstile replay and SSO nonces are per-instance memory — Cloud Run session affinity keeps a browser on one instance, and Cloudflare siteverify rejects redeemed Turnstile tokens across instances. Upstash is being narrowed to the optional analysis cache; its on/off switch is `redis.cfg` (`REDIS_ENABLED` overrides)
 - **Cache compression**: Compress only `analysis:*` values. Keep raw binary transport, legacy JSON reads, `runtime:*` serialization, counters, and the seven-day TTL intact
 - **Dictionary secrets**: Pin a numeric `redis-zstd-dictionary` version at `/secrets/redis-zstd/dictionary`; never use `latest`, commit the binary, or log its contents
 - **Redis flushes**: Never automate a whole-database flush. It is user-owned and also deletes sessions, ownership, jobs, quotas, rate-limit/token counters, and in-flight state
