@@ -360,7 +360,9 @@ export function createFastifyCompatApp(options = {}) {
     trustProxy: options.trustProxy || false,
     logger: false,
     routerOptions: {
-      ignoreTrailingSlash: true
+      ignoreTrailingSlash: true,
+      // find-my-way answers 414 for longer path params (default 100).
+      maxParamLength: options.maxParamLength || 100
     }
   });
 

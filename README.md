@@ -158,25 +158,29 @@ A separate `POST /api/analyze` endpoint provides programmatic access:
 - Authenticated via `BSOD_API_KEY` header
 - Runs the full server-side pipeline: upload → WinDBG → AI report
 - Handles ZIP, 7z, and RAR extraction automatically (analyzes first dump found)
-- Returns structured JSON with report data, analysis method, and metadata
+- Asynchronous: answers `202` with a signed job `uid` and `checkStatusUrl`; poll
+  `GET /api/analyze/status/:uid` until `completed` (report + metadata) or
+  `failed`. Job ids are stateless, so any server instance answers a poll.
 
 ### Caching Architecture
 
-All caching uses Upstash Redis with content-addressed keys:
+Upstash Redis is an optional performance cache with content-addressed keys —
+correctness never depends on it:
 
 | Cache Layer | Key | Value | Purpose |
 |-------------|-----|-------|---------|
 | Analysis | `analysis:<file-or-prompt-hash>` | Dictionary-zstd WinDBG + model-report envelope | Reuse completed analysis and avoid repeated external work |
-| Runtime state | Runtime-prefixed keys | Sessions, ownership, jobs, quotas, rate limits | Keep Cloud Run instances consistent |
 
 Only `analysis:*` values are eligible for dictionary-zstd compression. They are
-sent to Upstash as raw binary values, with legacy JSON remaining readable during
-the rollout. `runtime:*` values and atomic counters keep their existing Redis
-representation. The seven-day analysis TTL is unchanged.
+sent to Upstash as raw binary values, with legacy JSON remaining readable. The
+seven-day analysis TTL is unchanged. Every read fails open; a breaker turns the
+cache off on quota/auth errors or repeated failures and re-probes later; the
+committed `redis.cfg` switch (`REDIS_ENABLED` overrides) turns it off entirely.
 
-In production, Redis-backed runtime state is required by default. Set
-`REQUIRE_REDIS_RUNTIME=false` only for local testing or controlled single-instance
-debugging.
+Runtime state does not use Redis: sessions are HMAC-signed cookies, WinDBG
+uploads return a signed handle (file ownership + upstream job id), rate limits
+and quotas are per-instance memory (Cloud Run session affinity keeps a browser
+on one instance), and crash statistics are logged events aggregated in BigQuery.
 
 ### Security Architecture (6 Layers)
 
@@ -201,17 +205,16 @@ debugging.
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile verification | Production |
 | `SESSION_SECRET` | Session cookie signing | Production |
 | `BSOD_API_KEY` | External REST API authentication | No (disables `/api/analyze` if unset) |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for cache/runtime state | Production |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for the optional analysis cache | No |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | No |
 | `CACHE_ZSTD_DICTIONARY_PATH` | Mounted binary zstd dictionary path | Production; `/secrets/redis-zstd/dictionary` in Cloud Run |
 | `CACHE_ZSTD_WRITES_ENABLED` | Enable compressed `analysis:*` writes after reader verification | No; defaults to `false` |
-| `REQUIRE_REDIS_RUNTIME` | Require Redis for sessions/jobs/limits | Defaults `true` in production |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests | Defaults `true` in production |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hop count | Defaults `2` |
 
 For local development, set in `.env.local` or export directly.
-When running `NODE_ENV=production` locally without Redis or Cloudflare ingress,
-set `REQUIRE_REDIS_RUNTIME=false` and `CLOUDFLARE_ONLY_INGRESS=false`.
+When running `NODE_ENV=production` locally without Cloudflare ingress, set
+`CLOUDFLARE_ONLY_INGRESS=false`.
 
 Model selection is backend-only. Keep `model.cfg` at its default Gemini value,
 or set its single line to `deepseek-v4-flash`. The browser cannot override the
@@ -341,10 +344,18 @@ Server-side crash dump analysis (external API).
 
 **Request:** Multipart form with `file` field (`.dmp`, `.mdmp`, `.hdmp`, `.kdmp`, `.zip`, `.7z`, or `.rar`; max 500MB)
 
-**Response:**
+**Response:** `202 {"success": true, "status": "processing", "uid": "APIv2....", "checkStatusUrl": "/api/analyze/status/APIv2...."}`
+
+### GET /api/analyze/status/:uid
+
+**Requires:** `x-api-key` header with `BSOD_API_KEY`
+
+**Response:** `200 {"success": true, "status": "processing"}` (with `Retry-After`) until done;
+`500 {"success": false, "status": "failed", "code": "ANALYSIS_FAILED"}` on failure; when complete:
 ```json
 {
   "success": true,
+  "status": "completed",
   "data": {
     "summary": "...",
     "probableCause": "...",
@@ -352,13 +363,13 @@ Server-side crash dump analysis (external API).
     "recommendations": ["..."]
   },
   "analysisMethod": "windbg",
-  "cached": false,
   "processingTime": 45.2,
   "metadata": {
     "fileName": "MEMORY.DMP",
     "fileSize": 1048576,
     "dumpType": "kernel",
-    "uid": "abc123"
+    "uid": "APIv2....",
+    "originalZip": "dumps.zip"
   }
 }
 ```
@@ -385,7 +396,7 @@ These are used internally by the web UI:
 3. **Container Failures** — Check logs: `gcloud logging read --limit 50`. Verify PORT=8080
 4. **Build Failures** — Ensure Node.js is `^22.19.0` or `>=24.6.0`: `node --version`
 5. **Session Errors** — Check cookie attributes are consistent; Turnstile must be configured for production
-6. **Runtime Store Errors** — In production, ensure Upstash Redis URL/token are configured and healthy
+6. **Cache Misses Everywhere** — Upstash is optional; `/health` reports `"redis": false` when the cache is off (switched off in `redis.cfg`, unconfigured, or tripped by the breaker after quota/auth errors — it re-probes on its own)
 7. **Cache Dictionary Errors** — Verify the mounted secret uses the pinned numeric version and keep compressed writes disabled until startup/read checks pass
 
 ### Monitoring
