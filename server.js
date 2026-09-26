@@ -64,8 +64,10 @@ import {
   createStatsStore
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
-import { createBigQueryStatsSource } from './server/statsBigQuery.js';
+import { createGcsJsonReader } from './server/gcsJson.js';
+import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
+import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
 import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
@@ -1622,11 +1624,10 @@ app.get('/health', (req, res) => {
 // `bsod-stats-events` streams them into BigQuery, where the snapshot is
 // aggregated (server/statsBigQuery.js). Nothing here touches Upstash.
 const STATS_ENABLED = process.env.STATS_ENABLED !== 'false';
+// Exported stats/insights/priors JSON (bigquery/*.sql scheduled queries).
+const statsFilesReader = createGcsJsonReader({ bucket: process.env.STATS_BUCKET || 'project-bigfoot-bsod-stats' });
 const statsStore = createStatsStore({
-  source: createBigQueryStatsSource({
-    dataset: process.env.STATS_BIGQUERY_DATASET || undefined,
-    table: process.env.STATS_BIGQUERY_TABLE || undefined
-  }),
+  source: createGcsStatsSource({ reader: statsFilesReader }),
   emit: (event, fields) => log.info(event, fields),
   isEnabled: () => STATS_ENABLED,
   snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
@@ -1641,6 +1642,16 @@ const statsInsightService = createStatsInsightService({
   model: process.env.OPENROUTER_FREE_MODEL
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
+
+// Corpus priors (per stop code / per driver statistics from the daily BigQuery
+// build, read from Cloud Storage) appended to the end of WinDBG prompts.
+const crashPriors = process.env.CORPUS_PRIORS_ENABLED === 'false'
+  ? null
+  : createCrashPriors({ reader: statsFilesReader });
+
+async function priorContextFor(signal) {
+  return crashPriors ? crashPriors.contextFor(signal) : '';
+}
 
 // Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
 // acknowledged to WinDbg-API so it can prune its raw output after retention.
@@ -2242,9 +2253,18 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // implicit-cache namespace.
     sdkConfig.systemInstruction = SYSTEM_INSTRUCTION_ANALYSIS;
 
+    // Corpus priors go at the very end (after the client's evidence) so the
+    // cache-stable prefix is untouched; the cache key above stays on the
+    // original prompt so identical dumps still hit cache.
+    let promptForModel = serverPrompt;
+    if (validation.promptType === 'windbg') {
+      const priorContext = await priorContextFor(extractPromptSignal(serverPrompt));
+      if (priorContext) promptForModel = `${serverPrompt}\n\n${priorContext}`;
+    }
+
     const response = await generateAIContent({
       model: modelName,
-      contents: serverPrompt,
+      contents: promptForModel,
       config: sdkConfig
     });
 
@@ -2320,7 +2340,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       modelVersion: response.modelVersion,
       serviceTier: response.serviceTier,
       route: response.cacheModel || modelName,
-      promptText: serverPrompt,
+      promptText: promptForModel,
       responseText: validatedText,
       report: reportValidation.report,
       usage: response.usageMetadata
@@ -3097,7 +3117,10 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     analysisForPrompt,
     structured: Boolean(structuredSignal)
   });
-  const prompt = wrapWithEvidence(WINDBG_PREFIX, evidence);
+  const priorContext = await priorContextFor(options.structured?.bugcheck?.code || options.structured?.crash?.imageName
+    ? { bugcheckCode: options.structured?.bugcheck?.code, imageName: options.structured?.crash?.imageName }
+    : extractPromptSignal(evidence));
+  const prompt = wrapWithEvidence(WINDBG_PREFIX, priorContext ? `${evidence}\n\n${priorContext}` : evidence);
 
   try {
     const response = await generateAIContent({

@@ -9,6 +9,15 @@ import PageLayout from '../components/PageLayout';
 import { MultiplexAd, HorizontalAd } from '../components/AdSense';
 import { BarList, DailyVolumeChart, SplitBar, StatTile } from '../components/StatsCharts';
 import {
+  CodeModuleMatrix,
+  ColumnHistogram,
+  StopCodeTrends,
+  WeekHourHeatmap,
+  formatDuration,
+  toFamily
+} from '../components/CorpusInsightCharts';
+import type { CorpusInsights } from '../services/statsService';
+import {
   StatsSnapshot,
   StatsUnavailableError,
   fetchStatsSnapshot
@@ -172,6 +181,8 @@ const StatsPage: React.FC = () => {
 
       <BarList title="Windows versions" family={snapshot?.osVersions ?? { items: [], other: 0, total: 0 }} />
 
+      {snapshot?.insights ? <CorpusInsightsSection insights={snapshot.insights} /> : null}
+
       {/* Multiplex unit before the data table */}
       <MultiplexAd style={{ margin: '2.5rem 0', minHeight: '300px' }} />
 
@@ -230,4 +241,111 @@ const StatsEmbedPage: React.FC = () => {
 };
 
 export { StatsEmbedPage };
+const DUMP_TYPE_LABELS: Record<string, string> = {
+  kernel: 'Kernel memory dump',
+  userminidump: 'User-mode minidump',
+  netmanaged: '.NET managed dump',
+  unknown: 'Unknown'
+};
+
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+// Everything below is built daily from the full WinDBG corpus (aggregates only).
+const CorpusInsightsSection: React.FC<{ insights: CorpusInsights }> = ({ insights }) => {
+  const t = insights.totals;
+  const hardwareShare = typeof t.ai_hardware_share === 'number' ? `${(t.ai_hardware_share * 100).toFixed(1)}%` : '—';
+  const firstMinuteShare = t.analyses ? `${((t.crashes_within_first_minute / t.analyses) * 100).toFixed(1)}%` : '—';
+  const products = insights.product_types.filter(p => p.k !== 'Unknown');
+  return (
+    <section className="corpus-insights" aria-labelledby="corpus-insights-title">
+      <h2 id="corpus-insights-title" className="insights-heading">
+        Inside {t.analyses.toLocaleString('en-US')} crash dumps
+      </h2>
+      <p className="insights-lede">
+        Built daily from every WinDBG analysis since{' '}
+        {t.since ? new Date(t.since).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : 'launch'}.
+        {' '}Aggregates only; no dump contents or personal data are published.
+      </p>
+
+      <div className="stats-tiles">
+        <StatTile label="Distinct drivers & modules" value={t.distinct_modules.toLocaleString('en-US')} />
+        <StatTile label="Median uptime at crash" value={formatDuration(t.median_uptime_seconds)} />
+        <StatTile label="Crashed in first minute" value={firstMinuteShare}
+          hint={`${t.crashes_within_first_minute.toLocaleString('en-US')} dumps`} />
+        <StatTile label="AI-judged hardware fault" value={hardwareShare} />
+        <StatTile label="Median WinDBG analysis" value={formatDuration(t.median_analysis_seconds)} />
+      </div>
+
+      <WeekHourHeatmap cells={insights.utc_heatmap} />
+
+      <div className="stats-grid">
+        <ColumnHistogram
+          title="How long the PC had been running"
+          unit="crashes"
+          bins={insights.uptime.map(u => ({ label: u.k, count: u.n }))}
+          note="System uptime when the crash happened."
+        />
+        <ColumnHistogram
+          title="CPU threads (logical processors)"
+          unit="crashes"
+          bins={insights.cpu_threads.map(c => ({ label: c.k, count: c.n }))}
+        />
+      </div>
+
+      <div className="stats-grid">
+        <BarList title="Culprit driver category (AI)" family={toFamily(insights.ai_driver_categories, capitalize)} />
+        <BarList title="Culprit driver maker (AI)" family={toFamily(insights.ai_manufacturers)} max={10} />
+        <BarList title="Graphics-stack crashes" family={toFamily(insights.gpu_stacks)} />
+      </div>
+
+      <div className="stats-grid">
+        <SplitBar
+          title="Hardware vs software cause (AI)"
+          parts={[
+            { label: 'Software / driver', value: insights.ai_hardware_split.software },
+            { label: 'Hardware', value: insights.ai_hardware_split.hardware }
+          ]}
+        />
+        {products.length > 1 ? (
+          <SplitBar title="Workstation vs server" parts={products.map(p => ({ label: p.k, value: p.n }))} />
+        ) : null}
+      </div>
+
+      <div className="stats-grid">
+        <BarList title="Hardware faults by type (AI)" family={toFamily(insights.ai_hardware_types)} />
+        <BarList title="Windows release" family={toFamily(insights.windows_releases)} />
+        <BarList title="Dump type" family={toFamily(insights.dump_types, k => DUMP_TYPE_LABELS[k] ?? k)} />
+      </div>
+
+      <BarList title="Process running when it crashed" family={toFamily(insights.processes)} max={12} />
+
+      <StopCodeTrends trends={insights.stop_code_trends} weeks={insights.weekly_totals} />
+      <CodeModuleMatrix matrix={insights.code_module_matrix} />
+
+      <details className="stats-table">
+        <summary>View insight data as tables</summary>
+        <table>
+          <caption>Crashes by uptime</caption>
+          <thead><tr><th scope="col">Uptime</th><th scope="col">Crashes</th></tr></thead>
+          <tbody>{insights.uptime.map(u => <tr key={u.k}><td>{u.k}</td><td>{u.n}</td></tr>)}</tbody>
+        </table>
+        <table>
+          <caption>Crashes by weekday (UTC)</caption>
+          <thead><tr><th scope="col">Weekday</th><th scope="col">Crashes</th></tr></thead>
+          <tbody>
+            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, d) => (
+              <tr key={day}><td>{day}</td><td>{insights.utc_heatmap.filter(c => c.d === d).reduce((a, c) => a + c.n, 0)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <table>
+          <caption>Weekly analyses</caption>
+          <thead><tr><th scope="col">Week of</th><th scope="col">Analyses</th></tr></thead>
+          <tbody>{insights.weekly_totals.map(w => <tr key={w.w}><td>{w.w}</td><td>{w.n}</td></tr>)}</tbody>
+        </table>
+      </details>
+    </section>
+  );
+};
+
 export default StatsPage;
