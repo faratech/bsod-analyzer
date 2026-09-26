@@ -1,0 +1,17 @@
+[
+  {"name": "report_id", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "created_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "origin", "type": "STRING", "mode": "REQUIRED", "description": "web (analyzer page), api (external jobs API) or regenerated (backfill)"},
+  {"name": "source", "type": "STRING", "description": "windbg (from WinDBG evidence) or ai-fallback (local parser only)"},
+  {"name": "prompt_type", "type": "STRING"},
+  {"name": "job_id", "type": "STRING", "description": "WinDbg-API job id; joins bsod_corpus.windbg_analyses.job_id"},
+  {"name": "file_hash", "type": "STRING", "description": "SHA-256 of the dump; joins windbg_analyses.file_hash"},
+  {"name": "provider", "type": "STRING"},
+  {"name": "model", "type": "STRING"},
+  {"name": "prompt_text", "type": "STRING", "description": "Exact prompt sent to the model"},
+  {"name": "response_text", "type": "STRING", "description": "Validated raw model output"},
+  {"name": "report", "type": "JSON", "description": "Parsed, validated AI report"},
+  {"name": "final_report", "type": "JSON", "description": "Report after merging deterministic WinDBG fields (api origin)"},
+  {"name": "usage", "type": "JSON", "description": "Provider token usage metadata"},
+  {"name": "prompt_omitted_for_size", "type": "BOOLEAN"}
+]

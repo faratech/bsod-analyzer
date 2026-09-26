@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_ROW_BYTES,
+  buildAiReportRow,
   buildCorpusRow,
   createWinDbgCorpusRecorder,
+  toAiInsertAllRow,
   toInsertAllRow
 } from '../server/windbgCorpus.js';
 
@@ -168,4 +170,70 @@ test('record skips unfinished jobs and respects isEnabled', async () => {
 
 test('dataset and table names are restricted to plain identifiers', () => {
   assert.throws(() => createWinDbgCorpusRecorder({ dataset: 'a.b' }), TypeError);
+});
+
+const aiEntry = {
+  origin: 'api',
+  source: 'windbg',
+  promptType: 'windbg',
+  jobId: 'job-1',
+  fileHash: 'abc',
+  provider: 'deepseek',
+  model: 'deepseek-v4-flash',
+  promptText: 'prompt with evidence',
+  responseText: '{"summary":"s"}',
+  report: { summary: 's', culprit: 'foo.sys' },
+  finalReport: { summary: 's', culprit: 'foo.sys', bugCheck: { code: '0x9F' } },
+  usage: { promptTokenCount: 100, candidatesTokenCount: 20 }
+};
+
+test('buildAiReportRow keeps prompt, response, reports and usage joinable by job_id/file_hash', () => {
+  const row = buildAiReportRow(aiEntry, { now: Date.parse('2026-09-26T00:00:00Z'), reportId: 'r1' });
+  assert.equal(row.report_id, 'r1');
+  assert.equal(row.created_at, '2026-09-26T00:00:00.000Z');
+  assert.equal(row.job_id, 'job-1');
+  assert.equal(row.file_hash, 'abc');
+  assert.equal(row.model, 'deepseek-v4-flash');
+  assert.equal(row.prompt_text, 'prompt with evidence');
+  assert.deepEqual(row.final_report.bugCheck, { code: '0x9F' });
+  assert.equal(buildAiReportRow({ ...aiEntry, report: '{"a":1}' }).report.a, 1);
+  assert.deepEqual(buildAiReportRow({ ...aiEntry, promptText: [{ text: 'x' }] }).prompt_text, '[{"text":"x"}]');
+});
+
+test('toAiInsertAllRow stringifies JSON columns and drops only an oversized prompt', () => {
+  const row = toAiInsertAllRow(buildAiReportRow(aiEntry, { reportId: 'r1' }));
+  assert.deepEqual(JSON.parse(row.report), aiEntry.report);
+  assert.deepEqual(JSON.parse(row.usage), aiEntry.usage);
+  const huge = toAiInsertAllRow(buildAiReportRow({ ...aiEntry, promptText: 'p'.repeat(MAX_ROW_BYTES + 1) }, { reportId: 'r2' }));
+  assert.equal(huge.prompt_text, null);
+  assert.equal(huge.prompt_omitted_for_size, true);
+  assert.deepEqual(JSON.parse(huge.report), aiEntry.report);
+});
+
+test('recordAiReport inserts into ai_reports keyed by a fresh report id', async () => {
+  const { calls, fetchImpl } = fakeFetch([{ status: 200, body: {} }]);
+  const recorder = createWinDbgCorpusRecorder({ projectId: 'proj', getAccessToken: async () => 'tok', fetchImpl });
+  assert.equal(await recorder.recordAiReport(aiEntry), true);
+  assert.equal(calls[0].url, 'https://bigquery.googleapis.com/bigquery/v2/projects/proj/datasets/bsod_corpus/tables/ai_reports/insertAll');
+  const body = JSON.parse(calls[0].init.body);
+  assert.match(body.rows[0].insertId, /^[0-9a-f-]{36}$/);
+  assert.equal(body.rows[0].json.job_id, 'job-1');
+  assert.equal(typeof body.rows[0].json.report, 'string');
+});
+
+test('recordAiReport logs and returns false on failure, and skips when disabled or empty', async () => {
+  const warnings = [];
+  const failing = createWinDbgCorpusRecorder({
+    projectId: 'p', getAccessToken: async () => 't',
+    fetchImpl: fakeFetch([{ status: 500, body: { error: { message: 'down' } } }]).fetchImpl,
+    logger: { warn: event => warnings.push(event) }
+  });
+  assert.equal(await failing.recordAiReport(aiEntry), false);
+  assert.deepEqual(warnings, ['corpus.ai_insert_failed']);
+  const { calls, fetchImpl } = fakeFetch([]);
+  const disabled = createWinDbgCorpusRecorder({ projectId: 'p', getAccessToken: async () => 't', fetchImpl, isEnabled: () => false });
+  assert.equal(await disabled.recordAiReport(aiEntry), false);
+  const enabled = createWinDbgCorpusRecorder({ projectId: 'p', getAccessToken: async () => 't', fetchImpl });
+  assert.equal(await enabled.recordAiReport({ ...aiEntry, report: null }), false);
+  assert.equal(calls.length, 0);
 });

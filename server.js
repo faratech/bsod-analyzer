@@ -1659,6 +1659,13 @@ function recordCorpus(job, meta) {
   windbgCorpus.record(job, meta).catch(error => log.warn('corpus.record_failed', { error: error?.message || String(error) }));
 }
 
+// Every freshly generated AI report, joinable to its WinDBG row (bsod_corpus.ai_reports).
+function recordAiReport(entry) {
+  const provider = entry.provider || (entry.model ? getAIProviderForModel(entry.model) : undefined);
+  windbgCorpus.recordAiReport({ ...entry, provider })
+    .catch(error => log.warn('corpus.ai_record_failed', { error: error?.message || String(error) }));
+}
+
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
   if (!STATS_ENABLED) return;
@@ -2408,6 +2415,18 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     await setCachedAnalysis(cacheKey, {
       aiReport: responseData,
       aiModel: response.cacheModel || modelName
+    });
+    recordAiReport({
+      origin: 'web',
+      source: validation.promptType === 'local' ? 'ai-fallback' : 'windbg',
+      promptType: validation.promptType,
+      fileHash: ownedFileHash ? fileHash : undefined,
+      jobId: ownedFileHash ? getOwnedWinDbgJob(req.sessionId, fileHash, fileHandle)?.upstreamJobId : undefined,
+      model: response.cacheModel || modelName,
+      promptText: serverPrompt,
+      responseText: validatedText,
+      report: reportValidation.report,
+      usage: response.usageMetadata
     });
 
     // Hook D (fresh): local-parser + AI fallback completed — record stats.
@@ -3215,6 +3234,19 @@ ${analysisForPrompt}
       windbgDerived: true
     });
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
+    recordAiReport({
+      origin: 'api',
+      source: 'windbg',
+      promptType: 'windbg',
+      fileHash,
+      jobId: options.jobId,
+      model: response.cacheModel || modelName,
+      promptText: prompt,
+      responseText,
+      report: aiReport,
+      finalReport: report,
+      usage: response.usageMetadata
+    });
     return report;
   } catch (error) {
     console.error('[API/AI] AI analysis error:', error);
@@ -3259,7 +3291,8 @@ const externalJobResolver = createExternalJobResolver({
     job.fileHash,
     {
       analysisSignalText: analysis.analysisSignalText,
-      structured: analysis.structured
+      structured: analysis.structured,
+      jobId: job.upstreamJobId
     }
   ),
   recordStats: (job, analysis) => recordStats({
