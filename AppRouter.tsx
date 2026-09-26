@@ -20,6 +20,7 @@ const About = React.lazy(() => import('./pages/About'));
 const Documentation = React.lazy(() => import('./pages/Documentation'));
 const Donate = React.lazy(() => import('./pages/Donate'));
 const StatsPage = React.lazy(() => import('./pages/Stats'));
+const Privacy = React.lazy(() => import('./pages/Privacy'));
 // Same chunk, named export — the chromeless widget for forum iframes.
 const StatsEmbedPage = React.lazy(() =>
   import('./pages/Stats').then(module => ({ default: module.StatsEmbedPage }))
@@ -55,6 +56,7 @@ const AppContent: React.FC = () => {
                         <Route path="/" element={<Home />} />
                         <Route path="/analyzer" element={<Analyzer />} />
                         <Route path="/about" element={<About />} />
+                        <Route path="/privacy" element={<Privacy />} />
                         <Route path="/documentation" element={<Documentation />} />
                         <Route path="/donate" element={<Donate />} />
                         <Route path="/stats" element={<StatsPage />} />

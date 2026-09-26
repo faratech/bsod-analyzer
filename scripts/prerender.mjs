@@ -55,6 +55,7 @@ const ROUTES = [
   { path: '/donate',        file: 'donate.html',        marker: 'Why Donate' },
   { path: '/analyzer',      file: 'analyzer.html',      marker: 'BSOD Dump Analyzer' },
   { path: '/stats',         file: 'stats.html',         marker: 'Crash Statistics' },
+  { path: '/privacy',       file: 'privacy.html',       marker: 'The short version' },
 ];
 
 const prerenderedDir = path.join(distDir, 'prerendered');
