@@ -20,7 +20,7 @@ const JOB = {
 const MAP = status => ({ done: 'completed', running: 'processing', broken: 'failed' })[status] || 'pending';
 
 function harness({ cached = null, upstream = async () => ({ status: 'running' }), now = () => Date.now() } = {}) {
-  const calls = { upstream: 0, reports: 0, cached: [], stats: 0 };
+  const calls = { upstream: 0, reports: 0, cached: [], stats: 0, corpus: [] };
   const resolver = createExternalJobResolver({
     getUpstreamJob: async jobId => {
       calls.upstream += 1;
@@ -35,6 +35,7 @@ function harness({ cached = null, upstream = async () => ({ status: 'running' })
       return { summary: `report for ${job.fileName}`, evidence: analysis.windbgOutput };
     },
     recordStats: () => { calls.stats += 1; },
+    recordCorpus: (job, upstream) => { calls.corpus.push([job.fileHash, upstream]); },
     deadlineMs: 15 * 60 * 1000,
     now,
     logger: { warn() {} }
@@ -98,6 +99,7 @@ test('completed upstream jobs cache the analysis, record stats once, and share o
   assert.equal(calls.upstream, 1);
   assert.deepEqual(calls.cached, [[JOB.fileHash, 'kd> !analyze -v']]);
   assert.equal(calls.stats, 1);
+  assert.deepEqual(calls.corpus, [[JOB.fileHash, { status: 'done', result: 'kd> !analyze -v' }]]);
 });
 
 test('upstream failures: failed jobs and permanent errors fail, transient errors retry', async () => {

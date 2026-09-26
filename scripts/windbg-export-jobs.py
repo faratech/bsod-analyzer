@@ -13,6 +13,19 @@ import argparse
 import os
 import sqlite3
 
+try:
+    from compression import zstd  # Python 3.14+: jobs.result may be a zstd BLOB
+except ImportError:
+    zstd = None
+
+
+def result_text(raw):
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        if zstd is None:
+            raise SystemExit("jobs.result is zstd-compressed; run this with Python 3.14+")
+        return zstd.decompress(bytes(raw)).decode("utf-8")
+    return raw
+
 DB_PATH = r"S:\WinDbg-API\windbg_jobs.db"
 COLUMNS = [
     "id", "status", "submitted_at", "started_at", "completed_at", "mode",
@@ -46,6 +59,9 @@ def main():
         rows = cursor.fetchmany(200)
         if not rows:
             break
+        if "result" in columns:
+            at = columns.index("result")
+            rows = [row[:at] + (result_text(row[at]),) + row[at + 1:] for row in rows]
         dst.executemany(insert, rows)
         copied += len(rows)
         if copied % 10000 < 200:

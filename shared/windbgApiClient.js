@@ -203,6 +203,32 @@ async function getWinDbgJob({
   throw lastError;
 }
 
+// Tells WinDbg-API these jobs' full results are archived elsewhere, so its
+// retention pass may prune the raw output later. Returns
+// { marked, already_archived, unknown }.
+async function markWinDbgJobsArchived({
+  baseUrl,
+  apiKey,
+  ids,
+  fetchImpl = fetch,
+  signal
+}) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('ids is required');
+  }
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+  const response = await fetchImpl(winDbgApiUrl(baseUrl, '/jobs/archived'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ ids }),
+    signal
+  });
+  return readJsonResponse(response, 'WinDBG archive acknowledgement');
+}
+
 function mapWinDbgJobStatus(status) {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'complete' || normalized === 'completed') return 'completed';
@@ -762,6 +788,7 @@ export {
   extractWinDbgAnalysisText,
   getWinDbgJob,
   mapWinDbgJobStatus,
+  markWinDbgJobsArchived,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
   toLegacyWinDbgStatusResponse

@@ -69,6 +69,7 @@ export function createExternalJobResolver({
   cacheAnalysis,
   generateReport,
   recordStats = () => {},
+  recordCorpus = () => {},
   deadlineMs = 15 * 60 * 1000,
   resultTtlMs = 2 * 60 * 60 * 1000,
   now = () => Date.now(),
@@ -120,6 +121,7 @@ export function createExternalJobResolver({
     if (!analysis?.analysisText) return failed(job, 'empty_analysis');
     await cacheAnalysis(job.fileHash, analysis);
     recordStats(job, analysis);
+    recordCorpus(job, upstream);
     return await reportFrom(job, {
       windbgOutput: analysis.analysisText,
       analysisSignalText: analysis.analysisSignalText,

@@ -11,6 +11,19 @@ import argparse
 import json
 import sqlite3
 
+try:
+    from compression import zstd  # Python 3.14+: jobs.result may be a zstd BLOB
+except ImportError:
+    zstd = None
+
+
+def result_text(raw):
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        if zstd is None:
+            raise SystemExit("jobs.result is zstd-compressed; run this with Python 3.14+")
+        return zstd.decompress(bytes(raw)).decode("utf-8")
+    return raw
+
 DB_PATH = r"S:\WinDbg-API\windbg_jobs.db"
 OUT_PATH = r"C:\Users\windbg-api\stats_backfill.jsonl"
 
@@ -38,7 +51,7 @@ def main():
                 break
             for ts, dtype, result in rows:
                 try:
-                    parsed = json.loads(result)
+                    parsed = json.loads(result_text(result))
                 except (ValueError, TypeError):
                     skipped += 1
                     continue
