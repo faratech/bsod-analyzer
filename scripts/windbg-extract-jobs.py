@@ -1,20 +1,27 @@
-# One-shot read-only extractor for crash-stats backfill.
+# One-shot read-only extractor for crash-stats history.
 # Runs ON ST-WDBGAPI-01 against S:\WinDbg-API\windbg_jobs.db (live service DB):
-# opens SQLite in mode=ro so the running service is never blocked, streams only
-# completed jobs older than the Upstash cache window (7 days), and emits one
-# compact JSON line per job with just the aggregate facts (no user paths/names).
+# opens SQLite in mode=ro so the running service is never blocked, streams
+# completed jobs submitted before --before (the BigQuery stats cutover, so no
+# analysis is counted twice), and emits one compact JSON line per job with just
+# the aggregate facts (no user paths/names). Feed the output to
+# scripts/import-windbg-history.mjs.
+#
+#   python windbg-extract-jobs.py --before 2026-09-26T03:39
+import argparse
 import json
 import sqlite3
-import sys
-from datetime import datetime, timedelta, timezone
 
 DB_PATH = r"S:\WinDbg-API\windbg_jobs.db"
 OUT_PATH = r"C:\Users\windbg-api\stats_backfill.jsonl"
-DAYS_BACK = 7
 
 def main():
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT%H:%M")
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--before", required=True, help="UTC cutoff YYYY-MM-DDTHH:MM (BigQuery stats cutover)")
+    parser.add_argument("--db", default=DB_PATH)
+    parser.add_argument("--out", default=OUT_PATH)
+    options = parser.parse_args()
+    cutoff = options.before
+    conn = sqlite3.connect(f"file:{options.db}?mode=ro", uri=True)
     conn.execute("PRAGMA query_only=1")
     cur = conn.cursor()
     query = (
@@ -23,7 +30,7 @@ def main():
         "ORDER BY submitted_at ASC"
     )
     written = skipped = 0
-    with open(OUT_PATH, "w", encoding="utf-8") as out:
+    with open(options.out, "w", encoding="utf-8") as out:
         cur.execute(query, (cutoff,))
         while True:
             rows = cur.fetchmany(200)
