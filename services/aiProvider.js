@@ -448,7 +448,7 @@ export async function generateOpenRouterContent(request, {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-6-luna';
 export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
 export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-5.6-luna';
 

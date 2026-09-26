@@ -179,7 +179,10 @@ const aiEntry = {
   jobId: 'job-1',
   fileHash: 'abc',
   provider: 'deepseek',
-  model: 'deepseek-v4-flash',
+  model: 'gpt-6-luna',
+  modelVersion: 'gpt-6-luna-2026-09-01',
+  serviceTier: 'incentivized-tier',
+  route: 'openai:gpt-6-luna',
   promptText: 'prompt with evidence',
   responseText: '{"summary":"s"}',
   report: { summary: 's', culprit: 'foo.sys' },
@@ -193,7 +196,10 @@ test('buildAiReportRow keeps prompt, response, reports and usage joinable by job
   assert.equal(row.created_at, '2026-09-26T00:00:00.000Z');
   assert.equal(row.job_id, 'job-1');
   assert.equal(row.file_hash, 'abc');
-  assert.equal(row.model, 'deepseek-v4-flash');
+  assert.equal(row.model, 'gpt-6-luna');
+  assert.equal(row.model_version, 'gpt-6-luna-2026-09-01');
+  assert.equal(row.service_tier, 'incentivized-tier');
+  assert.equal(row.route, 'openai:gpt-6-luna');
   assert.equal(row.prompt_text, 'prompt with evidence');
   assert.deepEqual(row.final_report.bugCheck, { code: '0x9F' });
   assert.equal(buildAiReportRow({ ...aiEntry, report: '{"a":1}' }).report.a, 1);
