@@ -25,6 +25,7 @@ import {
   DEFAULT_WINDBG_API_BASE_URL,
   extractWinDbgAnalysisPackage,
   getWinDbgJob,
+  markWinDbgJobsArchived,
   mapWinDbgJobStatus,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
@@ -64,6 +65,7 @@ import {
 } from './server/statsStore.js';
 import { extractStatsFacts } from './server/stats.js';
 import { createBigQueryStatsSource } from './server/statsBigQuery.js';
+import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -1638,6 +1640,25 @@ const statsInsightService = createStatsInsightService({
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
+// Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
+// acknowledged to WinDbg-API so it can prune its raw output after retention.
+const windbgCorpus = createWinDbgCorpusRecorder({
+  dataset: process.env.CORPUS_BIGQUERY_DATASET || undefined,
+  table: process.env.CORPUS_BIGQUERY_TABLE || undefined,
+  isEnabled: () => process.env.CORPUS_ENABLED !== 'false' && Boolean(WINDBG_API_KEY),
+  markArchived: ids => markWinDbgJobsArchived({
+    baseUrl: WINDBG_API_BASE_URL,
+    apiKey: WINDBG_API_KEY,
+    ids,
+    signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
+  }),
+  logger: log
+});
+
+function recordCorpus(job, meta) {
+  windbgCorpus.record(job, meta).catch(error => log.warn('corpus.record_failed', { error: error?.message || String(error) }));
+}
+
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
   if (!STATS_ENABLED) return;
@@ -2872,6 +2893,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       analysisText,
       dumpType: ownership.dumpType
     });
+    recordCorpus(job, { fileHash: uid });
 
     res.json({
       success: true,
@@ -3247,6 +3269,7 @@ const externalJobResolver = createExternalJobResolver({
     analysisText: analysis.analysisText,
     dumpType: job.dumpType
   }),
+  recordCorpus: (job, upstream) => recordCorpus(upstream, { fileHash: job.fileHash, fileSizeBytes: job.fileSize }),
   deadlineMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
   resultTtlMs: EXTERNAL_JOB_TTL_MS,
   logger: log
