@@ -3552,6 +3552,232 @@ body.mobile-menu-open {
   display: inline-block;
 }
 
+/* Corpus insights: sequential single-hue ramp (brand blended into the card
+   surface, 5 steps light->dark), direct labels, CSS hover tips. */
+.chart-sub {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-left: 6px;
+}
+.chart-note {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+.insights-heading {
+  margin: 40px 0 4px;
+  font-size: 1.35rem;
+  color: var(--text-primary);
+}
+.insights-lede {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+.heatmap-cell.step-0 { background: var(--bg-tertiary); }
+.heatmap-cell.step-1 { background: color-mix(in oklab, var(--brand-primary) 18%, var(--bg-tertiary)); }
+.heatmap-cell.step-2 { background: color-mix(in oklab, var(--brand-primary) 36%, var(--bg-tertiary)); }
+.heatmap-cell.step-3 { background: color-mix(in oklab, var(--brand-primary) 56%, var(--bg-tertiary)); }
+.heatmap-cell.step-4 { background: color-mix(in oklab, var(--brand-primary) 78%, var(--bg-tertiary)); }
+.heatmap-cell.step-5 { background: var(--brand-primary); }
+
+[data-tip] { position: relative; }
+.col-hist-bar:hover::after,
+.heatmap-cell:hover::after,
+.split-bar-seg:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  white-space: nowrap;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+/* Histogram columns */
+.col-hist { margin: 0 0 24px; }
+.col-hist-plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 150px;
+  border-bottom: 1px solid var(--border-primary);
+}
+.col-hist-col {
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  min-width: 0;
+}
+.col-hist-value {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+}
+.col-hist-bar {
+  background: var(--brand-primary);
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+}
+.col-hist-labels {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.col-hist-labels span {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+/* Weekday x hour heatmap */
+.heatmap { margin: 8px 0 24px; }
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: 34px repeat(24, minmax(0, 1fr));
+  gap: 2px;
+}
+.heatmap-grid .heatmap-cell {
+  height: 18px;
+  border-radius: 2px;
+}
+.heatmap-day, .heatmap-hour {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  line-height: 1;
+  align-self: center;
+}
+.heatmap-hour { text-align: left; }
+.ramp-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.ramp-legend i {
+  display: inline-block;
+  width: 16px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+/* Stop code x module matrix */
+.matrix { margin: 8px 0 24px; }
+.matrix-scroll { overflow-x: auto; }
+.matrix-table {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 0.78rem;
+  width: 100%;
+  min-width: 560px;
+  table-layout: fixed;
+}
+.matrix-table th:first-child { width: 56px; }
+.matrix-table th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-align: center;
+  padding: 4px;
+  white-space: nowrap;
+}
+.matrix-table thead th { overflow: hidden; }
+.matrix-table thead th span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.matrix-table tbody th {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.matrix-table td {
+  text-align: center;
+  padding: 6px 4px;
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.matrix-table td.is-strong { color: #ffffff; font-weight: 600; }
+
+/* Stop code small multiples */
+.trends { margin: 8px 0 24px; }
+.trends-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 20px;
+}
+.trend-panel { margin: 0; }
+.trend-panel figcaption {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.8rem;
+  margin-bottom: 4px;
+  min-width: 0;
+}
+.trend-code { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.trend-name {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.trend-total { color: var(--text-secondary); font-variant-numeric: tabular-nums; margin-left: auto; }
+.trend-panel svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  border-bottom: 1px solid var(--border-primary);
+}
+.trend-line {
+  fill: none;
+  stroke: var(--brand-primary);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.trend-hit rect { fill: transparent; }
+.trend-hit circle {
+  fill: var(--brand-primary);
+  stroke: var(--bg-primary);
+  stroke-width: 2px;
+  opacity: 0;
+  vector-effect: non-scaling-stroke;
+}
+.trend-hit:hover circle { opacity: 1; }
+.trends-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
 /* Page layout helpers */
 .stats-error {
   color: var(--status-error);
@@ -3914,4 +4140,16 @@ body.mobile-menu-open {
   .flow-chapter {
     transition: none;
   }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
