@@ -20,7 +20,7 @@ const IDENTIFIER_RE = /^[A-Za-z0-9_-]+$/;
 // Aggregates mirror the previous Upstash counters: one counted event per
 // (file hash, UTC day) — the first one — for every breakdown; the activity
 // gauges count every run. Only real analysis sources count.
-function eventsQuery(table) {
+export function eventsQuery(table) {
   return `
 WITH events AS (
   SELECT
