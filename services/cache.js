@@ -591,9 +591,8 @@ export async function initCacheCompression({
   cacheZstdRefreshMs = refreshIntervalMs ?? CACHE_ZSTD_DICTIONARY_REFRESH_MS_DEFAULT;
 
   if (!isCacheEnabled()) {
-    if (cacheZstdWritesEnabled) {
-      throw new Error('CACHE_ZSTD_WRITES_ENABLED requires an initialized Redis cache');
-    }
+    // No analysis cache to write to while Redis is off; never block startup.
+    cacheZstdWritesEnabled = false;
     return false;
   }
 
