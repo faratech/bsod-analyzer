@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 
 import { classifyQuotaFailure, shouldRefund, refundCapFor } from '../server/quotaPolicy.js';
 import {
-  reserveSessionQuota,
-  commitSessionTokens,
-  refundSessionQuota,
+  createProviderQuotaStore,
+  createSessionQuotaStore,
   settleProviderTokenReservation
-} from '../services/cache.js';
+} from '../server/quotaStore.js';
 
 test('quota failures classify into refundable and non-refundable classes', () => {
   assert.equal(classifyQuotaFailure({ code: 'AI_TIMEOUT' }), 'timeout');
@@ -50,86 +49,108 @@ test('QUOTA_REFUND_CAP env overrides the default cap', () => {
   }
 });
 
-// The in-memory branch is exercised directly (cache disabled on import); it
-// shares its semantics with the Redis scripts, which need a live Upstash.
 const WINDOW = 3600;
 
-test('reserve admits until the request cap, then rejects with a reason', async () => {
-  const key = `test:req-cap:${Math.random()}`;
+test('reserve admits until the request cap, then rejects with a reason', () => {
+  const quota = createSessionQuotaStore();
+  const args = { requestCost: 1, tokenCost: 10, requestLimit: 3, tokenLimit: 10_000, windowSeconds: WINDOW };
   for (let i = 0; i < 3; i++) {
-    const result = await reserveSessionQuota(key, {
-      requestCost: 1, tokenCost: 10, requestLimit: 3, tokenLimit: 10_000, windowSeconds: WINDOW
-    });
-    assert.equal(result.allowed, true);
+    assert.equal(quota.reserve('k', args).allowed, true);
   }
-  const fourth = await reserveSessionQuota(key, {
-    requestCost: 1, tokenCost: 10, requestLimit: 3, tokenLimit: 10_000, windowSeconds: WINDOW
-  });
+  const fourth = quota.reserve('k', args);
   assert.equal(fourth.allowed, false);
   assert.equal(fourth.reason, 'requests');
 });
 
-test('reserve enforces the token cap atomically with the request cap', async () => {
-  const key = `test:tok-cap:${Math.random()}`;
+test('reserve checks the token cap before moving either counter', () => {
+  const quota = createSessionQuotaStore();
   const args = { requestCost: 1, tokenCost: 600, requestLimit: 100, tokenLimit: 1000, windowSeconds: WINDOW };
-  assert.equal((await reserveSessionQuota(key, args)).allowed, true);
-  const second = await reserveSessionQuota(key, args);
+  assert.equal(quota.reserve('k', args).allowed, true);
+  const second = quota.reserve('k', args);
   assert.equal(second.allowed, false);
   assert.equal(second.reason, 'tokens');
+  assert.equal(second.requests, 1); // the rejected request was not counted
 });
 
-test('a refund releases the reservation but the cap bounds refund farming', async () => {
-  const key = `test:refund:${Math.random()}`;
-  const args = { requestCost: 1, tokenCost: 10, requestLimit: 2, tokenLimit: 10_000, windowSeconds: WINDOW, refundCap: 1 };
+test('a refund releases the reservation but the cap bounds refund farming', () => {
+  const quota = createSessionQuotaStore();
+  const args = { requestCost: 1, tokenCost: 10, requestLimit: 2, tokenLimit: 10_000, windowSeconds: WINDOW };
 
-  assert.equal((await reserveSessionQuota(key, args)).allowed, true);
-  const first = await refundSessionQuota(key, { requestCost: 1, tokenCost: 10, windowSeconds: WINDOW, refundCap: args.refundCap });
-  assert.equal(first.refunded, true);
+  assert.equal(quota.reserve('k', args).allowed, true);
+  assert.equal(quota.refund('k', { requestCost: 1, tokenCost: 10, refundCap: 1 }).refunded, true);
 
-  assert.equal((await reserveSessionQuota(key, args)).allowed, true);
-  assert.equal((await reserveSessionQuota(key, args)).allowed, true);
-  const overCap = await refundSessionQuota(key, { requestCost: 1, tokenCost: 10, windowSeconds: WINDOW, refundCap: args.refundCap });
-  assert.equal(overCap.refunded, false);
+  assert.equal(quota.reserve('k', args).allowed, true);
+  assert.equal(quota.reserve('k', args).allowed, true);
+  assert.equal(quota.refund('k', { requestCost: 1, tokenCost: 10, refundCap: 1 }).refunded, false);
 });
 
-test('commit adjusts the token counter by the provider-reported delta', async () => {
-  const key = `test:commit:${Math.random()}`;
+test('commit adjusts the token counter by the provider-reported delta', () => {
+  const quota = createSessionQuotaStore();
   const args = { requestCost: 1, tokenCost: 500, requestLimit: 100, tokenLimit: 1000, windowSeconds: WINDOW };
-  assert.equal((await reserveSessionQuota(key, args)).allowed, true);
+  assert.equal(quota.reserve('k', args).allowed, true);
   // Provider reports 200 input tokens instead of the 500 reserved: -300.
-  await commitSessionTokens(key, { tokenDelta: -300, windowSeconds: WINDOW });
+  quota.commit('k', { tokenDelta: -300 });
   // 200 consumed; a further 700 fits, 900 does not.
-  assert.equal((await reserveSessionQuota(key, { ...args, tokenCost: 700 })).allowed, true);
-  assert.equal((await reserveSessionQuota(key, { ...args, tokenCost: 900 })).allowed, false);
+  assert.equal(quota.reserve('k', { ...args, tokenCost: 700 }).allowed, true);
+  assert.equal(quota.reserve('k', { ...args, tokenCost: 900 }).allowed, false);
 });
 
-test('legacy tracking records seed the first reservation window', async () => {
-  const key = `test:legacy:${Math.random()}`;
-  const seeded = await reserveSessionQuota(key, {
-    requestCost: 1, tokenCost: 0, requestLimit: 3, tokenLimit: 1000, windowSeconds: WINDOW,
-    legacy: { requests: 2, tokens: 500 }
-  });
-  // Legacy usage counts against the new window: only one request remains.
-  assert.equal(seeded.allowed, true);
-  assert.equal(seeded.requests, 3);
-  assert.equal(seeded.tokens, 500);
-  const next = await reserveSessionQuota(key, {
-    requestCost: 1, tokenCost: 0, requestLimit: 3, tokenLimit: 1000, windowSeconds: WINDOW,
-    legacy: { requests: 0, tokens: 0 }
-  });
-  assert.equal(next.allowed, false);
-  assert.equal(next.reason, 'requests');
+test('session windows reset and expired entries are pruned', () => {
+  const quota = createSessionQuotaStore();
+  const now = Date.now();
+  const args = { requestCost: 1, tokenCost: 1, requestLimit: 1, tokenLimit: 10, windowSeconds: 60, now };
+  assert.equal(quota.reserve('k', args).allowed, true);
+  assert.equal(quota.reserve('k', args).allowed, false);
+  // A refund after the window rolled over must not touch the new window.
+  assert.equal(quota.refund('k', { tokenCost: 1, refundCap: 5, now: now + 61_000 }).refunded, false);
+  assert.equal(quota.reserve('k', { ...args, now: now + 61_000 }).allowed, true);
+
+  quota.prune(now + 200_000);
+  assert.equal(quota.size(), 0);
 });
 
-test('the in-memory branch is reachable only with cache disabled and never reports unavailable', async () => {
-  // The Redis branch is not exercised here (no live Upstash); the memory
-  // fallback must therefore never surface 'unavailable' — the store IS the
-  // process, so a 503 would mean a bug in the branch selection itself.
-  const result = await reserveSessionQuota(`test:ok:${Math.random()}`, {
-    requestCost: 1, tokenCost: 1, requestLimit: 1, tokenLimit: 10, windowSeconds: WINDOW
-  });
-  assert.equal(result.allowed, true);
-  assert.notEqual(result.reason, 'unavailable');
+const PROVIDER_LIMITS = { dailyInputLimit: 1000, dailyOutputLimit: 1000, hourlyInputLimit: 400, hourlyOutputLimit: 400 };
+
+test('provider budgets keep separate day and hour buckets', () => {
+  const quota = createProviderQuotaStore();
+  const t0 = Date.UTC(2026, 8, 26, 10, 30);
+  const reserve = (now, cost = 300) => quota.reserve('p', { ...PROVIDER_LIMITS, inputCost: cost, outputCost: 0, now });
+
+  assert.equal(reserve(t0).allowed, true);
+  assert.equal(reserve(t0).reason, 'hourly'); // 600 > 400 this hour
+  // Next hour: the hour bucket is fresh but the day still counts the first 300.
+  const t1 = t0 + 60 * 60 * 1000;
+  assert.equal(reserve(t1).allowed, true);
+  assert.equal(reserve(t1 + 60 * 60 * 1000).allowed, true);
+  assert.equal(reserve(t1 + 2 * 60 * 60 * 1000).reason, 'daily'); // 1200 > 1000 today
+  // Next UTC day starts clean.
+  assert.equal(reserve(Date.UTC(2026, 8, 27, 0, 5)).allowed, true);
+});
+
+test('provider shards give each instance its share of the budget', () => {
+  const quota = createProviderQuotaStore({ shards: 2 });
+  const now = Date.UTC(2026, 8, 26, 10, 30);
+  const args = { ...PROVIDER_LIMITS, inputCost: 150, outputCost: 0, now };
+  assert.equal(quota.reserve('p', args).allowed, true);
+  assert.equal(quota.reserve('p', args).reason, 'hourly'); // share = 200/hour
+});
+
+test('adjust releases tokens and the exhaustion latch lasts until the window ends', () => {
+  const quota = createProviderQuotaStore();
+  const now = Date.UTC(2026, 8, 26, 10, 30);
+  const reservation = quota.reserve('p', { ...PROVIDER_LIMITS, inputCost: 400, outputCost: 0, now });
+  assert.equal(reservation.allowed, true);
+  quota.adjust(reservation, { inputDelta: -400 });
+  assert.equal(quota.reserve('p', { ...PROVIDER_LIMITS, inputCost: 400, outputCost: 0, now }).allowed, true);
+
+  quota.markExhausted('p', 'hour', now);
+  assert.equal(quota.isExhausted('p', now), true);
+  assert.equal(quota.reserve('p', { ...PROVIDER_LIMITS, inputCost: 1, outputCost: 0, now }).reason, 'exhausted');
+  assert.equal(quota.isExhausted('p', Date.UTC(2026, 8, 26, 11, 0)), false);
+
+  quota.markExhausted('p', 'day', now);
+  assert.equal(quota.isExhausted('p', Date.UTC(2026, 8, 26, 23, 59)), true);
+  assert.equal(quota.isExhausted('p', Date.UTC(2026, 8, 27, 0, 0)), false);
 });
 
 test('provider settlement releases only provider-reported unused tokens', () => {
