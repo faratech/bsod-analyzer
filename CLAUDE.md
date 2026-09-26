@@ -145,12 +145,9 @@ prerendered markup — never another route's — or hydration mismatches.
   (`tests/minidumpStreams.test.mjs`), or full bundling with a plugin resolving
   `.js` specifiers back to `.ts` for modules with imports
   (`tests/dumpParserBugCheck.test.mjs`).
-- Each fake Redis (e.g. `createFakeRedis` in `tests/statsStore.test.mjs`)
-  implements only the operations the store uses — if you add a pipeline
-  command to a store, add it to the fake's `pipeline()` too, or calls silently
-  return false instead of failing. Beware `resultValue()`: it collapses arrays
-  to their first element (it exists for `[value, err]` tuples), so pipeline
-  results that are legitimately arrays must be read raw.
+- Each fake Redis client (e.g. in `tests/cacheIntegration.test.mjs`)
+  implements only the operations the code under test uses — add any new
+  command to the fake too, or calls silently return nothing instead of failing.
 - The Lua lease/job scripts in `services/cache.js` have no test fake; verify
   script semantics by extracting them and running under `lua`/`luac` with a
   stubbed `redis.call` (Upstash is Lua 5.1).
@@ -183,7 +180,8 @@ prerendered markup — never another route's — or hydration mismatches.
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 | `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
-| `STATS_SNAPSHOT_TTL_SECONDS` | TTL of the cached public snapshot (`stats:snapshot`) | Defaults `60` |
+| `STATS_SNAPSHOT_TTL_SECONDS` | In-process memo of the BigQuery-built `/api/stats` snapshot | Defaults `1800` |
+| `STATS_BIGQUERY_DATASET` / `STATS_BIGQUERY_TABLE` | Where the `bsod-stats-events` log sink writes `stats.analysis` events | Default `bsod_stats` / `run_googleapis_com_stdout` |
 | `STATS_DAILY_WINDOW_DAYS` | Rolling daily-volume window for crash statistics | Defaults `90` |
 | `STATS_INSIGHT_ENABLED` | AI narrative on `/stats` via OpenRouter free model (`OPENROUTER_API_KEY`) | Defaults on; degrades without key |
 | `OPENROUTER_API_KEY` | OpenRouter access (AI failover + stats narrative) | Optional secret `openrouter-api-key` |

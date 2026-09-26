@@ -3,33 +3,6 @@ import assert from 'node:assert/strict';
 
 import { createStatsInsightService } from '../server/statsInsight.js';
 
-function createFakeRedis() {
-  const store = new Map();
-  return {
-    async get(k) {
-      const entry = store.get(String(k));
-      if (!entry || (entry.expiresAt !== null && entry.expiresAt < Date.now())) return null;
-      return entry.value;
-    },
-    async set(k, v, opts = {}) {
-      const entry = store.get(String(k));
-      const alive = entry && (entry.expiresAt === null || entry.expiresAt > Date.now());
-      if (opts.nx && alive) return null;
-      store.set(String(k), {
-        value: String(v),
-        expiresAt: opts.ex ? Date.now() + opts.ex * 1000 : null
-      });
-      return 'OK';
-    },
-    async del(k) {
-      return store.delete(String(k)) ? 1 : 0;
-    },
-    _peek(k) {
-      return store.get(String(k));
-    }
-  };
-}
-
 const SNAPSHOT = {
   totals: { analyses: 10707 },
   gauges: { today: 130, lastHour: 3 },
@@ -41,14 +14,13 @@ const SNAPSHOT = {
   sources: { items: [{ value: 'windbg', count: 8000 }], other: 0, total: 8000 }
 };
 
-function buildService(redis, { providerCalls = [], nowMs = Date.UTC(2026, 7, 23, 12), ttlSeconds = 21600, apiKey = 'test-key', providerImpl } = {}) {
+function buildService({ providerCalls = [], nowMs = Date.UTC(2026, 7, 23, 12), ttlSeconds = 21600, apiKey = 'test-key', providerImpl } = {}) {
   let clock = nowMs;
   const provider = providerImpl ?? (async () => {
     providerCalls.push(clock);
     return JSON.stringify({ insight: `Synthetic insight #${providerCalls.length}.` });
   });
   const service = createStatsInsightService({
-    getClient: () => redis,
     isEnabled: () => true,
     getSnapshot: async () => SNAPSHOT,
     now: () => clock,
@@ -65,8 +37,7 @@ function buildService(redis, { providerCalls = [], nowMs = Date.UTC(2026, 7, 23,
 }
 
 test('generates once then serves the cached narrative', async () => {
-  const redis = createFakeRedis();
-  const harness = buildService(redis);
+  const harness = buildService();
   const first = await harness.service.getInsight();
   assert.equal(first.available, true);
   assert.equal(first.cached, false);
@@ -80,42 +51,54 @@ test('generates once then serves the cached narrative', async () => {
   assert.equal(harness.calls(), 1);
 });
 
-test('regenerates after TTL and single-flights concurrent misses', async () => {
-  const redis = createFakeRedis();
-  const harness = buildService(redis, { ttlSeconds: 3600 });
+test('regenerates after TTL and serves stale text to concurrent callers', async () => {
+  let release;
+  let calls = 0;
+  const harness = buildService({
+    ttlSeconds: 3600,
+    providerImpl: async () => {
+      calls += 1;
+      if (calls === 2) await new Promise(resolve => { release = resolve; });
+      return JSON.stringify({ insight: `Synthetic insight #${calls}.` });
+    }
+  });
   await harness.service.getInsight();
   harness.tick(2 * 3600 * 1000); // past TTL
-  // Simulate a competing holder of the lock: stale text should still serve.
-  await redis.set('stats:insight:lock', '1', { ex: 120 });
-  const contended = await harness.service.getInsight();
-  assert.equal(contended.cached, true);
-  assert.equal(contended.stale, true);
-  assert.equal(harness.calls(), 1);
-  await redis.del('stats:insight:lock');
 
-  const fresh = await harness.service.getInsight();
+  const regenerating = harness.service.getInsight();
+  await new Promise(resolve => setImmediate(resolve));
+  const concurrent = await harness.service.getInsight();
+  assert.equal(concurrent.cached, true);
+  assert.equal(concurrent.stale, true);
+  assert.match(concurrent.text, /#1/);
+
+  release();
+  const fresh = await regenerating;
   assert.equal(fresh.cached, false);
   assert.match(fresh.text, /Synthetic insight #2/);
+  assert.equal(calls, 2);
 });
 
 test('provider failure yields unavailable without poisoning the cache', async () => {
-  const redis = createFakeRedis();
-  const failing = buildService(redis, {
-    providerImpl: async () => { throw new Error('upstream down'); }
+  let fail = true;
+  const harness = buildService({
+    providerImpl: async () => {
+      if (fail) throw new Error('upstream down');
+      return JSON.stringify({ insight: 'Recovered.' });
+    }
   });
-  const result = await failing.service.getInsight();
-  assert.equal(result.available, false);
-  assert.equal(await redis.get('stats:insight'), null);
-  assert.equal(await redis.get('stats:insight:lock'), null); // lock released
+  assert.equal((await harness.service.getInsight()).available, false);
+  fail = false;
+  const recovered = await harness.service.getInsight();
+  assert.equal(recovered.available, true);
+  assert.equal(recovered.text, 'Recovered.');
 });
 
 test('disabled or key-less deployments report unavailable', async () => {
-  const noKey = buildService(createFakeRedis(), { apiKey: '' });
+  const noKey = buildService({ apiKey: '' });
   assert.equal((await noKey.service.getInsight()).available, false);
 
-  const redis = createFakeRedis();
   const disabled = createStatsInsightService({
-    getClient: () => redis,
     isEnabled: () => false,
     getSnapshot: async () => SNAPSHOT,
     apiKey: 'k'

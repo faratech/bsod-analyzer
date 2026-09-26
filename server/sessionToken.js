@@ -103,15 +103,17 @@ export function sessionTag(sessionId) {
 }
 
 // WinDBG file handle: proof that this session uploaded the file with hash
-// `fh`, plus the upstream WinDBG job id (`jid`) when a job was submitted, so
-// status/download/cache reads work on an instance that never saw the upload.
+// `fh`, plus the upstream WinDBG job id (`jid`) and dump type (`dt`) when a job
+// was submitted, so status/download/cache reads work on an instance that
+// never saw the upload.
 export function createFileHandleCodec({ secret, previousSecret, ttlMs }) {
   const signer = createSigner({ secret, previousSecret, purpose: 'windbg-handle-v1' });
 
   return {
-    issue({ fileHash, jobId = null, sessionId }, now = Date.now()) {
+    issue({ fileHash, jobId = null, dumpType = null, sessionId }, now = Date.now()) {
       const claims = { v: 1, fh: fileHash, st: sessionTag(sessionId), exp: now + ttlMs };
       if (jobId) claims.jid = String(jobId);
+      if (dumpType) claims.dt = String(dumpType);
       return signer.sign(claims);
     },
 

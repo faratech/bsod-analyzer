@@ -1,7 +1,9 @@
-// Pure crash-statistics helpers: fact extraction/normalization and public
-// snapshot shaping. No I/O and no imports from server.js so tests can exercise
-// this directly (see tests/stats.test.mjs). The Upstash side lives in
-// server/statsStore.js; the HTTP surface lives in server/statsRoute.js.
+// Pure crash-statistics helpers: fact extraction/normalization, the logged
+// event shape, and public snapshot shaping. No I/O and no imports from
+// server.js so tests can exercise this directly (see tests/stats.test.mjs).
+// Recording/aggregation lives in server/statsStore.js (events are log lines
+// routed to BigQuery, see server/statsBigQuery.js); the HTTP surface lives in
+// server/statsRoute.js.
 export const STATS_SNAPSHOT_SCHEMA = 'bsod_stats_snapshot_v1';
 export const TOP_LIST_SIZE = 10;
 
@@ -157,7 +159,59 @@ export function extractStatsFacts(input = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot shaping — turns raw Redis reads into the public JSON document
+// Event shape — one structured log line per completed analysis
+// ---------------------------------------------------------------------------
+
+export const STATS_EVENT = 'stats.analysis';
+
+// Every field is always present as a string ('' when unknown): the BigQuery
+// table the log sink writes is schema-inferred from the entries, so a field
+// that is sometimes absent would be missing from the schema and break SQL.
+export function toStatsEvent(facts) {
+  const text = value => (value === undefined || value === null ? '' : String(value));
+  return {
+    source: text(facts.source),
+    file_hash: text(facts.fileHash),
+    stop_code: text(facts.stopCode),
+    stop_code_label: text(facts.stopCodeLabel),
+    failure_bucket: text(facts.failureBucket),
+    module: text(facts.module),
+    os_version: text(facts.osVersion),
+    dump_type: text(normalizeDumpType(facts.dumpType) || 'unknown')
+  };
+}
+
+// Folds the one-time pre-cutover aggregate export (baseline) into the live
+// aggregates. Counts add; live labels win; the live-only gauges pass through.
+export function mergeStatsRaw(baseline, live) {
+  if (!baseline) return live;
+  const addMaps = (a = {}, b = {}) => {
+    const out = { ...a };
+    for (const [k, v] of Object.entries(b || {})) out[k] = (Number(out[k]) || 0) + (Number(v) || 0);
+    return out;
+  };
+  const addPairs = (a = [], b = []) => Object.entries(addMaps(Object.fromEntries(a || []), Object.fromEntries(b || [])));
+  const earliest = [baseline.trackingSince, live.trackingSince]
+    .filter(value => isValidIso(value))
+    .sort()[0] || null;
+  return {
+    total: (Number(baseline.total) || 0) + (Number(live.total) || 0),
+    sources: addMaps(baseline.sources, live.sources),
+    dumpTypes: addMaps(baseline.dumpTypes, live.dumpTypes),
+    osVersions: addMaps(baseline.osVersions, live.osVersions),
+    stopCodes: addMaps(baseline.stopCodes, live.stopCodes),
+    stopCodeLabels: { ...(baseline.stopCodeLabels || {}), ...(live.stopCodeLabels || {}) },
+    buckets: addPairs(baseline.buckets, live.buckets),
+    modules: addPairs(baseline.modules, live.modules),
+    daily: addPairs(baseline.daily, live.daily),
+    lastHour: live.lastHour,
+    runsToday: live.runsToday,
+    trackingSince: earliest
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot shaping — turns raw aggregates into the public JSON document
 // ---------------------------------------------------------------------------
 
 // raw: {

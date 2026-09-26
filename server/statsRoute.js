@@ -1,5 +1,5 @@
 // Public crash-statistics endpoint: GET /api/stats.
-// Serves the Redis-cached snapshot (building it once on a cold miss) with a
+// Serves the memoized snapshot (building it once on a cold miss) with a
 // strong ETag + CDN-friendly caching so Cloudflare absorbs most reads.
 import { createHash } from 'node:crypto';
 
