@@ -11,7 +11,8 @@
 // Talks to the BigQuery REST API with the Cloud Run service account's token
 // from the metadata server — no client library needed.
 
-const METADATA = 'http://metadata.google.internal/computeMetadata/v1';
+import { createGcpMetadataAuth } from './gcpMetadata.js';
+
 const BIGQUERY = 'https://bigquery.googleapis.com/bigquery/v2';
 const QUERY_TIMEOUT_MS = 20_000;
 const IDENTIFIER_RE = /^[A-Za-z0-9_-]+$/;
@@ -105,39 +106,7 @@ export function createBigQueryStatsSource({
   if (!IDENTIFIER_RE.test(dataset) || !IDENTIFIER_RE.test(table)) {
     throw new TypeError('BigQuery dataset/table names must be plain identifiers');
   }
-  let token = null; // { value, expiresAt }
-  let project = projectId || null;
-
-  async function metadata(path) {
-    const res = await fetchImpl(`${METADATA}/${path}`, {
-      headers: { 'Metadata-Flavor': 'Google' },
-      signal: AbortSignal.timeout(2000)
-    });
-    if (!res.ok) throw new Error(`metadata ${path} HTTP ${res.status}`);
-    return res;
-  }
-
-  // Parallel queries share one in-flight token fetch.
-  let tokenRequest = null;
-  async function accessToken() {
-    if (getAccessToken) return getAccessToken();
-    if (token && token.expiresAt - 60_000 > Date.now()) return token.value;
-    tokenRequest ??= (async () => {
-      try {
-        const body = await (await metadata('instance/service-accounts/default/token')).json();
-        token = { value: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 0) * 1000 };
-        return token.value;
-      } finally {
-        tokenRequest = null;
-      }
-    })();
-    return tokenRequest;
-  }
-
-  async function projectIdentifier() {
-    if (!project) project = (await (await metadata('project/project-id')).text()).trim();
-    return project;
-  }
+  const { accessToken, projectIdentifier } = createGcpMetadataAuth({ projectId, getAccessToken, fetchImpl });
 
   // Runs one standard-SQL query and returns its rows' first column values.
   async function runQuery(query, parameters = []) {
