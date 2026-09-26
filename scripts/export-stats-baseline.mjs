@@ -13,6 +13,8 @@
 // row wins, so nothing is double counted.
 import { initCache, getRedisCommandClient, isCacheEnabled } from '../services/cache.js';
 
+// stdout carries only the JSONL row; the cache module's logs go to stderr.
+console.log = (...args) => console.error(...args);
 // redis.cfg keeps the app off Upstash; this script is an explicit reader.
 process.env.REDIS_ENABLED ??= 'true';
 initCache();
@@ -50,7 +52,11 @@ const [total, sources, dumpTypes, osVersions, stopCodes, stopCodeLabels, buckets
     redis.zrange(key('z:module'), 0, -1, { withScores: true }),
     redis.zrange(key('z:daily'), 0, -1, { withScores: true }),
     redis.get(key('start'))
-  ]);
+  ]).catch(error => {
+    console.error(`export-stats-baseline: Upstash rejected the read: ${error.message.split(', command was')[0]}`);
+    console.error('If this is the plan limit, upgrade the database (or wait for the monthly reset) and re-run.');
+    process.exit(1);
+  });
 
 const raw = {
   total: Number(total?.analyses) || 0,
