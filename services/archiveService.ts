@@ -3,6 +3,7 @@
  */
 
 import { handleSessionError } from '../utils/sessionManager';
+import { dataUseHeaders } from '../utils/dataUse';
 import { ARCHIVE_EXTENSIONS } from '../shared/ingestPolicy.js';
 import { validateZipFile } from '../utils/zipSecurity';
 import JSZip from 'jszip';
@@ -27,6 +28,7 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
   const response = await fetch('/api/extract-archive', {
     method: 'POST',
     credentials: 'include',
+    headers: dataUseHeaders(),
     body: formData
   });
 

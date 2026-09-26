@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import PageLayout from '../components/PageLayout';
 import StructuredData from '../components/StructuredData';
 import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
@@ -176,13 +177,14 @@ const About: React.FC = () => {
                     <section id="privacy" className="about-section content-section">
                         <h2>Privacy & Security</h2>
                         <p>
-                            Your privacy is our priority. Here's how we protect your data:
+                            Here's how your crash data is handled. The full details are in our{' '}
+                            <Link to="/privacy">privacy &amp; data use notice</Link>.
                         </p>
                         <ul>
-                            <li>Dump files are processed by our secure backend. The primary path uses the WinDBG server; fallback analysis uses local or sampled evidence. Files are not retained after processing</li>
-                            <li>Analysis results are cached temporarily to speed up repeat queries for the same file</li>
+                            <li>Dumps are analyzed by our WinDBG server; an AI model writes the report from a summary of that analysis</li>
+                            <li>We keep analyses to improve our AI and publish only anonymous, aggregate statistics; we never publish your dump or its contents</li>
+                            <li>Using the analyzer requires agreeing to this; you can decline on the analyzer page and nothing is uploaded</li>
                             <li>All communications are encrypted using industry-standard SSL/TLS</li>
-                            <li>No personal information is collected or retained</li>
                             <li>API keys and secrets are stored server-side — never exposed to the browser</li>
                             <li>Sessions are protected with Cloudflare Turnstile and rate limiting</li>
                         </ul>

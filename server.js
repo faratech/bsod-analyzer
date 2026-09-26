@@ -68,6 +68,8 @@ import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
+import { requireDataUseTerms } from './server/dataUseTerms.js';
+import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
 import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
@@ -2050,7 +2052,7 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
 });
 
 // Browser compatibility endpoint. Provider/model selection remains server-owned.
-app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, defaultJsonParser, async (req, res) => {
+app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, requireDataUseTerms, defaultJsonParser, async (req, res) => {
   // Declared in the handler scope, not inside the try: the catch below reads them
   // to refund the quota reservation, and a catch block is a sibling of its try, not
   // a child of it. Declaring them inside the try made every failure path throw
@@ -2332,6 +2334,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     });
     recordAiReport({
       origin: 'web',
+      dataUseTerms: DATA_USE_TERMS_VERSION,
       source: validation.promptType === 'local' ? 'ai-fallback' : 'windbg',
       promptType: validation.promptType,
       fileHash: ownedFileHash ? fileHash : undefined,
@@ -2564,7 +2567,7 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, upload.single('file'), async (req, res) => {
+app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
     // tiers (anonymous + logged-in members) fall back client-side to the local
@@ -2829,7 +2832,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       analysisText,
       dumpType: ownership.dumpType
     });
-    recordCorpus(job, { fileHash: uid });
+    recordCorpus(job, { fileHash: uid, dataUseTerms: DATA_USE_TERMS_VERSION });
 
     res.json({
       success: true,
@@ -2850,7 +2853,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
 // ============================================================
 // Archive Extraction Endpoint (7z/RAR)
 // ============================================================
-app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), archiveConcurrency, requireSession, upload.single('file'), async (req, res) => {
+app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), archiveConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -3153,6 +3156,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
     recordAiReport({
       origin: 'api',
+      dataUseTerms: `api-${DATA_USE_TERMS_VERSION}`,
       source: 'windbg',
       promptType: 'windbg',
       fileHash,
@@ -3222,7 +3226,7 @@ const externalJobResolver = createExternalJobResolver({
     analysisText: analysis.analysisText,
     dumpType: job.dumpType
   }),
-  recordCorpus: (job, upstream) => recordCorpus(upstream, { fileHash: job.fileHash, fileSizeBytes: job.fileSize }),
+  recordCorpus: (job, upstream) => recordCorpus(upstream, { fileHash: job.fileHash, fileSizeBytes: job.fileSize, dataUseTerms: `api-${DATA_USE_TERMS_VERSION}` }),
   deadlineMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
   resultTtlMs: EXTERNAL_JOB_TTL_MS,
   logger: log

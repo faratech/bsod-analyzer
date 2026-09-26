@@ -1,5 +1,6 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
 import { DumpFile, AnalysisReportData, FileStatus } from '../types';
+import { dataUseHeaders } from '../utils/dataUse';
 import { sanitizeExtractedContent, validateProcessingTimeout } from '../utils/contentSanitizer';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
@@ -83,6 +84,7 @@ const createGeminiProxy = () => {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        ...dataUseHeaders(),
                     },
                     credentials: 'include', // Important: include cookies for session
                     body: requestBody

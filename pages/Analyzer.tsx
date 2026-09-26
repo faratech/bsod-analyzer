@@ -2,6 +2,7 @@ declare const __BUILD_VERSION__: string;
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
+import DataUseAgreement from '../components/DataUseAgreement';
 import FilePreview from '../components/FilePreview';
 import ErrorAlert from '../components/ErrorAlert';
 import AnalysisResults from '../components/AnalysisResults';
@@ -25,6 +26,8 @@ const Analyzer: React.FC = () => {
     const { isAnalyzing, progress, error: analysisError, analyzeFiles, retryFile } = useAnalysis();
 
     const error = fileError || analysisError;
+    // Data-use terms (checked by default); unchecked disables uploading and analysis.
+    const [dataUseAccepted, setDataUseAccepted] = useState(true);
     const [, setSessionReady] = useState(false);
 
     // Initialize session on component mount
@@ -83,6 +86,7 @@ const Analyzer: React.FC = () => {
     }, []);
 
     const handleAnalyze = async () => {
+        if (!dataUseAccepted) return;
         // Show under development notification
         const confirmAnalyze = window.confirm(
             "⚠️ Under Development Notice\n\n" +
@@ -175,7 +179,8 @@ const Analyzer: React.FC = () => {
                     </div>
 
                     <div className="analyzer-upload-section">
-                        <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} />
+                        <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} disabled={!dataUseAccepted} />
+                        <DataUseAgreement accepted={dataUseAccepted} onChange={setDataUseAccepted} />
                         
                         {dumpFiles.length > 0 && (
                             <>
@@ -195,7 +200,8 @@ const Analyzer: React.FC = () => {
                                 <div className="analyzer-controls">
                                     <button
                                         onClick={handleAnalyze}
-                                        disabled={isAnalyzing || pendingFilesCount === 0}
+                                        disabled={isAnalyzing || pendingFilesCount === 0 || !dataUseAccepted}
+                                        title={dataUseAccepted ? undefined : 'Check "Use my crash analysis to improve BSOD AI" to analyze'}
                                         className="btn btn-primary"
                                     >
                                         <AnalyzeIcon />
