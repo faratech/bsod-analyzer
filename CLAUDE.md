@@ -190,7 +190,7 @@ prerendered markup — never another route's — or hydration mismatches.
 | `FORUM_RELATED_ENABLED` | Related WindowsForum threads on reports and in `/api/analyze` results (set `false` to disable) | Defaults on |
 | `FORUM_MCP_URL` | WindowsForum MCP server whose `search` tool finds related threads (public, no auth) | Defaults `https://mcp.windowsforum.com/` |
 | `FORUM_RELATED_TIMEOUT_MS` / `FORUM_RELATED_RATE_LIMIT_MAX` | Forum search timeout / per-IP `/api/forum/related` budget per 15 min | Defaults `3000` / `120` |
-| `WF_CRASH_SIGNAL_URL` / `WF_CRASH_SIGNAL_KEY` | WindowsForum crash-signal ingest base URL (`/crash-signal` is appended; `https://search.windowsforum.com/api/ideaengine`) and its `X-API-Key` | No (recording off unless both are set) |
+| `WF_CRASH_SIGNAL_URL` / `WF_CRASH_SIGNAL_KEY` | WindowsForum crash-signal ingest base URL (`/crash-signal` is appended; `https://search.windowsforum.com/api/ideaengine`) and its `X-API-Key` | No (recording off unless both are set). `cloudbuild.yaml` / `deploy-with-secret.sh` set the URL and bind the key from secret `wf-crash-signal-key` when it has an enabled version |
 | `WF_CRASH_SIGNAL_TIMEOUT_MS` | Crash-signal POST timeout | Defaults `5000` |
 
 For local development, set in `.env.local` or export directly. To run with
