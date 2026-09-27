@@ -19,7 +19,7 @@ const JOB = {
 };
 const MAP = status => ({ done: 'completed', running: 'processing', broken: 'failed' })[status] || 'pending';
 
-function harness({ cached = null, upstream = async () => ({ status: 'running' }), now = () => Date.now() } = {}) {
+function harness({ cached = null, upstream = async () => ({ status: 'running' }), now = () => Date.now(), findRelated } = {}) {
   const calls = { upstream: 0, reports: 0, cached: [], stats: 0, corpus: [] };
   const resolver = createExternalJobResolver({
     getUpstreamJob: async jobId => {
@@ -36,6 +36,7 @@ function harness({ cached = null, upstream = async () => ({ status: 'running' })
     },
     recordStats: () => { calls.stats += 1; },
     recordCorpus: (job, upstream) => { calls.corpus.push([job.fileHash, upstream]); },
+    ...(findRelated ? { findRelated } : {}),
     deadlineMs: 15 * 60 * 1000,
     now,
     logger: { warn() {} }
@@ -125,4 +126,35 @@ test('a cache-hit job whose cache entry is gone fails instead of polling forever
   const { resolver, calls } = harness();
   assert.equal((await resolver.resolve(job)).status, 'failed');
   assert.equal(calls.upstream, 0);
+});
+
+test('completed jobs carry related forum threads, memoized with the result', async () => {
+  const codec = createExternalJobCodec({ secret: SECRET });
+  const job = codec.parse(codec.issue(JOB));
+  const seen = [];
+  const thread = { threadId: 338855, title: 'DPC_WATCHDOG_VIOLATION', url: 'https://windowsforum.com/threads/338855/', match: 'code' };
+  const { resolver } = harness({
+    upstream: async () => ({ status: 'done', result: 'kd> !analyze -v' }),
+    findRelated: async (_job, analysis, report) => { seen.push([analysis.windbgOutput, report.summary]); return [thread]; }
+  });
+
+  const result = await resolver.resolve(job);
+  assert.deepEqual(result.relatedThreads, [thread]);
+  await resolver.resolve(job);
+  assert.deepEqual(seen, [['kd> !analyze -v', 'report for crash.dmp']]);
+});
+
+test('a failing related-thread lookup never fails the job', async () => {
+  const codec = createExternalJobCodec({ secret: SECRET });
+  const job = codec.parse(codec.issue(JOB));
+  const { resolver } = harness({
+    cached: { windbgOutput: 'BUGCHECK_CODE: 7e' },
+    findRelated: async () => { throw new Error('forum down'); }
+  });
+  const result = await resolver.resolve(job);
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.relatedThreads, []);
+
+  const defaults = harness({ cached: { windbgOutput: 'BUGCHECK_CODE: 7e' } });
+  assert.deepEqual((await defaults.resolver.resolve(codec.parse(codec.issue(JOB)))).relatedThreads, []);
 });

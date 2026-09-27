@@ -6,6 +6,7 @@ import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/
 import { DisplayAdSafe } from '../components/AdSenseWithSizeCheck';
 import { useActiveSection } from '../hooks/useActiveSection';
 import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
+import { BSOD_FORUM_URL } from '../shared/forumLinks.js';
 import BsodAnalyzerFlow from '../components/flow/BsodAnalyzerFlow';
 
 const About: React.FC = () => {
@@ -438,7 +439,7 @@ kb                   # Display stack backtrace
                             </li>
                             <li>
                                 <a 
-                                    href="https://windowsforum.com/forums/windows-crashes-bsod-hangs.15/"
+                                    href={BSOD_FORUM_URL}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     style={{ fontWeight: 500 }}

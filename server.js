@@ -68,6 +68,12 @@ import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
+import {
+  DEFAULT_FORUM_MCP_URL,
+  createForumMcpClient,
+  createForumRelatedService,
+  registerForumRelatedRoute
+} from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
 import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
@@ -605,6 +611,7 @@ setInterval(() => {
     if (entry.expiresAt <= now) recentExternalSubmissions.delete(fileHash);
   }
   externalJobResolver.prune(now);
+  forumRelated.prune(now);
   for (const [sessionId, hashes] of sessionHashOwnership.entries()) {
     for (const [hash, timestamp] of hashes.entries()) {
       if (now - timestamp > OWNERSHIP_EXPIRY) hashes.delete(hash);
@@ -1156,6 +1163,12 @@ const externalAnalyzeStatusIpLimiter = makeLimiter({
 
 // Public stats endpoint: generous per-IP budget for widget traffic.
 const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'stats' });
+// Related forum threads for a finished report (session-gated, cached per key).
+const forumRelatedLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: readPositiveInt(process.env.FORUM_RELATED_RATE_LIMIT_MAX, 120),
+  name: 'forum-related'
+});
 
 const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
 const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
@@ -1654,6 +1667,19 @@ const crashPriors = process.env.CORPUS_PRIORS_ENABLED === 'false'
 async function priorContextFor(signal) {
   return crashPriors ? crashPriors.contextFor(signal) : '';
 }
+
+// Related WindowsForum discussions (server/forumRelated.js): the forum's public
+// MCP search, queried with only the stop code, its name and the faulting
+// module. Best-effort and cached per instance; never blocks an analysis.
+const forumRelated = createForumRelatedService({
+  isEnabled: () => process.env.FORUM_RELATED_ENABLED !== 'false',
+  client: createForumMcpClient({
+    url: process.env.FORUM_MCP_URL || DEFAULT_FORUM_MCP_URL,
+    timeoutMs: readPositiveInt(process.env.FORUM_RELATED_TIMEOUT_MS, 3000)
+  }),
+  logger: log
+});
+registerForumRelatedRoute(app, { service: forumRelated, middlewares: [forumRelatedLimiter, requireSession] });
 
 // Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
 // acknowledged to WinDbg-API so it can prune its raw output after retention.
@@ -3227,6 +3253,7 @@ const externalJobResolver = createExternalJobResolver({
     dumpType: job.dumpType
   }),
   recordCorpus: (job, upstream) => recordCorpus(upstream, { fileHash: job.fileHash, fileSizeBytes: job.fileSize, dataUseTerms: `api-${DATA_USE_TERMS_VERSION}` }),
+  findRelated: (_job, analysis, report) => forumRelated.findForAnalysis({ structured: analysis.structured, report }),
   deadlineMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
   resultTtlMs: EXTERNAL_JOB_TTL_MS,
   logger: log
@@ -3557,6 +3584,8 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
     success: true,
     status: 'completed',
     data: result.report,
+    // Related WindowsForum threads (same stop code and/or faulting driver).
+    relatedThreads: result.relatedThreads || [],
     analysisMethod: 'windbg',
     processingTime: result.processingTime,
     metadata: {

@@ -70,6 +70,9 @@ export function createExternalJobResolver({
   generateReport,
   recordStats = () => {},
   recordCorpus = () => {},
+  // Best-effort extras for a completed report (related forum threads); a
+  // failure yields [] and never fails the job.
+  findRelated = async () => [],
   deadlineMs = 15 * 60 * 1000,
   resultTtlMs = 2 * 60 * 60 * 1000,
   now = () => Date.now(),
@@ -78,8 +81,8 @@ export function createExternalJobResolver({
   const results = new Map(); // uid -> { result, expiresAt }
   const inFlight = new Map(); // uid -> Promise<result>
 
-  function completed(job, report) {
-    return { status: 'completed', report, processingTime: Math.max(0, (now() - job.acceptedAt) / 1000) };
+  function completed(job, report, relatedThreads = []) {
+    return { status: 'completed', report, relatedThreads, processingTime: Math.max(0, (now() - job.acceptedAt) / 1000) };
   }
 
   function failed(job, category, detail) {
@@ -88,7 +91,15 @@ export function createExternalJobResolver({
   }
 
   async function reportFrom(job, analysis) {
-    return completed(job, await generateReport(job, analysis));
+    const report = await generateReport(job, analysis);
+    let relatedThreads = [];
+    try {
+      const found = await findRelated(job, analysis, report);
+      if (Array.isArray(found)) relatedThreads = found;
+    } catch (error) {
+      logger.warn?.('analyze.related_failed', { uid: job.uid.slice(0, 24), detail: error?.message || String(error) });
+    }
+    return completed(job, report, relatedThreads);
   }
 
   async function advance(job) {
@@ -130,7 +141,7 @@ export function createExternalJobResolver({
   }
 
   // Resolves a parsed job to { status: 'processing' } | { status: 'failed', error }
-  // | { status: 'completed', report, processingTime }. Terminal results are
+  // | { status: 'completed', report, relatedThreads, processingTime }. Terminal results are
   // memoized; concurrent polls for one uid share a single resolution.
   async function resolve(job) {
     const memo = results.get(job.uid);
