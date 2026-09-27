@@ -13,6 +13,10 @@ CACHE_ZSTD_DICTIONARY_SECRET="redis-zstd-dictionary"
 CACHE_ZSTD_DICTIONARY_PATH="/secrets/redis-zstd/dictionary"
 CACHE_ZSTD_DICTIONARY_VERSION=${CACHE_ZSTD_DICTIONARY_VERSION:-"1"}
 CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED:-"true"}
+# WindowsForum crash-signal ingest base (fastapi-app /api/ideaengine). Recording
+# stays off unless the wf-crash-signal-key secret is bound too; export it empty
+# to deploy with recording off.
+WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL-"https://search.windowsforum.com/api/ideaengine"}
 
 echo "🚀 Deploying BSOD Analyzer to Google Cloud Run"
 echo "Project: ${PROJECT_ID}"
@@ -65,6 +69,14 @@ if gcloud secrets versions list experiential-labs-api-key \
   --format='value(name)' 2>/dev/null | grep -q .; then
   RUNTIME_SECRETS="EXPLABS_API_KEY=experiential-labs-api-key:latest,${RUNTIME_SECRETS}"
 fi
+# Optional: WindowsForum crash-signal ingest key (server/crashSignal.js).
+if gcloud secrets versions list wf-crash-signal-key \
+  --project="${PROJECT_ID}" \
+  --filter='state=ENABLED' \
+  --limit=1 \
+  --format='value(name)' 2>/dev/null | grep -q .; then
+  RUNTIME_SECRETS="WF_CRASH_SIGNAL_KEY=wf-crash-signal-key:latest,${RUNTIME_SECRETS}"
+fi
 
 if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
   REQUIRED_AI_SECRET="deepseek-api-key"
@@ -98,7 +110,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --min-instances 0 \
   --memory 1Gi \
   --cpu 1 \
-  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED} \
+  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
   --update-secrets "${RUNTIME_SECRETS},${CACHE_ZSTD_DICTIONARY_PATH}=${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}" \
   --project ${PROJECT_ID}
 
