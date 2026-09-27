@@ -1,6 +1,6 @@
 // Privacy notice for the BSOD analyzer (/privacy). Keep it factual: every
 // statement here must match what the service actually does (see CLAUDE.md
-// "WinDBG corpus", "Stats & insights pipeline" and shared/dataUseTerms.js).
+// "WinDBG corpus", "Stats & insights pipeline", "Crash signal" and shared/dataUseTerms.js).
 import React from 'react';
 import { Link } from 'react-router-dom';
 import PageLayout from '../components/PageLayout';
@@ -31,6 +31,7 @@ const Privacy: React.FC = () => (
         <ul>
           <li>We analyze your crash dump with WinDBG and an AI model to produce your report.</li>
           <li>We keep the analysis to <strong>improve our AI</strong>, and we publish <strong>anonymous, aggregate crash statistics</strong> on the <Link to="/stats">statistics page</Link>.</li>
+          <li>We send WindowsForum a short crash record (stop code, faulting driver, Windows version and the report&apos;s summary) so it can track crash trends across drivers and Windows updates. It publishes only aggregate figures.</li>
           <li>We never publish your dump, its analysis, its file name, or anything that identifies you or your PC.</li>
           <li>Using the analyzer requires agreeing to this. If you&apos;d rather not, uncheck <em>Use my crash analysis to improve BSOD AI</em> on the analyzer and nothing will be uploaded.</li>
         </ul>
@@ -53,6 +54,7 @@ const Privacy: React.FC = () => (
           <li><strong>To improve our AI.</strong> We keep analyses and the AI reports written from them as training and evaluation data for BSOD AI.</li>
           <li><strong>To publish anonymous statistics.</strong> The <Link to="/stats">statistics page</Link> shows only aggregate counts across many dumps, such as the most common stop codes, drivers and Windows versions.</li>
           <li>To give the AI context, prompts can include aggregate statistics from earlier analyses, such as how often a stop code is caused by a given driver. These contain no individual dump data.</li>
+          <li><strong>To track crash trends.</strong> For each WinDBG analysis we send WindowsForum&apos;s crash-signal service a short record: a hash of the dump&apos;s contents, the stop code and its name, the faulting driver, the Windows version and the summary paragraph of the AI report. It does not include the dump, the WinDBG output or your IP address. WindowsForum keeps these records to track crash trends across drivers and Windows updates; it publishes only aggregate figures, never individual records.</li>
           <li><strong>To point you to related forum discussions.</strong> When a report is ready, we look up WindowsForum threads about the same crash by sending only its stop code, the stop code&apos;s name and the faulting driver&apos;s file name to WindowsForum&apos;s public search service. Nothing else from the dump or its analysis is sent, and nothing is posted to the forum unless you post it yourself.</li>
         </ul>
       </section>
@@ -64,6 +66,7 @@ const Privacy: React.FC = () => (
           <li><strong>Google Cloud</strong> (United States) hosts the website and stores analyses and statistics (Cloud Run, BigQuery, Cloud Storage).</li>
           <li><strong>AI providers</strong> write the report from a structured summary of the WinDBG output: DeepSeek, Experiential Labs, OpenAI, Google (Gemini) and OpenRouter, depending on availability. The dump file itself is not sent to them.</li>
           <li><strong>WindowsForum&apos;s search service</strong> (mcp.windowsforum.com) receives the stop code, its name and the faulting driver&apos;s file name to find related discussions.</li>
+          <li><strong>WindowsForum&apos;s crash-signal service</strong> receives and keeps the short crash record described above for each WinDBG analysis.</li>
           <li><strong>Cloudflare</strong> provides security checks (Turnstile) and delivers the site; <strong>Google AdSense</strong> shows ads on some pages and may use cookies under Google&apos;s own policies.</li>
         </ul>
       </section>
