@@ -59,6 +59,7 @@ npm run dev                                   # backend :8080 + Vite frontend
 | `BSOD_API_KEY` | Enables the external REST API |
 | `STATS_BUCKET` | Cloud Storage bucket with the published stats JSON |
 | `CORPUS_ENABLED`, `CORPUS_PRIORS_ENABLED` | Corpus recording and AI priors (both on by default) |
+| `FORUM_RELATED_ENABLED`, `FORUM_MCP_URL` | Related WindowsForum threads on reports (on by default, public MCP search) |
 | `MAINTENANCE_MODE` | `true` serves a friendly 503 page |
 
 ## 🔌 API
@@ -71,7 +72,7 @@ curl -H "x-api-key: $BSOD_API_KEY" -F "file=@MEMORY.DMP" https://bsod.windowsfor
 curl -H "x-api-key: $BSOD_API_KEY" https://bsod.windowsforum.com/api/analyze/status/<uid>
 ```
 
-A completed job returns the AI report in `data`. API use is covered by the [privacy & data-use notice](https://bsod.windowsforum.com/privacy).
+A completed job returns the AI report in `data`, plus `relatedThreads`: up to five WindowsForum threads about the same stop code and/or faulting driver (`{ threadId, title, snippet, url, match: "code+module" | "module" | "code", kind }`; empty when nothing matches or the forum search is unavailable). API use is covered by the [privacy & data-use notice](https://bsod.windowsforum.com/privacy).
 
 ## 🔒 Privacy
 

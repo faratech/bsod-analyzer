@@ -5,7 +5,7 @@
 import { normalizeStopCode } from './stats.js';
 import { WINDBG_OUTPUT_MARKER } from '../shared/promptTemplates.js';
 
-const PSEUDO_MODULES = new Set(['unknown_image', 'unknown', 'memory_corruption', 'ntoskrnl.wrong.symbols.exe']);
+export const PSEUDO_MODULES = new Set(['unknown_image', 'unknown', 'memory_corruption', 'ntoskrnl.wrong.symbols.exe']);
 const MAX_CONTEXT_CHARS = 1200;
 
 function pct(share) {

@@ -1,3 +1,6 @@
+// Linked from forum summaries so readers can analyze their own dumps.
+const ANALYZER_URL = 'https://bsod.windowsforum.com';
+
 function clean(value) {
   if (typeof value !== 'string') return undefined;
   const text = value.replace(/\r|\n/g, ' ').replace(/`/g, "'").trim();
@@ -171,6 +174,7 @@ export function generateForumReport(dumpFile) {
   actions.forEach((action, index) => lines.push(`${index + 1}. ${action}`));
 
   lines.push('', `_${facts.caveat} Private upload details and raw dump output omitted._`);
+  lines.push('', `Analyzed with BSOD Analyzer: ${ANALYZER_URL}`);
   return neutralizeMarkdownLinks(redactPublicReportText(lines.join('\n')));
 }
 

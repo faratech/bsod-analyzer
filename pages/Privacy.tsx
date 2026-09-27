@@ -53,6 +53,7 @@ const Privacy: React.FC = () => (
           <li><strong>To improve our AI.</strong> We keep analyses and the AI reports written from them as training and evaluation data for BSOD AI.</li>
           <li><strong>To publish anonymous statistics.</strong> The <Link to="/stats">statistics page</Link> shows only aggregate counts across many dumps, such as the most common stop codes, drivers and Windows versions.</li>
           <li>To give the AI context, prompts can include aggregate statistics from earlier analyses, such as how often a stop code is caused by a given driver. These contain no individual dump data.</li>
+          <li><strong>To point you to related forum discussions.</strong> When a report is ready, we look up WindowsForum threads about the same crash by sending only its stop code, the stop code&apos;s name and the faulting driver&apos;s file name to WindowsForum&apos;s public search service. Nothing else from the dump or its analysis is sent, and nothing is posted to the forum unless you post it yourself.</li>
         </ul>
       </section>
 
@@ -62,6 +63,7 @@ const Privacy: React.FC = () => (
           <li><strong>WinDBG analysis server</strong> operated by Stack Tech, which runs the debugger on your dump.</li>
           <li><strong>Google Cloud</strong> (United States) hosts the website and stores analyses and statistics (Cloud Run, BigQuery, Cloud Storage).</li>
           <li><strong>AI providers</strong> write the report from a structured summary of the WinDBG output: DeepSeek, Experiential Labs, OpenAI, Google (Gemini) and OpenRouter, depending on availability. The dump file itself is not sent to them.</li>
+          <li><strong>WindowsForum&apos;s search service</strong> (mcp.windowsforum.com) receives the stop code, its name and the faulting driver&apos;s file name to find related discussions.</li>
           <li><strong>Cloudflare</strong> provides security checks (Turnstile) and delivers the site; <strong>Google AdSense</strong> shows ads on some pages and may use cookies under Google&apos;s own policies.</li>
         </ul>
       </section>
@@ -86,7 +88,7 @@ const Privacy: React.FC = () => (
 
       <section>
         <h2>API users</h2>
-        <p>Dumps submitted through the BSOD Analyzer API are handled the same way. Using an API key means you accept this notice on behalf of the dumps you submit.</p>
+        <p>Dumps submitted through the BSOD Analyzer API are handled the same way, including the related forum thread lookup. Using an API key means you accept this notice on behalf of the dumps you submit.</p>
       </section>
 
       <section>
