@@ -50,7 +50,7 @@ export function normalizeStopCode(value) {
   return { code, label: normalizeLabel(label) };
 }
 
-function normalizeLabel(label) {
+export function normalizeLabel(label) {
   // Labels come from attacker-supplied dump text, so collapse whitespace to
   // underscores and allow only a compact identifier charset: public labels
   // cannot carry spaces or prose, and cardinality stays bounded.

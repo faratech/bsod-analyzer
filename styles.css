@@ -1797,6 +1797,142 @@ body.mobile-menu-open {
   }
 }
 
+/* Related WindowsForum discussions (components/RelatedDiscussions.tsx) */
+.related-discussions {
+  border: 1px solid var(--border-primary);
+  border-radius: 0.5rem;
+  background: var(--bg-secondary);
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.related-discussions-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.related-discussions-board {
+  color: var(--brand-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.related-discussions-board:hover,
+.related-thread-title:hover {
+  text-decoration: underline;
+}
+
+.related-discussions-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.related-thread {
+  border: 1px solid var(--border-primary);
+  border-radius: 0.5rem;
+  background: var(--bg-primary);
+  padding: 0.75rem 0.85rem;
+  min-width: 0;
+}
+
+.related-thread-title {
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.related-thread-meta {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+
+.related-match,
+.related-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+}
+
+.related-match-both {
+  color: var(--status-success);
+  background: var(--status-success-bg);
+  border-color: currentColor;
+}
+
+.related-match-module {
+  color: var(--status-info);
+  background: rgba(59, 130, 246, 0.12);
+  border-color: currentColor;
+}
+
+.related-thread-snippet {
+  margin: 0.45rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.related-discussions-ask {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.85rem;
+}
+
+.related-discussions-ask p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.related-ask-btn {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+}
+
+.related-discussions-note {
+  margin: 0.6rem 0 0;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .related-discussions {
+    padding: 0.85rem;
+  }
+
+  .related-discussions-ask {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 /* Comparison Section */
 .comparison-section {
   padding: 4rem 0;

@@ -73,6 +73,7 @@ test('forum report is concise and privacy-safe', () => {
   assert.doesNotMatch(report, /C:\\Users\\Alice/);
   assert.doesNotMatch(report, /WF-12345678-1234-1234-1234-123456789abc-42/);
   assert.doesNotMatch(report, /PRIVATE_RAW_OUTPUT/);
+  assert.match(report, /\nAnalyzed with BSOD Analyzer: https:\/\/bsod\.windowsforum\.com$/);
 });
 
 test('markdown export keeps technician evidence', () => {

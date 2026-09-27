@@ -5,6 +5,7 @@ import StructuredData from '../components/StructuredData';
 import { InArticleAd, HorizontalAd } from '../components/AdSense';
 import { useActiveSection } from '../hooks/useActiveSection';
 import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
+import { BSOD_FORUM_URL } from '../shared/forumLinks.js';
 
 const Documentation: React.FC = () => {
     const location = useLocation();
@@ -909,7 +910,7 @@ const Documentation: React.FC = () => {
                                         </li>
                                         <li>
                                             <a 
-                                                href="https://windowsforum.com/forums/windows-blue-screen-of-death-bsod.307/"
+                                                href={BSOD_FORUM_URL}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                             >

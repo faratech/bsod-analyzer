@@ -3,6 +3,7 @@ import { DumpFile, FileStatus } from '../types';
 import Loader from './Loader';
 import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
 import { generateForumReport, generateMarkdownReport, getReportFacts } from '../utils/reportFacts';
+import RelatedDiscussions from './RelatedDiscussions';
 
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
@@ -228,6 +229,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 <p className="report-caveat">{reportFacts.caveat}</p>
                             </section>
                         )}
+
+                        <RelatedDiscussions dumpFile={dumpFile} />
 
                         {/* Bug Check Header */}
                         {bugCheck && (
