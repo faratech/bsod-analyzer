@@ -16,7 +16,7 @@ echo "Checking for potential secrets in files..."
 # Patterns to search for
 PATTERNS=(
     "AIza[0-9A-Za-z-_]{35}"  # Google API key
-    "0x4AAAAAAA[A-Za-z0-9_-]{32}"  # Turnstile secret pattern
+    "0x4AAAAAAA[A-Za-z0-9_-]{20,}"  # Turnstile secret (site keys are shorter and public)
     "sk-[A-Za-z0-9]{32}"  # OpenAI API key
     "ghp_[A-Za-z0-9]{36}"  # GitHub personal access token
     "ghs_[A-Za-z0-9]{36}"  # GitHub secret
@@ -27,30 +27,11 @@ PATTERNS=(
 
 for pattern in "${PATTERNS[@]}"; do
     echo -n "  Checking for pattern: ${pattern:0:20}... "
-    if grep -r -E "$pattern" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude="*.lock" --exclude="verify-no-secrets.sh" . 2>/dev/null; then
+    if grep -r -E "$pattern" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude="*.lock" . 2>/dev/null; then
         echo "❌ FOUND!"
         FOUND_ISSUES=$((FOUND_ISSUES + 1))
     else
         echo "✅ Clean"
-    fi
-done
-
-# Check for specific known secrets that were removed
-echo ""
-echo "Checking for specific removed secrets..."
-
-REMOVED_SECRETS=(
-    "0x4AAAAAAABiq4xGK4Dbs8cfnWQiDYt7_WQ"  # Old Turnstile secret
-    "0x4AAAAAAABiq8SlsW8IhYCkxYJVu7Yj2gk"  # New Turnstile secret
-)
-
-for secret in "${REMOVED_SECRETS[@]}"; do
-    echo -n "  Checking for: ${secret:0:20}... "
-    if grep -r -F "$secret" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude="*.lock" --exclude="verify-no-secrets.sh" . 2>/dev/null; then
-        echo "❌ FOUND! This secret must be removed!"
-        FOUND_ISSUES=$((FOUND_ISSUES + 1))
-    else
-        echo "✅ Not found (good)"
     fi
 done
 

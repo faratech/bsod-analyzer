@@ -50,8 +50,10 @@ function writeCachedIdentity(key, identity, ttlSeconds, now = Date.now()) {
 
 // Reject any cookie/IP value that could break out of a header (defense-in-depth:
 // undici already rejects these, but this keeps fail-closed independent of the
-// HTTP client and avoids a wasted round-trip).
-const HEADER_UNSAFE = /[\r\n\x00]/;
+// HTTP client and avoids a wasted round-trip). `;` and whitespace are rejected
+// too: cookie values arrive URL-decoded, so `a%3B%20x%3Dy` would otherwise add
+// an extra cookie to the validator request. XenForo values never contain them.
+const HEADER_UNSAFE = /[\r\n\x00;\s]/;
 
 export function isForumIdentityEnabled() {
   return ENDPOINT !== '' && KEY !== '';
@@ -116,7 +118,7 @@ export async function resolveForumIdentityFromCookies(cookies, clientIp) {
             typeof data.avatar === 'string' && /^https:\/\//i.test(data.avatar)
               ? data.avatar.slice(0, 400)
               : '',
-          tier: data.isPremium ? 'premium' : 'forum',
+          tier: data.isPremium === true ? 'premium' : 'forum',
           isPremium: data.isPremium === true,
         };
       }

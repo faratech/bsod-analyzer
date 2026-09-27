@@ -16,6 +16,15 @@ ${structured ? 'Relevant structured JSON extracted from the WinDBG API result. F
 ${analysisForPrompt}
 \`\`\``;
 }
+// True when a browser-built prompt carries this WinDBG structured signal
+// verbatim (the client forwards analysisSignalText unchanged). Only such a
+// prompt's report may share the per-file cache entry: otherwise one uploader
+// could plant a report written from invented evidence for everyone else.
+export function promptCarriesWinDbgSignal(promptText, analysisSignalText) {
+  const signal = typeof analysisSignalText === 'string' ? analysisSignalText.trim() : '';
+  return Boolean(signal) && String(promptText || '').includes(signal);
+}
+
 export function extractJsonText(text) {
   let jsonText = String(text || '').trim();
   if (jsonText.startsWith('```json')) {

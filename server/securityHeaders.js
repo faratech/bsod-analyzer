@@ -23,7 +23,7 @@ const CONNECT_SOURCES =
   "'self' https://windowsforum.com https://challenges.cloudflare.com https://*.google " +
   'https://*.google.com https://*.gstatic.com https://*.googletagmanager.com ' +
   'https://*.googlesyndication.com https://*.doubleclick.net ' +
-  'https://www.googleadservices.com https://generativelanguage.googleapis.com ' +
+  'https://www.googleadservices.com ' +
   'https://www.paypal.com';
 
 // 'wasm-unsafe-eval' is required: the client bundle hashes uploads with

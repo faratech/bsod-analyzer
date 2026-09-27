@@ -1,10 +1,30 @@
 import net from 'net';
 
+// First four 16-bit groups of an IPv6 address (its /64 prefix), expanded.
+function ipv6Prefix64(address) {
+  let text = address.toLowerCase().split('%')[0];
+  const v4Tail = text.match(/(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Tail) {
+    const [a, b, c, d] = v4Tail[1].split('.').map(Number);
+    text = text.slice(0, -v4Tail[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = text.split('::');
+  const headGroups = head ? head.split(':') : [];
+  const tailGroups = tail === undefined ? [] : (tail ? tail.split(':') : []);
+  const groups = tail === undefined
+    ? headGroups
+    : [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill('0'), ...tailGroups];
+  return groups.slice(0, 4).map(group => parseInt(group, 16).toString(16)).join(':');
+}
+
+// Rate-limit key for a client IP. IPv6 clients are grouped by /64: one
+// subscriber usually holds a whole /64, so keying on the full address let a
+// single client rotate addresses to reset every per-IP limit.
 export function normalizeRateLimitIp(value) {
   const ip = String(value || 'unknown').split(',')[0].trim();
   const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
   if (net.isIPv4(normalized)) return normalized;
-  if (net.isIPv6(normalized)) return normalized.toLowerCase();
+  if (net.isIPv6(normalized)) return `${ipv6Prefix64(normalized)}::/64`;
   return normalized || 'unknown';
 }
 

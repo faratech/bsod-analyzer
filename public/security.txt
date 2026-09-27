@@ -12,8 +12,7 @@
 # Security measures implemented:
 # 1. robots.txt blocks /public/ crawling
 # 2. .htaccess blocks direct access
-# 3. nginx.conf blocks sensitive paths
-# 4. server.js middleware blocks access
-# 5. Security headers added
+# 3. server.js middleware blocks access
+# 4. Security headers added
 
 # Contact: security@windowsforum.com

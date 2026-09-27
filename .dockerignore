@@ -15,3 +15,6 @@ dist
 dictionary.zstd
 redis-zstd-dictionary*
 cache-zstd-dictionary*
+private/
+.claude/
+dist-ssr
