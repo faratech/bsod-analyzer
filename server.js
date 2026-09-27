@@ -69,6 +69,8 @@ import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
 import { createCrashSignalRecorder } from './server/crashSignal.js';
+import { createConcurrencyLimiter } from './server/concurrency.js';
+import { classifyRequestPath } from './server/blockedPaths.js';
 import {
   DEFAULT_FORUM_MCP_URL,
   createForumMcpClient,
@@ -77,7 +79,7 @@ import {
 } from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
-import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport } from './server/analysisReport.js';
+import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport, promptCarriesWinDbgSignal } from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -302,6 +304,17 @@ const {
   getClientIp
 } = createPeerIpResolver({ trustProxyHops: TRUST_PROXY_HOPS });
 
+// Global security headers middleware (CSP strings + embeddable-path handling
+// live in server/securityHeaders.js). The instance handle is kept so startup
+// can hand over the inline-script hashes computed from the served HTML.
+// Registered first so the ingress 403 and maintenance 503 carry them too.
+const securityHeadersMiddleware = createSecurityHeadersMiddleware({
+  cspHeader: CSP_HEADER,
+  cspEmbedHeader: CSP_EMBED_HEADER,
+  embeddablePaths: EMBEDDABLE_PATHS
+});
+app.use(securityHeadersMiddleware);
+
 // Reject any request whose immediate peer is not a Cloudflare edge IP.
 // Combined with --no-default-url on the Cloud Run service, this closes both
 // the default *.run.app URL and any direct-Cloud-Run path. /health is exempt
@@ -342,31 +355,6 @@ const makeLimiter = createRateLimiterFactory({
   defaultKeyGenerator: rateLimitKey,
   defaultHandler: jsonRateLimitHandler
 });
-
-function createConcurrencyLimiter(max, code) {
-  let active = 0;
-  return (req, res, next) => {
-    if (active >= max) {
-      return res.status(429).json({
-        success: false,
-        error: 'Server is busy. Please retry shortly.',
-        code
-      });
-    }
-
-    active++;
-    let released = false;
-    const release = () => {
-      if (!released) {
-        released = true;
-        active = Math.max(0, active - 1);
-      }
-    };
-    res.once('finish', release);
-    res.once('close', release);
-    next();
-  };
-}
 
 function rejectLargeBody(limitBytes) {
   return (req, res, next) => {
@@ -1180,16 +1168,6 @@ const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 // so unauthenticated requests are rejected before allocating a parse buffer.
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
 
-// Global security headers middleware (CSP strings + embeddable-path handling
-// live in server/securityHeaders.js). The instance handle is kept so startup
-// can hand over the inline-script hashes computed from the served HTML.
-const securityHeadersMiddleware = createSecurityHeadersMiddleware({
-  cspHeader: CSP_HEADER,
-  cspEmbedHeader: CSP_EMBED_HEADER,
-  embeddablePaths: EMBEDDABLE_PATHS
-});
-app.use(securityHeadersMiddleware);
-
 // MIME type lookup for static assets
 const MIME_TYPES = {
   '.js': 'application/javascript', '.mjs': 'application/javascript',
@@ -1211,44 +1189,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Security middleware - block access to sensitive paths
+// Security middleware - block access to sensitive paths (server/blockedPaths.js)
 app.use((req, res, next) => {
-  const blockedPaths = [
-    '/public',
-    '/src',
-    '/components',
-    '/pages',
-    '/services',
-    '/hooks',
-    '/types',
-    '/node_modules',
-    '/.git',
-    '/.env'
-  ];
-
-  const blockedExtensions = [
-    '.ts',
-    '.tsx',
-    '.js.map',
-    '.css.map',
-    '.log',
-    'package.json',
-    'package-lock.json',
-    'tsconfig.json',
-    'vite.config.ts',
-    '.env'
-  ];
-
-  // Block access to sensitive directories
-  if (blockedPaths.some(path => req.path.startsWith(path))) {
-    return res.status(403).send('Access Denied');
-  }
-
-  // Block access to sensitive file types
-  if (blockedExtensions.some(ext => req.path.endsWith(ext))) {
-    return res.status(403).send('Access Denied');
-  }
-
+  const verdict = classifyRequestPath(req.path);
+  if (verdict === 'invalid') return res.status(400).send('Bad Request');
+  if (verdict === 'blocked') return res.status(403).send('Access Denied');
   next();
 });
 
@@ -1819,7 +1764,10 @@ app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (re
         .filter(Boolean)
     ];
     
-    if (verification.hostname && !expectedHostnames.includes(verification.hostname)) {
+    // Siteverify reports the hostname for every real widget; only test keys
+    // omit it, so production treats a missing hostname as a mismatch.
+    const hostnameRequired = process.env.NODE_ENV === 'production';
+    if ((verification.hostname || hostnameRequired) && !expectedHostnames.includes(verification.hostname)) {
       console.warn('Unexpected hostname in Turnstile response:', verification.hostname);
       return res.status(400).json({
         success: false,
@@ -2152,7 +2100,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     if (WF_SSO_ENABLED) {
       tier = req.tier || 'anon';
       limits = tierLimits(tier);
-      quotaKey = req.wfUserId ? `wfuser:${req.wfUserId}` : `ip:${getClientIp(req)}`;
+      quotaKey = req.wfUserId ? `wfuser:${req.wfUserId}` : `ip:${rateLimitKey(req)}`;
     } else {
       tier = 'anon';
       limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
@@ -2191,7 +2139,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // uploading that exact file — AND only when the hash-keyed entry carries
     // WinDBG provenance (issue #78). Pure-AI reports never take over a shared
     // hash key, so one uploader cannot plant a fabricated report that other
-    // uploaders of the same dump would be served.
+    // uploaders of the same dump would be served. The prompt must also carry the
+    // entry's own WinDBG signal: the prompt is client-built, so without that a
+    // session owning the dump could write a report from invented evidence.
     let ownedFileHash = false;
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = sessionOwnsHash(req.sessionId, fileHash, fileHandle);
@@ -2200,7 +2150,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     let cachedAnalysis = null;
     if (ownedFileHash) {
       const provenEntry = await getCachedAnalysis(fileHash);
-      if (provenEntry && (provenEntry.windbgDerived || provenEntry.windbgOutput)) {
+      if (provenEntry && (provenEntry.windbgDerived || provenEntry.windbgOutput)
+        && promptCarriesWinDbgSignal(requestText, provenEntry.analysisSignalText)) {
         cacheKey = fileHash;
         cachedAnalysis = provenEntry;
       }
@@ -2812,10 +2763,12 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
     });
     res.json(result);
   } catch (error) {
-    console.error('[WinDBG] Status error:', error);
+    // Upstream error text can carry the WinDBG service's raw response body:
+    // log it (bounded), return a generic message.
+    log.error('windbg.status.fail', { message: String(error?.message || '').slice(0, 500), code: error?.code });
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
-      error: error.message || 'Failed to check WinDBG status',
+      error: 'Failed to check WinDBG status. Please try again later.',
       code: error.code
     });
   }
@@ -2901,10 +2854,10 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       structured
     });
   } catch (error) {
-    log.error('windbg.download.fail', { message: error.message });
+    log.error('windbg.download.fail', { message: String(error?.message || '').slice(0, 500), code: error?.code });
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
-      error: error.message || 'Failed to download WinDBG analysis',
+      error: 'Failed to download the WinDBG analysis. Please try again later.',
       code: error.code
     });
   }

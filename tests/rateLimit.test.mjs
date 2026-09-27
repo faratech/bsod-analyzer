@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createMemoryRateLimitStore, createRateLimiterFactory } from '../server/rateLimit.js';
+import { createMemoryRateLimitStore, createRateLimiterFactory, normalizeRateLimitIp } from '../server/rateLimit.js';
 
 function fakeRes() {
   const headers = {};
@@ -56,4 +56,14 @@ test('expired keys are swept periodically, not on every increment', async (t) =>
   t.mock.timers.tick(3500);
   await store.increment('d');
   assert.equal(store.size(), 1);
+});
+
+test('normalizeRateLimitIp groups IPv6 clients by /64 and keeps IPv4 exact', () => {
+  assert.equal(normalizeRateLimitIp('2001:db8:1:2:3:4:5:6'), '2001:db8:1:2::/64');
+  assert.equal(normalizeRateLimitIp('2001:DB8:1:2::9'), '2001:db8:1:2::/64');
+  assert.equal(normalizeRateLimitIp('2001:0db8:0001:0002:ffff::1'), '2001:db8:1:2::/64');
+  assert.notEqual(normalizeRateLimitIp('2001:db8:1:3::1'), normalizeRateLimitIp('2001:db8:1:2::1'));
+  assert.equal(normalizeRateLimitIp('::ffff:203.0.113.7'), '203.0.113.7');
+  assert.equal(normalizeRateLimitIp('203.0.113.7, 10.0.0.1'), '203.0.113.7');
+  assert.equal(normalizeRateLimitIp(''), 'unknown');
 });

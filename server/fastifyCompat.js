@@ -149,6 +149,25 @@ function isEnded(res) {
   return res.writableEnded || res.destroyed;
 }
 
+// Callbacks run once a request's whole middleware/handler chain has settled.
+// Unlike res 'close', this does not fire when the client disconnects while an
+// async handler is still working.
+const settledCallbacks = new WeakMap();
+
+export function onRequestSettled(req, callback) {
+  const callbacks = settledCallbacks.get(req);
+  if (callbacks) callbacks.push(callback);
+  else settledCallbacks.set(req, [callback]);
+}
+
+function runSettledCallbacks(req) {
+  const callbacks = settledCallbacks.get(req) || [];
+  settledCallbacks.delete(req);
+  for (const callback of callbacks) {
+    try { callback(); } catch { /* a callback must not break the others */ }
+  }
+}
+
 function createRunner({ middlewares, errorMiddlewares, compression }) {
   return function runLegacyStack(stack, request, reply) {
     reply.hijack();
@@ -214,7 +233,10 @@ function createRunner({ middlewares, errorMiddlewares, compression }) {
         try {
           const result = layer.fn(req, res, next);
           Promise.resolve(result).then(() => {
-            if (!advanced && layer.fn.length >= 3 && !isEnded(res)) {
+            // Once next() ran, the rest of the chain resolves this layer, so the
+            // stack only settles when the downstream handler has finished.
+            if (advanced) return;
+            if (layer.fn.length >= 3 && !isEnded(res)) {
               res.once('finish', resolve);
               res.once('close', resolve);
               return;
@@ -227,7 +249,7 @@ function createRunner({ middlewares, errorMiddlewares, compression }) {
       });
     };
 
-    return runAt(0).catch(runErrorHandlers);
+    return runAt(0).catch(runErrorHandlers).finally(() => runSettledCallbacks(req));
   };
 }
 

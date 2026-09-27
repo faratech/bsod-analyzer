@@ -61,7 +61,10 @@ npm run optimize-css     # Apply CSS purging
   `server.js` has no unit tests; testable logic belongs in `server/*.js`
   modules (`statsStore`, `stats`, `quotaPolicy`, `quotaStore`, `sessionToken`,
   `rateLimit`, `archiveExtract`, `peerIp`, `turnstile`, `securityHeaders`,
-  `bugcheckKnowledge`, `fastifyCompat`), which the monolith imports.
+  `bugcheckKnowledge`, `fastifyCompat`, `concurrency`, `blockedPaths`,
+  `crashSignal`), which the monolith imports. Per-route concurrency slots are
+  held until the handler chain settles (`onRequestSettled` in `fastifyCompat`),
+  not released on client disconnect.
 - **`services/cache.js`** is the only Redis/Upstash boundary. Upstash is
   optional (`redis.cfg`/`REDIS_ENABLED`, plus a breaker that drops it on
   quota/auth errors or repeated failures). Session and provider quotas live in
