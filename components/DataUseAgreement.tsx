@@ -48,7 +48,7 @@ const DataUseAgreement: React.FC<DataUseAgreementProps> = ({ accepted, onChange 
         {accepted ? (
           <>
             We keep the analysis of your dump to train and improve our AI, and to publish anonymous,
-            aggregate crash statistics. We never publish your dump or its contents.{' '}
+            aggregate crash statistics here and on WindowsForum. We never publish your dump or its contents.{' '}
             <Link to="/privacy">How we use your data</Link>
           </>
         ) : (

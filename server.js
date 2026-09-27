@@ -68,6 +68,7 @@ import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
+import { createCrashSignalRecorder } from './server/crashSignal.js';
 import {
   DEFAULT_FORUM_MCP_URL,
   createForumMcpClient,
@@ -1712,6 +1713,35 @@ function recordAiReport(entry) {
     .catch(error => log.warn('corpus.ai_record_failed', { error: error?.message || String(error) }));
 }
 
+// WindowsForum's wf_crash_signal table (server/crashSignal.js): one row per WinDBG
+// analysis, API and browser alike. A no-op unless both WF_CRASH_SIGNAL_* are set.
+const crashSignal = createCrashSignalRecorder({
+  url: process.env.WF_CRASH_SIGNAL_URL,
+  key: process.env.WF_CRASH_SIGNAL_KEY,
+  timeoutMs: readPositiveInt(process.env.WF_CRASH_SIGNAL_TIMEOUT_MS, 5_000),
+  logger: log
+});
+
+// Browser WinDBG analyses: generateContent only has the AI half of the report, so
+// the WinDBG fields are re-read from the upstream job this session owns (never
+// from the client-built prompt). Not awaited: never delays or fails the response.
+function recordWebCrashSignal(sessionId, fileHash, fileHandle, promptText, aiReport) {
+  if (!crashSignal.enabled || !WINDBG_API_KEY) return;
+  const upstreamJobId = getOwnedWinDbgJob(sessionId, fileHash, fileHandle)?.upstreamJobId;
+  if (!upstreamJobId) return;
+  crashSignal.recordWebAnalysis({
+    fileHash,
+    promptText,
+    aiReport,
+    loadEvidence: async () => extractWinDbgAnalysisPackage(await getWinDbgJob({
+      baseUrl: WINDBG_API_BASE_URL,
+      apiKey: WINDBG_API_KEY,
+      jobId: upstreamJobId,
+      signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
+    }))
+  });
+}
+
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
   if (!STATS_ENABLED) return;
@@ -2201,6 +2231,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
             aiReport: cachedValidation.report,
             promptText: validation.promptText
           });
+        } else if (validation.promptType === 'windbg' && ownedFileHash) {
+          recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, cachedValidation.report);
         }
         return res.json({
           ...cachedResponse,
@@ -2383,6 +2415,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         aiReport: reportValidation.report,
         promptText: validation.promptText
       });
+    } else if (validation.promptType === 'windbg' && ownedFileHash) {
+      recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, reportValidation.report);
     }
 
     res.json(responseData);
@@ -3045,47 +3079,6 @@ function extractCrashSignal(raw, maxBytes = 16384) {
   return slice;
 }
 
-// Durable capture of each analysis into WindowsForum's wf_crash_signal table (the
-// idea-engine "Patch Stability Index" moat). The analyzer's own cache is 7-day TTL,
-// so without this the ~8k/month web analyses are lost. Fire-and-forget + fully
-// guarded: a no-op unless WF_CRASH_SIGNAL_URL + WF_CRASH_SIGNAL_KEY are set, and it
-// never throws into the analysis path (best-effort persistence only).
-const WF_CRASH_SIGNAL_URL = process.env.WF_CRASH_SIGNAL_URL || '';
-const WF_CRASH_SIGNAL_KEY = process.env.WF_CRASH_SIGNAL_KEY || '';
-const WF_CRASH_SIGNAL_TIMEOUT_MS = readPositiveInt(process.env.WF_CRASH_SIGNAL_TIMEOUT_MS, 5_000);
-
-function persistCrashSignal(report, fileHash) {
-  if (!WF_CRASH_SIGNAL_URL || !WF_CRASH_SIGNAL_KEY || !fileHash || !report) return;
-  try {
-    const bc = report.bugCheck || {};
-    const sys = report.systemInfo || {};
-    const loc = report.crashLocation || {};
-    const fields = ['summary', 'probableCause', 'culprit', 'bugCheck', 'bugCheckCode', 'systemInfo'];
-    const parsed = fields.reduce((n, k) => n + (report[k] ? 1 : 0), 0);
-    const payload = {
-      file_hash: String(fileHash).slice(0, 64),
-      bug_check_code: bc.code || report.bugCheckCode || null,
-      bug_check_name: bc.name || null,
-      faulty_driver: report.culprit || loc.module || null,
-      windows_version: sys.windowsVersion || null,
-      crash_time: null,
-      parse_confidence: Math.round((parsed / fields.length) * 100),
-      raw_excerpt: (report.summary || '').slice(0, 2000),
-    };
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), WF_CRASH_SIGNAL_TIMEOUT_MS);
-    fetch(`${WF_CRASH_SIGNAL_URL.replace(/\/$/, '')}/crash-signal`, {
-      method: 'POST', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': WF_CRASH_SIGNAL_KEY },
-      body: JSON.stringify(payload),
-    }).then(r => { if (!r.ok) console.warn('[crash-signal] ingest http', r.status); })
-      .catch(e => console.warn('[crash-signal] ingest failed:', e?.message || e))
-      .finally(() => clearTimeout(t));
-  } catch (e) {
-    console.warn('[crash-signal] persist skipped:', e?.message || e);
-  }
-}
-
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
   const modelName = getPrimaryModel();
   const parsedFields = parseWinDbgOutput(windbgAnalysis);
@@ -3111,7 +3104,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     if (normalizedCachedReport) {
       console.log('[API/AI] Using cached AI report');
       const report = enrichReport(normalizedCachedReport);
-      persistCrashSignal(report, fileHash);  // idempotent — captures pre-hook analyses
+      crashSignal.record(report, fileHash);  // idempotent — captures pre-hook analyses
       return { ...report, cached: true };
     }
     const cachedText = typeof cachedReport.text === 'string'
@@ -3121,7 +3114,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
     if (cachedValidation.valid) {
       console.log('[API/AI] Using cached AI report');
       const report = enrichReport(cachedValidation.report);
-      persistCrashSignal(report, fileHash);  // idempotent — captures pre-hook analyses
+      crashSignal.record(report, fileHash);  // idempotent — captures pre-hook analyses
       return { ...report, cached: true };
     }
     log.warn('api_ai.cache.invalid', { reason: cachedValidation.reason });
@@ -3179,7 +3172,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
       aiModel: response.cacheModel || modelName,
       windbgDerived: true
     });
-    persistCrashSignal(report, fileHash);   // durable WF capture (best-effort, env-gated)
+    crashSignal.record(report, fileHash);   // durable WF capture (best-effort, env-gated)
     recordAiReport({
       origin: 'api',
       dataUseTerms: `api-${DATA_USE_TERMS_VERSION}`,
