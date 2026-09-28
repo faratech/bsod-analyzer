@@ -206,6 +206,7 @@ export function mergeStatsRaw(baseline, live) {
     daily: addPairs(baseline.daily, live.daily),
     lastHour: live.lastHour,
     runsToday: live.runsToday,
+    asOf: live.asOf,
     trackingSince: earliest
   };
 }
@@ -218,8 +219,15 @@ export function mergeStatsRaw(baseline, live) {
 //   total, sources, dumpTypes, osVersions, stopCodes, stopCodeLabels: objects
 //   buckets, modules, daily: arrays of [member, score] pairs (score numeric)
 //   lastHour: number
+//   asOf: ISO time the aggregates were computed (null when unknown)
 // }
 export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = {}) {
+  // The aggregates are published hourly, so "today" is the UTC day they were
+  // computed on, not the server's: after UTC midnight the file still describes
+  // yesterday until the next run, and reading its daily buckets for the new day
+  // showed 0 unique dumps beside yesterday's run count.
+  const asOfMs = isValidIso(raw.asOf) ? Date.parse(raw.asOf) : NaN;
+  const dataNow = Number.isFinite(asOfMs) && asOfMs <= now ? asOfMs : now;
   const numMap = (obj) => {
     const out = {};
     if (obj && typeof obj === 'object') {
@@ -257,18 +265,18 @@ export function buildSnapshot(raw = {}, { now = Date.now(), windowDays = 90 } = 
   return {
     success: true,
     schema: STATS_SNAPSHOT_SCHEMA,
-    generatedAt: new Date(now).toISOString(),
+    generatedAt: new Date(dataNow).toISOString(),
     // ISO timestamp of the first counted analysis (null until one exists).
     trackingSince: isValidIso(raw.trackingSince) ? raw.trackingSince : null,
     windowDays,
     totals: { analyses: Math.max(0, Math.floor(Number(raw.total) || 0)) },
     gauges: {
       lastHour: Math.max(0, Math.floor(Number(raw.lastHour) || 0)),
-      today: todayCount(raw.daily, now),
+      today: todayCount(raw.daily, dataNow),
       // Raw completed analysis runs today (no unique-dump dedupe).
       runsToday: Math.max(0, Math.floor(Number(raw.runsToday) || 0))
     },
-    daily: dailySeries(pairList(raw.daily), now, windowDays),
+    daily: dailySeries(pairList(raw.daily), dataNow, windowDays),
     topStopCodes,
     topFailureBuckets: rankedFromPairs(pairList(raw.buckets)),
     topModules: rankedFromPairs(pairList(raw.modules)),
