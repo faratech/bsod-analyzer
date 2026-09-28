@@ -40,7 +40,9 @@ export function createGcsStatsSource({ reader, files = STATS_FILES } = {}) {
     ]);
     const liveAggregates = firstJsonField(liveRows, 'aggregates');
     return {
-      live: rawFromAggregates(liveAggregates || {}),
+      // generated_at is when the scheduled query ran: its CURRENT_DATE() is the
+      // day that runs_today, last_hour and the newest daily bucket describe.
+      live: rawFromAggregates(liveAggregates || {}, { asOf: liveRows?.[0]?.generated_at }),
       baseline: firstJsonField(baselineRows, 'raw'),
       insights: firstJsonField(insightRows, 'payload')
     };

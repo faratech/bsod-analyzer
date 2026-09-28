@@ -134,6 +134,29 @@ test('buildSnapshot zero-fills window and folds Other', () => {
   assert.equal(snapshot.sources.total, 42);
 });
 
+test('buildSnapshot anchors today to the day the aggregates were computed', () => {
+  // Published at 23:40 UTC; served at 00:05 the next UTC day, before the next run.
+  const raw = {
+    daily: [['20260926', 124], ['20260927', 111]],
+    runsToday: 127,
+    lastHour: 14,
+    asOf: '2026-09-27T23:40:01.123Z'
+  };
+  const snapshot = buildSnapshot(raw, { now: Date.UTC(2026, 8, 28, 0, 5), windowDays: 90 });
+  assert.equal(snapshot.gauges.today, 111);
+  assert.equal(snapshot.gauges.runsToday, 127);
+  assert.equal(snapshot.generatedAt, '2026-09-27T23:40:01.123Z');
+  assert.deepEqual(snapshot.daily.at(-1), { date: '20260927', count: 111 });
+
+  // Unknown, garbage or future asOf falls back to the server clock.
+  const now = Date.UTC(2026, 8, 27, 12);
+  for (const asOf of [undefined, 'nope', '2026-09-28T12:00:00.000Z']) {
+    const s = buildSnapshot({ ...raw, asOf }, { now });
+    assert.equal(s.gauges.today, 111);
+    assert.equal(s.generatedAt, new Date(now).toISOString());
+  }
+});
+
 test('buildSnapshot is fully deterministic on an empty store', () => {
   const now = Date.UTC(2026, 7, 23, 12);
   const empty = buildSnapshot({}, { now });

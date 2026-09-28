@@ -21,13 +21,14 @@ const live = { total: 3, tracking_since: '2026-09-26T03:46:24Z', runs_today: 2, 
 
 test('load maps the exported live, baseline and insights files', async () => {
   const r = reader({
-    [STATS_FILES.live]: [{ generated_at: 'x', aggregates: JSON.stringify(live) }],
+    [STATS_FILES.live]: [{ generated_at: '2026-09-27 23:40:01.123456 UTC', aggregates: JSON.stringify(live) }],
     [STATS_FILES.baseline]: [{ captured_at: 'y', raw: JSON.stringify({ total: 100, trackingSince: '2026-06-19T00:00:00Z' }) }],
     [STATS_FILES.insights]: [{ generated_at: 'z', payload: JSON.stringify({ schema: 'bsod_corpus_insights_v1', totals: { analyses: 103 } }) }]
   });
   const { live: l, baseline, insights } = await createGcsStatsSource({ reader: r }).load();
   assert.equal(l.total, 3);
   assert.equal(l.runsToday, 2);
+  assert.equal(l.asOf, '2026-09-27T23:40:01.123Z');
   assert.equal(l.stopCodes['0x116'], 2);
   assert.equal(baseline.total, 100);
   assert.equal(insights.totals.analyses, 103);
@@ -49,4 +50,5 @@ test('a failing live file surfaces, optional files only warn', async () => {
   }) }).load();
   assert.equal(ok.insights, null);
   assert.equal(ok.live.total, 3);
+  assert.equal(ok.live.asOf, null);
 });

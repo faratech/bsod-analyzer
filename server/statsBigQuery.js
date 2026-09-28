@@ -57,7 +57,7 @@ function baselineQuery(table) {
 }
 
 // Converts the SQL row into the raw aggregate shape server/stats.js expects.
-export function rawFromAggregates(row) {
+export function rawFromAggregates(row, { asOf = null } = {}) {
   const toMap = list => Object.fromEntries((list || []).map(({ k, n }) => [k, Number(n)]));
   const toPairs = list => (list || []).map(({ k, n }) => [k, Number(n)]);
   const labels = {};
@@ -65,6 +65,8 @@ export function rawFromAggregates(row) {
     if (label) labels[k] = label;
   }
   const since = row.tracking_since ? new Date(row.tracking_since) : null;
+  // EXPORT DATA writes TIMESTAMPs as '2026-09-27 23:40:01.123456 UTC'.
+  const asOfDate = asOf ? new Date(String(asOf)) : null;
   return {
     total: Number(row.total) || 0,
     sources: toMap(row.sources),
@@ -77,6 +79,7 @@ export function rawFromAggregates(row) {
     daily: toPairs(row.daily),
     lastHour: Number(row.last_hour) || 0,
     runsToday: Number(row.runs_today) || 0,
-    trackingSince: since && !Number.isNaN(since.getTime()) ? since.toISOString() : null
+    trackingSince: since && !Number.isNaN(since.getTime()) ? since.toISOString() : null,
+    asOf: asOfDate && !Number.isNaN(asOfDate.getTime()) ? asOfDate.toISOString() : null
   };
 }
