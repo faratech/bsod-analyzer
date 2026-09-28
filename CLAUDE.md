@@ -230,8 +230,29 @@ CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
 
 # Update secrets
 ./setup-all-secrets.sh
-./update-turnstile-secret.sh
 ```
+
+### Maintenance mode
+
+`MAINTENANCE_MODE=true` on the Cloud Run service serves a static 503 +
+Retry-After page for every route except `/health` (stays `ok` for probes) via
+the gate in `server/maintenance.js` (wired in `server.js` right after the
+ingress gate). Flip it without a rebuild or redeploy in either direction:
+
+```bash
+# Take the site down
+gcloud run services update bsod-analyzer --region=us-east1 \
+  --update-env-vars MAINTENANCE_MODE=true
+
+# Bring it back
+gcloud run services update bsod-analyzer --region=us-east1 \
+  --update-env-vars MAINTENANCE_MODE=false
+```
+
+Purge Cloudflare after flipping (`scripts/purge-cloudflare-cache.sh`, token
+from Secret Manager) so edge-cached pages don't outlive the change. The flag
+lives on the service spec, so subsequent `deploy-with-secret.sh` runs preserve
+it; remove it with `--remove-env-vars MAINTENANCE_MODE` to uninstall.
 
 ## Key Patterns
 
