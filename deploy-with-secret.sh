@@ -94,6 +94,10 @@ fi
 echo "Selected AI model: ${SELECTED_AI_MODEL}"
 
 # Deploy directly from source
+# Flag parity with cloudbuild.yaml (the push-deploy): --update-env-vars merges
+# so ad-hoc service env (e.g. MAINTENANCE_MODE) survives a deploy, and
+# min-instances / cpu-throttling / cpu-boost match the production spec — a
+# --set-env-vars here would wipe the env map and drop MAINTENANCE_MODE.
 echo "☁️  Deploying to Cloud Run from source..."
 gcloud run deploy ${SERVICE_NAME} \
   --source . \
@@ -107,10 +111,12 @@ gcloud run deploy ${SERVICE_NAME} \
   --concurrency 2 \
   --max-instances 10 \
   --session-affinity \
-  --min-instances 0 \
+  --min-instances 1 \
+  --no-cpu-throttling \
+  --cpu-boost \
   --memory 1Gi \
   --cpu 1 \
-  --set-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
+  --update-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
   --update-secrets "${RUNTIME_SECRETS},${CACHE_ZSTD_DICTIONARY_PATH}=${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}" \
   --project ${PROJECT_ID}
 
