@@ -12,7 +12,7 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, getCachedAnalysisByHash, getFileHandle, WinDBGAnalysisResult } from './windbgService';
-import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
+import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE, wrapWithEvidence } from '../shared/promptTemplates.js';
 import {
     mapStructuredSignalToReport,
     mergeReportWithWinDbgFields,
@@ -950,7 +950,7 @@ async function generateReportFromWinDBG(
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
+${structuredSignal ? WINDBG_STRUCTURED_NOTE : WINDBG_RAW_NOTE}
 \`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;

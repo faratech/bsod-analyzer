@@ -208,14 +208,36 @@ test('extractExceptionInfo accepts a genuine kernel EXCEPTION_RECORD64', async (
   assert.equal(info.parameter1, 0x10n);
 });
 
+test('extractExceptionInfo parses a genuine 32-bit EXCEPTION_RECORD (x86 dump)', async () => {
+  const { extractExceptionInfo } = await loadDumpParser();
+
+  // A 32-bit record whose 64-bit interpretation is implausible: the 64-bit
+  // ExceptionAddress slot (offset +16) stays zero here, while the 32-bit
+  // layout's ExceptionAddress at +12 holds a real user-space address. The old
+  // code only reached its 32-bit branch from an out-of-bounds throw, so this
+  // record could never parse correctly.
+  const buffer = new ArrayBuffer(0x100);
+  const view = new DataView(buffer);
+  view.setUint32(0x40, 0xC0000005, true);       // ExceptionCode
+  view.setUint32(0x40 + 12, 0x00ABCDEF, true);  // ExceptionAddress (32-bit layout)
+
+  const info = extractExceptionInfo(buffer);
+  assert.ok(info, 'expected the 32-bit record to be found');
+  assert.equal(info.code, 0xC0000005);
+  assert.equal(info.address, 0x00ABCDEFn);
+});
+
 test('extractExceptionInfo tolerates an exception hit near the buffer tail', async () => {
   const { extractExceptionInfo } = await loadDumpParser();
 
-  // Code in the last bytes of the buffer: the 64-bit reads must not go out of
-  // bounds, and the all-zero tail must not yield a fabricated record.
+  // A code word at the largest offset the OLD loop bound still reached
+  // (searchLimit - 36): the old 64-bit read went out of bounds there, the
+  // catch fell into the unvalidated 32-bit path, and a fabricated record was
+  // returned from the all-zero tail. The fixed bound (i + 48 <= searchLimit)
+  // never examines the offset at all (issue #110).
   const buffer = new ArrayBuffer(64);
   const view = new DataView(buffer);
-  view.setUint32(56, 0xC0000005, true);
+  view.setUint32(28, 0xC0000005, true);
 
   const info = extractExceptionInfo(buffer);
   assert.equal(info, null);

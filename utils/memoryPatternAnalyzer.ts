@@ -206,12 +206,13 @@ class MemoryPatternAnalyzer {
             0x00000000, // Zeros (if extensive)
             0xFFFFFFFF, // All ones (if extensive)
         ];
-        
+
         for (const pattern of uninitPatterns) {
+            if (indicators.length >= MemoryPatternAnalyzer.MAX_INDICATORS) break;
             let maxConsecutive = 0;
             let currentConsecutive = 0;
             let startOffset = 0;
-            
+
             for (let i = 0; i < uint32Array.length; i++) {
                 if (uint32Array[i] === pattern) {
                     if (currentConsecutive === 0) startOffset = i * 4;
@@ -219,8 +220,12 @@ class MemoryPatternAnalyzer {
                 } else {
                     if (currentConsecutive > maxConsecutive) {
                         maxConsecutive = currentConsecutive;
-                        
-                        if (maxConsecutive >= 64) { // At least 256 bytes
+
+                        // At least 256 bytes. This push fires once per new
+                        // record run length, so a dump of many zero runs grows
+                        // the array without a cap — bound it like the other
+                        // detectors (issue #109).
+                        if (maxConsecutive >= 64 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS) {
                             indicators.push({
                                 type: 'UNINITIALIZED_MEMORY',
                                 offset: startOffset,

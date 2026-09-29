@@ -126,3 +126,62 @@ test('generateContent catch block only reads names declared in the handler scope
     'hoist them to the handler scope or they throw ReferenceError on every failure path'
   );
 });
+
+// The locally-invalid-report path (parseAndValidateAnalysisReport failing on a
+// successful provider response) returns early — its catch sibling never runs,
+// so the quota refund must be invoked inline. This pins issue #112: without
+// the call, every LENGTH-truncated JSON response permanently burned a tiered
+// request + token estimate with no analysis delivered.
+test('generateContent refunds the quota on the invalid-report early return', () => {
+  const ast = acorn.parse(readFileSync(SERVER, 'utf8'), {
+    ecmaVersion: 'latest',
+    sourceType: 'module'
+  });
+
+  const handler = findRouteHandler(ast, '/api/gemini/generateContent');
+  assert.ok(handler, 'the /api/gemini/generateContent handler must be found');
+
+  const tryStatement = handler.body.body.find(node => node.type === 'TryStatement');
+  assert.ok(tryStatement, 'the handler must wrap its work in a try/catch');
+
+  // Find `if (!reportValidation.valid) { … }` inside the try block.
+  const invalidReportIf = tryStatement.block.body.find(node =>
+    node.type === 'IfStatement' &&
+    node.test.type === 'UnaryExpression' &&
+    node.test.operator === '!' &&
+    node.test.argument.type === 'MemberExpression' &&
+    node.test.argument.property?.name === 'valid' &&
+    node.test.argument.object?.name === 'reportValidation'
+  );
+  assert.ok(invalidReportIf, 'the invalid-report early return must be recognizable');
+
+  const callsRefund = (node) => {
+    if (!node || typeof node.type !== 'string') return false;
+    if (node.type === 'CallExpression' && node.callee?.name === 'refundReservation') return true;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'loc' || key === 'range') continue;
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const child of value) {
+          if (child && typeof child.type === 'string' && callsRefund(child)) return true;
+        }
+      } else if (value && typeof value.type === 'string' && callsRefund(value)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  assert.ok(
+    invalidReportIf.consequent && callsRefund(invalidReportIf.consequent),
+    'the invalid-report path must call refundReservation before returning the 502'
+  );
+
+  // And the refund must actually be reachable: the block must return only
+  // after the refund call, not before.
+  const statements = invalidReportIf.consequent.body ?? [invalidReportIf.consequent];
+  const returnIndex = statements.findIndex(s => s.type === 'ReturnStatement');
+  const refundIndex = statements.findIndex(s => callsRefund(s));
+  assert.ok(refundIndex >= 0 && (returnIndex === -1 || refundIndex < returnIndex),
+    'refundReservation must run before the early return');
+});

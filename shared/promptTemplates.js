@@ -24,6 +24,14 @@ export const WINDBG_INTRO = 'You are an expert Windows crash analyst. Analyze th
 // both the evidence builders and the validator so they cannot drift apart.
 export const WINDBG_OUTPUT_MARKER = '**ACTUAL WinDBG Analysis Output:**';
 
+// The single description line allowed between the marker and the evidence
+// fence. Both builders (server buildWinDbgEvidence, client geminiProxy) emit
+// exactly one of these; promptCarriesWinDbgSignal accepts nothing else there,
+// so attacker prose cannot sneak into the evidence section of a prompt that
+// gates the shared file-hash cache entry.
+export const WINDBG_STRUCTURED_NOTE = 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.';
+export const WINDBG_RAW_NOTE = 'Relevant WinDBG crash excerpt from the raw output.';
+
 // Separates the cache-stable prefix from the per-dump evidence. Emitted by the
 // builders; never part of a *_PREFIX constant.
 export const DUMP_EVIDENCE_HEADER = '\n\n## DUMP EVIDENCE (analyze ONLY this dump)\n\n';

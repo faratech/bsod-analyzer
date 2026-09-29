@@ -846,13 +846,12 @@ export function extractExceptionInfo(buffer: ArrayBuffer): ExceptionInfo | null 
         const code = view.getUint32(i, true);
 
         if (EXCEPTION_CODES[code]) {
-            // Found a known exception code, extract the record
+            // EXCEPTION_RECORD64: ExceptionCode@+0, ExceptionFlags@+4,
+            // ExceptionRecord (link)@+8, ExceptionAddress@+16,
+            // NumberParameters@+24, ExceptionInformation[0]@+32, [1]@+40.
+            // The old read took the link pointer as the address and
+            // NumberParameters as a parameter.
             try {
-                // EXCEPTION_RECORD64: ExceptionCode@+0, ExceptionFlags@+4,
-                // ExceptionRecord (link)@+8, ExceptionAddress@+16,
-                // NumberParameters@+24, ExceptionInformation[0]@+32, [1]@+40.
-                // The old read took the link pointer as the address and
-                // NumberParameters as a parameter.
                 const info: ExceptionInfo = {
                     code: code,
                     name: EXCEPTION_CODES[code],
@@ -864,30 +863,31 @@ export function extractExceptionInfo(buffer: ArrayBuffer): ExceptionInfo | null 
                 // Validate the address is in a canonical range (kernel or
                 // user space). The old check rejected kernel addresses
                 // outright, skipping real records for fabricated ones.
-                if (!isPlausibleExceptionAddress(info.address)) {
-                    continue; // Invalid address, keep searching
-                }
-
-                return info;
-            } catch (e) {
-                // Try 32-bit EXCEPTION_RECORD: ExceptionCode@+0,
-                // ExceptionFlags@+4, ExceptionRecord@+8, ExceptionAddress@+12,
-                // NumberParameters@+16, ExceptionInformation[0]@+20, [1]@+24.
-                try {
-                    const info: ExceptionInfo = {
-                        code: code,
-                        name: EXCEPTION_CODES[code],
-                        address: BigInt(view.getUint32(i + 12, true)),
-                        parameter1: BigInt(view.getUint32(i + 20, true)),
-                        parameter2: BigInt(view.getUint32(i + 24, true)),
-                    };
-                    if (!isPlausibleExceptionAddress(info.address)) {
-                        continue;
-                    }
+                if (isPlausibleExceptionAddress(info.address)) {
                     return info;
-                } catch (e) {
-                    continue;
                 }
+            } catch (e) {
+                // Bounds above make this unreachable; keep for safety.
+            }
+
+            // 32-bit EXCEPTION_RECORD (x86 dumps): ExceptionCode@+0,
+            // ExceptionFlags@+4, ExceptionRecord@+8, ExceptionAddress@+12,
+            // NumberParameters@+16, ExceptionInformation[0]@+20, [1]@+24.
+            // Tried whenever the 64-bit interpretation fails validation —
+            // a dead catch never runs, so this must be an explicit fallback.
+            try {
+                const info: ExceptionInfo = {
+                    code: code,
+                    name: EXCEPTION_CODES[code],
+                    address: BigInt(view.getUint32(i + 12, true)),
+                    parameter1: BigInt(view.getUint32(i + 20, true)),
+                    parameter2: BigInt(view.getUint32(i + 24, true)),
+                };
+                if (isPlausibleExceptionAddress(info.address)) {
+                    return info;
+                }
+            } catch (e) {
+                continue;
             }
         }
     }
