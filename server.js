@@ -2368,10 +2368,13 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       text: validatedText
     };
 
-    // Cache only a validated analysis response.
+    // Cache only a validated analysis response. The cache is keyed by the
+    // REQUESTED model — readers look the primary model up (issue #120);
+    // response.cacheModel names the serving leg and stays corpus/log
+    // provenance, never the cache key.
     await setCachedAnalysis(cacheKey, {
       aiReport: responseData,
-      aiModel: response.cacheModel || modelName
+      aiModel: modelName
     });
     recordAiReport({
       origin: 'web',
@@ -3131,10 +3134,12 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
     // Cache the compact AI response; deterministic WinDBG fields are rebuilt from
     // the separately cached raw/structured evidence on every return path. The
-    // provenance stamp marks this as WinDBG-derived analysis (issue #78).
+    // provenance stamp marks this as WinDBG-derived analysis (issue #78). The
+    // entry is keyed by the REQUESTED model — readers look the primary model up
+    // (issue #120); cacheModel stays corpus/log provenance.
     await setCachedAnalysis(cacheKey, {
       aiReport,
-      aiModel: response.cacheModel || modelName,
+      aiModel: modelName,
       windbgDerived: true
     });
     crashSignal.record(report, fileHash);   // durable WF capture (best-effort, env-gated)

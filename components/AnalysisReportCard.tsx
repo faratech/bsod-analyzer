@@ -670,16 +670,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                             </div>
                         )}
 
-                        {/* Legacy Stack Trace - only show if no enhanced data */}
-                        {(!loadedModules || loadedModules.length === 0) && dumpFile.report.stackTrace && dumpFile.report.stackTrace.length > 0 && (
-                            <div style={{marginTop: '1.5rem'}}>
-                                <h3>Loaded Modules</h3>
-                                <pre className="code-block">
-                                    {dumpFile.report.stackTrace.join('\n')}
-                                </pre>
-                            </div>
-                        )}
-
                         {/* Call Stack from WinDBG */}
                         {callStack && callStack.length > 0 && (
                             <div style={{marginTop: '1.5rem'}}>
