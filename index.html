@@ -17,6 +17,37 @@
     
     <!-- Theme Color -->
     <meta name="theme-color" content="#0a0a0a" />
+
+    <!-- Pre-paint theme resolution: sets the <html> class before the critical
+         CSS below applies, so light-mode users don't get a dark first paint
+         that flips after hydration. Must mirror hooks/useTheme.tsx precedence
+         exactly (?theme= embed override → stored manual preference → OS
+         setting) so ThemeProvider's mount effect re-derives the same value.
+         Covered by the CSP hash set, which server.js recomputes from the served
+         bytes at boot. -->
+    <script>
+        (function () {
+            try {
+                var params = new URLSearchParams(window.location.search);
+                var urlTheme = params.get('theme');
+                var theme = null;
+                if (urlTheme === 'light' || urlTheme === 'dark') {
+                    theme = urlTheme;
+                } else if (localStorage.getItem('theme-manually-set') === 'true') {
+                    var stored = localStorage.getItem('theme');
+                    if (stored === 'light' || stored === 'dark') theme = stored;
+                }
+                if (!theme && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+                    theme = 'light';
+                }
+                var root = document.documentElement;
+                root.classList.remove('light', 'dark');
+                root.classList.add(theme || 'dark');
+            } catch (e) {
+                /* storage blocked — keep the dark default */
+            }
+        })();
+    </script>
     
     <!-- Resource hints for performance -->
     <link rel="preconnect" href="https://pagead2.googlesyndication.com" crossorigin>

@@ -12,7 +12,7 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "node server.js",
     "dev:frontend": "vite",
-    "build": "vite build && vite build --ssr entry-server.tsx --outDir dist-ssr && node scripts/generate-sri.js && node scripts/prerender.mjs",
+    "build": "vite build && vite build --ssr entry-server.tsx --outDir dist-ssr && node scripts/generate-sri.js && node scripts/prerender.mjs && node scripts/verify-hydration.mjs",
     "build:no-sri": "vite build",
     "build:ssr": "vite build --ssr entry-server.tsx --outDir dist-ssr",
     "prerender": "node scripts/prerender.mjs",
