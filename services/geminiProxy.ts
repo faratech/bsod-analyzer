@@ -1185,7 +1185,7 @@ export const analyzeDumpFiles = async (
                     if (onProgress) {
                         onProgress(stage, message);
                     }
-                }, onUploadProgress);
+                }, onUploadProgress, options?.signal);
 
                 if (windbgResult.success) {
                     console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
@@ -1274,6 +1274,12 @@ export const analyzeDumpFiles = async (
                     onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
                 }
             }
+
+            // A cancelled run must not continue into the local-parse/AI fallback:
+            // the WinDBG leg aborts promptly now (issue #121), and this keeps the
+            // rest of the pipeline from doing zombie work too. It sits after the
+            // try/catch so the cancellation is not mistaken for a WinDBG failure.
+            throwIfAborted();
 
             if (useLightweightAiFailover) {
                 const report = await generateLargeDumpAiFailoverReport(dumpFile, fileLabel, windbgFailure);

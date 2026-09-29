@@ -1580,6 +1580,16 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Apply rate limiting to API endpoints. This MUST run before the register*Route
+// calls below: the compat layer snapshots each route's middleware stack at
+// registration time (server/fastifyCompat.js registerRoute), so a later
+// app.use('/api/', …) only reaches routes registered afterwards and the 404
+// fallback — attaching it here left /api/forum/related (registered below)
+// outside the general per-IP API budget. /health, /api/stats and
+// /api/stats/insight are exempted in the limiter's skip list by design, and
+// every other route in this file is registered after this line.
+app.use('/api/', apiLimiter);
+
 // Crash-statistics aggregation (public GET /api/stats). Each completed analysis
 // logs one `stats.analysis` line (see recordStats); the Cloud Logging sink
 // `bsod-stats-events` streams them into BigQuery, where the snapshot is
@@ -1695,8 +1705,6 @@ function recordStats(input) {
   if (facts) statsStore.recordAnalysis(facts);
 }
 
-// Apply rate limiting to API endpoints
-app.use('/api/', apiLimiter);
 
 // Endpoint to verify Turnstile and create session
 app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (req, res) => {

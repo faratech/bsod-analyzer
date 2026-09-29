@@ -157,7 +157,7 @@ export const useFileProcessor = () => {
     }, []);
 
     const addFilesToState = useCallback((
-        newFiles: DumpFile[], 
+        newFiles: DumpFile[],
         existingFiles: DumpFile[]
     ): DumpFile[] => {
         const existingSignatures = new Set(existingFiles.map(getDumpFileSignature));
@@ -167,8 +167,18 @@ export const useFileProcessor = () => {
             existingSignatures.add(signature);
             return true;
         });
+        // Authoritative session cap, enforced against the fresh list: overlapping
+        // add batches (two quick drops, or a drop while an archive is still
+        // extracting) each checked a render-time count in processFile and could
+        // both pass it, so the cap has to hold here where existingFiles is
+        // current. processFile keeps its early check for immediate UX feedback.
+        const room = Math.max(0, SECURITY_CONFIG.file.maxFileCount - existingFiles.length);
+        if (uniqueNewFiles.length > room) {
+            uniqueNewFiles.length = room;
+            setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+        }
         return [...existingFiles, ...uniqueNewFiles];
-    }, []);
+    }, [setError]);
 
     return {
         processFiles,
