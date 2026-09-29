@@ -333,7 +333,12 @@ function compactText(value, maxLength = 1600) {
   if (!text) return undefined;
   if (text.length <= maxLength) return text;
   const head = Math.floor(maxLength * 0.75);
-  const tail = maxLength - head - 40;
+  // Guard the head/tail split: with a small maxLength the 40-byte reserve
+  // would make the tail negative and slice() would duplicate the head.
+  const tail = Math.max(0, maxLength - head - 40);
+  if (tail === 0) {
+    return `${text.slice(0, head)}\n\n[... ${text.length - head} bytes omitted ...]`;
+  }
   return `${text.slice(0, head)}\n\n[... ${text.length - head - tail} bytes omitted ...]\n\n${text.slice(-tail)}`;
 }
 

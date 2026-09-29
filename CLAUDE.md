@@ -153,9 +153,10 @@ prerendered markup — never another route's — or hydration mismatches.
 - Each fake Redis client (e.g. in `tests/cacheIntegration.test.mjs`)
   implements only the operations the code under test uses — add any new
   command to the fake too, or calls silently return nothing instead of failing.
-- The Lua lease/job scripts in `services/cache.js` have no test fake; verify
-  script semantics by extracting them and running under `lua`/`luac` with a
-  stubbed `redis.call` (Upstash is Lua 5.1).
+- `tests/cacheZstdDictionary.test.mjs` and `tests/upstashBinary.test.mjs`
+  exercise the RESP2/binary envelope logic directly; the old Lua lease/job
+  scripts are gone with the stateless refactor, so there is nothing to run
+  under `lua`/`luac` anymore.
 
 ## Security Architecture (6 Layers)
 
