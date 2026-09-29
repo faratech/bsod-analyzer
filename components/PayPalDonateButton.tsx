@@ -50,7 +50,12 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
     isMonthly = false
 }) => {
     const mountRef = useRef<HTMLDivElement>(null);
-    const buttonIdRef = useRef(`paypal-donate-${Math.random().toString(36).slice(2, 9)}`);
+    // Deterministic, hydration-safe id: a render-time Math.random() id is
+    // baked into the prerendered /donate markup, and hydration then computes a
+    // different one — the PayPal SDK would render into a selector that does
+    // not exist and silently no-op, leaving both donate buttons dead on
+    // direct visits (issue #117). The two instances differ by isMonthly.
+    const buttonId = `paypal-donate-${isMonthly ? 'monthly' : 'one-time'}`;
     const [sdkFailed, setSdkFailed] = useState(false);
     const { trackDonation } = useAnalytics();
 
@@ -82,13 +87,16 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
                 config.amount = amount;
             }
 
-            window.PayPal.Donation.Button(config).render(`#${buttonIdRef.current}`);
+            // Re-renders (amount change) must replace the previous button,
+            // not stack a second one inside the same container.
+            document.getElementById(buttonId)?.replaceChildren();
+            window.PayPal.Donation.Button(config).render(`#${buttonId}`);
         } catch {
             // Fallback: render a direct link if SDK fails to load. JSX rather
             // than innerHTML so no prop can ever become markup (issue #81).
             setSdkFailed(true);
         }
-    }, [amount, buttonText, isMonthly, trackDonation]);
+    }, [amount, buttonText, isMonthly, trackDonation, buttonId]);
 
     useEffect(() => {
         renderButton();
@@ -118,7 +126,7 @@ const PayPalDonateButton: React.FC<PayPalDonateButtonProps> = ({
 
     return (
         <div ref={mountRef}>
-            <div id={buttonIdRef.current} />
+            <div id={buttonId} />
         </div>
     );
 };
