@@ -63,7 +63,7 @@ function buildMinidump({ exceptionCode, exceptionInformation = [] }) {
   entry(0, 3, 2000, 0x600);           // ThreadListStream
   entry(1, MemoryListStream, 16, MEMORY_LIST_RVA);
   entry(2, 4, 0, 0);                  // ModuleListStream (empty)
-  entry(3, 7, 24, 0x700);             // MiscInfoStream
+  entry(3, 7, 24, 0x700);             // SystemInfoStream (type 7)
   entry(4, ExceptionStream, 168, EXCEPTION_STREAM_RVA);
   entry(5, 9, 0, 0);
   entry(6, 15, 0, 0);

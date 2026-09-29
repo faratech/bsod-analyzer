@@ -130,7 +130,7 @@ test('buildSnapshot zero-fills window and folds Other', () => {
     sources: { windbg: 30, 'ai-fallback': 12 },
     dumpTypes: { kernel: 20, minidump: 22 },
     osVersions: { '10.0.26100': 25, '10.0.19045': 17 },
-    stopCodes: { '0x1A': '10', '0x7E': 8, '0x50': 2 },
+    stopCodes: { '0x1A': '10', '0x7E': 8, '0x50': 2, '0x999': 1 },
     stopCodeLabels: { '0x1A': 'MEMORY_MANAGEMENT' },
     buckets: [['AV_nt!ExFreePool', 9], ['ZEROED', 2]],
     modules: [['nvlddmkm.sys', 7], ['ntfs.sys', 3]],
@@ -154,9 +154,14 @@ test('buildSnapshot zero-fills window and folds Other', () => {
   assert.equal(snapshot.topStopCodes.items[0].value, '0x1A');
   assert.equal(snapshot.topStopCodes.items[0].label, 'MEMORY_MANAGEMENT');
   assert.match(snapshot.topStopCodes.items[0].description, /memory management corruption/i);
-  // Unknown code with no label still gets a generic-but-useful line or none.
-  assert.equal(typeof snapshot.topStopCodes.items[2].description === 'string' ||
-    snapshot.topStopCodes.items[2].description === undefined, true);
+  // Known codes always get a non-empty description; a code unknown to the
+  // knowledge base with no label gets undefined — never null and never the
+  // attacker-supplied label echoed back.
+  assert.equal(typeof snapshot.topStopCodes.items[2].description, 'string');
+  assert.ok(snapshot.topStopCodes.items[2].description.length > 0);
+  assert.equal(snapshot.topStopCodes.items[2].label, undefined);
+  assert.equal(snapshot.topStopCodes.items[3].value, '0x999');
+  assert.equal(snapshot.topStopCodes.items[3].description, undefined);
   assert.equal(snapshot.topFailureBuckets.items[0].value, 'AV_nt!ExFreePool');
   assert.equal(snapshot.sources.total, 42);
 });

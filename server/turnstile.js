@@ -13,6 +13,11 @@ function fingerprint(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 32);
 }
 
+// Exported so the test suite can pin the no-raw-token-retention property:
+// createTurnstileReplayGuard reserves keys are exactly fingerprintToken(token),
+// never the raw token (issue #72's single-use map must not hold live secrets).
+export { fingerprint as fingerprintToken };
+
 export function createTurnstileReplayGuard() {
   const reserved = new Map(); // token fingerprint -> first-use timestamp
 

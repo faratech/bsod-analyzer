@@ -718,49 +718,25 @@ function extractPageDumpHeader(view: DataView): DumpHeader {
         console.error('Kernel dump parser failed, falling back to basic parsing:', e);
     }
     
-    // Fallback to basic parsing
+    // Fallback to basic parsing. Only the fields with bitness-stable offsets
+    // are read here (signature/version @8/12, MachineType @0x20 in the 32-bit
+    // header); the PAGEDU64-specific fields (DirectoryTableBase, PfnDataBase,
+    // PsLoadedModuleList, physical memory runs) belong to
+    // parseKernelDumpHeader in kernelDumpModuleParser.ts, which runs first and
+    // uses the canonical DUMP_HEADER64 offsets. This fallback fires only for
+    // 32-bit PAGEDUMP dumps and truncated files.
     const header: DumpHeader = {
         signature: 'PAGEDUMP',
         majorVersion: view.getUint32(8, true),
         minorVersion: view.getUint32(12, true),
     };
-    
+
     // Machine type at offset 32
     if (view.byteLength >= 36) {
         const machineType = view.getUint32(32, true);
         header.machineImageType = machineType;
     }
-    
-    // For PAGEDU64 dumps, extract DirectoryTableBase (CR3)
-    if (view.byteLength >= 0x20) {
-        try {
-            // Check if this is a 64-bit dump
-            const bytes = new Uint8Array(view.buffer, view.byteOffset, 8);
-            const sig = String.fromCharCode(...bytes);
-            if (sig.includes('64')) {
-                // DirectoryTableBase is at offset 0x18 in PAGEDU64
-                header.directoryTableBase = view.getBigUint64(0x18, true);
-            }
-        } catch (e) {
-            // Continue without CR3
-        }
-    }
-    
-    // PFN database and module list for 64-bit dumps
-    if (view.byteLength >= 0xA0) {
-        try {
-            header.pfnDatabase = view.getBigUint64(0x80, true);
-            header.psLoadedModuleList = view.getBigUint64(0x90, true);
-        } catch (e) {
-            // Fallback for 32-bit
-            header.pfnDatabase = BigInt(view.getUint32(0x80, true));
-            header.psLoadedModuleList = BigInt(view.getUint32(0x90, true));
-        }
-    }
-    
-    // Try to extract physical memory runs
-    header.physicalMemoryRuns = extractPhysicalMemoryRuns(view) ?? undefined;
-    
+
     return header;
 }
 
@@ -780,42 +756,6 @@ function extractMinidumpHeader(view: DataView): DumpHeader {
     }
     
     return header;
-}
-
-// Extract physical memory run information from dump
-function extractPhysicalMemoryRuns(view: DataView): Array<{basePage: bigint; pageCount: bigint}> | null {
-    const runs: Array<{basePage: bigint; pageCount: bigint}> = [];
-    
-    try {
-        // For PAGEDU64 dumps, physical memory descriptor is typically after the header
-        // This is a simplified approach - real implementation would parse the full structure
-        const physMemOffset = 0x2000; // Common offset for physical memory descriptor
-        
-        if (view.byteLength > physMemOffset + 16) {
-            const numberOfRuns = view.getUint32(physMemOffset, true);
-            
-            if (numberOfRuns > 0 && numberOfRuns < 100) { // Sanity check
-                const runOffset = physMemOffset + 16; // Skip header
-                
-                for (let i = 0; i < Math.min(numberOfRuns, 20); i++) {
-                    const offset = runOffset + i * 16;
-                    if (offset + 16 > view.byteLength) break;
-                    
-                    const basePage = view.getBigUint64(offset, true);
-                    const pageCount = view.getBigUint64(offset + 8, true);
-                    
-                    // Validate the run looks reasonable
-                    if (pageCount > 0n && pageCount < 0x100000000n) {
-                        runs.push({ basePage, pageCount });
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        // Continue without physical memory runs
-    }
-    
-    return runs.length > 0 ? runs : null;
 }
 
 function extractLegacyDumpHeader(view: DataView): DumpHeader {
