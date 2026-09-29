@@ -13,7 +13,7 @@
 //
 // Fire-and-forget and fully guarded: a no-op unless both the URL and key are set,
 // and nothing here throws or rejects into the analysis path.
-import { normalizeAnalysisReport, promptCarriesWinDbgSignal } from './analysisReport.js';
+import { normalizeAnalysisReport, promptIncludesWinDbgSignal } from './analysisReport.js';
 import {
   mapStructuredSignalToReport,
   mergeReportWithWinDbgFields,
@@ -98,7 +98,7 @@ export function createCrashSignalRecorder({
       // The AI's culprit and summary only count when it was shown the real
       // structured evidence (the browser forwards analysisSignalText verbatim).
       const hasSignal = typeof evidence.analysisSignalText === 'string' && evidence.analysisSignalText.trim();
-      if (hasSignal && !promptCarriesWinDbgSignal(promptText, evidence.analysisSignalText)) {
+      if (hasSignal && !promptIncludesWinDbgSignal(promptText, evidence.analysisSignalText)) {
         logger.warn('crash_signal.web_skipped', { reason: 'evidence_mismatch' });
         return;
       }

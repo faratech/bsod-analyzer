@@ -78,10 +78,11 @@ npm run optimize-css     # Apply CSS purging
   `minidumpStreams.ts` cannot import from `dumpParser.ts` (circular), so gates
   that need `BUG_CHECK_CODES` live in dumpParser. Extraction must be
   evidence-based: bug check codes come from structured dump headers
-  (PAGEDU64 @0x38, PAGEDUMP @0x40) or the 0x80000003 BREAKPOINT
-  exception-stream convention — never from fixed-offset scans of minidump
-  stream metadata (those fabricated STOP codes; tests in
-  `tests/dumpParserBugCheck.test.mjs` pin this).
+  (PAGEDU64 @0x38, PAGEDUMP BugCheckCode @0x28 + ULONG params @0x2C-0x38) or
+  the 0x80000003 BREAKPOINT exception-stream convention — never from
+  fixed-offset scans of minidump stream metadata, from unanchored STOP-text
+  scans, or from KiBug-anchor heuristics on minidumps (those fabricated STOP
+  codes; tests in `tests/dumpParserBugCheck.test.mjs` pin this).
 
 ### AI provider chain (server-owned, never client-selected)
 

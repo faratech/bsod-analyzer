@@ -1597,10 +1597,11 @@ const statsStore = createStatsStore({
 registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
 
 // AI narrative over the aggregates (OpenRouter free tier, heavily cached).
+// The service resolves its model list itself (OPENROUTER_STATS_MODEL, then
+// OPENROUTER_FREE_MODEL) — it takes a `models` option, never `model`.
 const statsInsightService = createStatsInsightService({
   isEnabled: () => STATS_ENABLED && process.env.STATS_INSIGHT_ENABLED !== 'false',
-  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot(),
-  model: process.env.OPENROUTER_FREE_MODEL
+  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot()
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
@@ -2068,6 +2069,33 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   let estimatedInputTokens = 0;
   const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
   let quotaRefundCap = 0;
+  // Shared by the catch below and the invalid-report early return: refunds
+  // the reservation for failure classes that are not the client's fault
+  // (provider outage, transport stall, invalid upstream payload) so outages
+  // do not burn tier quota — and so failures cannot be farmed to shift
+  // accounting backwards, the refund counter is capped per window (issue #77,
+  // #112). Declared in the handler scope, not inside the try: the catch is a
+  // sibling of its try, not a child of it.
+  const refundReservation = (error) => {
+    if (!quotaKey || !shouldRefund(error)) return;
+    try {
+      const refund = sessionQuota.refund(quotaKey, {
+        requestCost: 1,
+        tokenCost: estimatedInputTokens,
+        refundCap: quotaRefundCap
+      });
+      if (!refund.refunded) {
+        log.warn('quota.refund_declined', {
+          quotaKey: safeToken(quotaKey),
+          refundsUsed: refund.refundsUsed,
+          refundCap: refund.refundCap,
+          failureClass: classifyQuotaFailure(error)
+        });
+      }
+    } catch (refundError) {
+      log.warn('ai.quota_refund_failed', { message: refundError.message });
+    }
+  };
   try {
     const modelName = getPrimaryModel();
     const provider = getAIProviderForModel(modelName);
@@ -2322,6 +2350,10 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         finishReason,
         responsePreview: responseText.substring(0, 200)
       });
+      // The provider call succeeded, so the reservation is live in the quota
+      // window — refund it exactly as an adapter-thrown INVALID_AI_RESPONSE
+      // would be refunded via the catch (issue #112).
+      refundReservation(Object.assign(new Error(reportValidation.reason), { code: 'INVALID_AI_RESPONSE' }));
       return res.status(502).json({
         error: 'AI response failed validation',
         code: 'INVALID_AI_RESPONSE'
@@ -2374,28 +2406,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   } catch (error) {
     // Refund the reservation only for failure classes that are not the
     // client's fault (provider outage, transport stall, invalid upstream
-    // payload) so outages do not burn tier quota — and so failures cannot be
-    // farmed to shift accounting backwards, the refund counter is capped per
-    // window (issue #77).
-    if (quotaKey && shouldRefund(error)) {
-      try {
-        const refund = sessionQuota.refund(quotaKey, {
-          requestCost: 1,
-          tokenCost: estimatedInputTokens,
-          refundCap: quotaRefundCap
-        });
-        if (!refund.refunded) {
-          log.warn('quota.refund_declined', {
-            quotaKey: safeToken(quotaKey),
-            refundsUsed: refund.refundsUsed,
-            refundCap: refund.refundCap,
-            failureClass: classifyQuotaFailure(error)
-          });
-        }
-      } catch (refundError) {
-        log.warn('ai.quota_refund_failed', { message: refundError.message });
-      }
-    }
+    // payload) — see refundReservation above (issue #77, #112).
+    refundReservation(error);
     log.error('ai.error', {
       code: error.code,
       status: error.status,

@@ -43,6 +43,9 @@ test('normalizers bound cardinality', () => {
   assert.equal(normalizeModuleKey('bad module name!'), undefined);
   assert.equal(normalizeOsVersion('10.0.26100.1'), '10.0.26100');
   assert.equal(normalizeOsVersion('Windows NT Kernel Version 10.0.19045.123'), '10.0.19045');
+  assert.equal(normalizeOsVersion('Windows 11 24H2 (26100.2033)'), '10.0.26100');
+  assert.equal(normalizeOsVersion('26100.2033'), '10.0.26100');
+  assert.equal(normalizeOsVersion('Windows 7 (7601.24545)'), '6.1.7601');
   assert.equal(normalizeDumpType('Kernel'), 'kernel');
   assert.equal(normalizeDumpType('zip'), undefined);
 });
@@ -81,6 +84,30 @@ test('extractStatsFacts reads ai-fallback report + prompt dump type', () => {
   assert.equal(facts.stopCodeLabel, 'SYSTEM_THREAD_EXCEPTION_NOT_HANDLED');
   assert.equal(facts.dumpType, 'minidump');
   assert.equal(facts.osVersion, '10.0.19045');
+});
+
+test('extractStatsFacts falls through an unparseable os_version candidate', () => {
+  // The server signal's os_version is banner-shaped (no dotted X.Y): the old
+  // single normalizeOsVersion(A || B || C) call let the truthy-but-unparseable
+  // candidate veto the OS_VERSION fallback that would have parsed (issue #115).
+  const facts = extractStatsFacts({
+    source: 'windbg',
+    structured: {
+      target: { os_version: 'Windows 11 Kernel Version 26100 MP (16 procs) Free x64' }
+    },
+    analysisText: 'OS_VERSION: 10.0.26100.1'
+  });
+  assert.equal(facts.osVersion, '10.0.26100');
+});
+
+test('extractStatsFacts keys the build-form os_version like the OS_VERSION path', () => {
+  const facts = extractStatsFacts({
+    source: 'windbg',
+    structured: {
+      target: { os_version: 'Windows 11 24H2 (26100.2033)' }
+    }
+  });
+  assert.equal(facts.osVersion, '10.0.26100');
 });
 
 test('extractStatsFacts rejects unknown sources and bad hashes', () => {

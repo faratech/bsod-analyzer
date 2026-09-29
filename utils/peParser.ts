@@ -92,7 +92,10 @@ export class PEParser {
             
             let versionInfo: VersionInfo | undefined;
             if (resourceSection) {
-                versionInfo = this.extractVersionInfo(offset + resourceSection.virtualAddress);
+                // Index the file bytes by raw file offset (PointerToRawData),
+                // not the section RVA — the two only coincide when section
+                // alignment equals file alignment.
+                versionInfo = this.extractVersionInfo(offset + resourceSection.fileOffset);
             }
             
             // Check for certificate (Authenticode)
@@ -147,24 +150,25 @@ export class PEParser {
         };
     }
     
-    private findResourceSection(offset: number, numberOfSections: number): { virtualAddress: number; size: number } | null {
+    private findResourceSection(offset: number, numberOfSections: number): { virtualAddress: number; size: number; fileOffset: number } | null {
         // Parse section headers to find .rsrc
         for (let i = 0; i < numberOfSections; i++) {
             const sectionOffset = offset + (i * 40);
             if (sectionOffset + 40 > this.buffer.byteLength) break;
-            
+
             // Read section name
             const nameBytes = new Uint8Array(this.buffer, sectionOffset, 8);
             const name = String.fromCharCode(...nameBytes).replace(/\0/g, '');
-            
+
             if (name.startsWith('.rsrc')) {
                 return {
                     virtualAddress: this.view.getUint32(sectionOffset + 12, true),
-                    size: this.view.getUint32(sectionOffset + 16, true)
+                    size: this.view.getUint32(sectionOffset + 16, true),
+                    fileOffset: this.view.getUint32(sectionOffset + 20, true) // PointerToRawData
                 };
             }
         }
-        
+
         return null;
     }
     

@@ -20,7 +20,32 @@ ${analysisForPrompt}
 // verbatim (the client forwards analysisSignalText unchanged). Only such a
 // prompt's report may share the per-file cache entry: otherwise one uploader
 // could plant a report written from invented evidence for everyone else.
+//
+// The check is structural, not a substring search: the evidence block that
+// follows WINDBG_OUTPUT_MARKER must BE the signal, byte-for-byte, and must end
+// the prompt. A prompt that merely CONTAINS the genuine signal — e.g. the
+// real block plus appended fabricated "debugger correction" prose — fails the
+// gate and falls back to the attacker-private prompt-keyed entry (issue #113).
 export function promptCarriesWinDbgSignal(promptText, analysisSignalText) {
+  const signal = typeof analysisSignalText === 'string' ? analysisSignalText.trim() : '';
+  if (!signal) return false;
+  const text = String(promptText || '');
+  const at = text.indexOf(WINDBG_OUTPUT_MARKER);
+  if (at < 0) return false;
+  const tail = text.slice(at + WINDBG_OUTPUT_MARKER.length);
+  // The builders emit: MARKER, a description line, then a fenced block
+  // (```json for structured signals) holding the signal, closed by ``` at the
+  // very end of the prompt.
+  const block = tail.match(/```(?:json)?[ \t]*\n([\s\S]*)\n```[ \t]*$/);
+  return Boolean(block) && block[1].trim() === signal;
+}
+
+// Weaker companion for callers that only need the prompt to be *consistent
+// with* the upstream evidence rather than to prove cache provenance (crash-
+// signal recording merges server-fetched evidence regardless): the signal text
+// appears somewhere in the prompt. The strict check above remains the gate for
+// sharing the per-file cache entry.
+export function promptIncludesWinDbgSignal(promptText, analysisSignalText) {
   const signal = typeof analysisSignalText === 'string' ? analysisSignalText.trim() : '';
   return Boolean(signal) && String(promptText || '').includes(signal);
 }

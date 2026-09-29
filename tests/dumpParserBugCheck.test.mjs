@@ -119,3 +119,104 @@ test('kernel-crash minidump (0x80000003 BREAKPOINT) still yields its real STOP c
   assert.equal(bugCheck.name, 'MEMORY_MANAGEMENT');
   assert.equal(bugCheck.parameter1, 2n);
 });
+
+// 32-bit DUMP_HEADER (PAGEDUMP): BugCheckCode @0x28, ULONG parameters
+// @0x2C-0x38, VersionUser ASCII text @0x3C. The old code read the code from
+// 0x40 — inside that text — and fell through to the unanchored scans.
+function buildPagedump32({ code, params }) {
+  const buffer = new ArrayBuffer(0x2000);
+  const view = new DataView(buffer);
+
+  view.setUint32(0x00, 0x45474150, true); // 'PAGE'
+  view.setUint32(0x04, 0x504D5544, true); // 'DUMP'
+  view.setUint32(0x08, 15, true);         // MajorVersion
+  view.setUint32(0x0C, 7601, true);       // MinorVersion
+  view.setUint32(0x20, 0x014C, true);     // MachineImageType (I386)
+  view.setUint32(0x24, 2, true);          // NumberProcessors
+  view.setUint32(0x28, code, true);       // BugCheckCode
+  params.forEach((p, i) => view.setUint32(0x2C + i * 4, p, true));
+  // VersionUser text where the old 0x40 read looked.
+  const text = 'Service Pack 2';
+  for (let i = 0; i < text.length; i++) view.setUint8(0x3C + i, text.charCodeAt(i));
+
+  return buffer;
+}
+
+test('32-bit PAGEDUMP reads BugCheckCode from 0x28, not the VersionUser text at 0x40', async () => {
+  const { extractBugCheckInfo } = await loadDumpParser();
+
+  const bugCheck = extractBugCheckInfo(buildPagedump32({
+    code: 0x50,                           // PAGE_FAULT_IN_NONPAGED_AREA
+    params: [0x0a2b0060, 1, 0x82a5b1d3, 0]
+  }));
+
+  assert.ok(bugCheck, 'expected the structured header bug check');
+  assert.equal(bugCheck.code, 0x50);
+  assert.equal(bugCheck.name, 'PAGE_FAULT_IN_NONPAGED_AREA');
+  assert.equal(bugCheck.parameter1, 0x0a2b0060n);
+  assert.equal(bugCheck.parameter2, 1n);
+  assert.equal(bugCheck.parameter3, 0x82a5b1d3n);
+  assert.equal(bugCheck.parameter4, 0n);
+});
+
+test('minidump STOP text in process memory does not fabricate a bug check', async () => {
+  const { extractBugCheckInfo } = await loadDumpParser();
+
+  const buffer = buildMinidump({
+    exceptionCode: 0xc0000005,          // ordinary user-mode access violation
+    exceptionInformation: [0, 0x10]
+  });
+  // A crash-log fragment reachable in the first 64KB — process memory, a
+  // comment stream, etc. The text/KiBug scans used to accept it as evidence.
+  const text = 'crash log says *** STOP: 0x000000ED happened; BugCheck ED, {1,2,3,4}';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < text.length; i++) bytes[0x1000 + i] = text.charCodeAt(i);
+
+  const bugCheck = extractBugCheckInfo(buffer);
+  assert.equal(bugCheck, null, 'a user-mode MDMP has no bug check beyond the exception-stream convention');
+});
+
+// EXCEPTION_RECORD64: ExceptionCode@+0, ExceptionFlags@+4, link@+8,
+// ExceptionAddress@+16, NumberParameters@+24, ExceptionInformation[0]@+32, [1]@+40.
+function writeExceptionRecord64(buffer, offset, { code, address, info0, info1 }) {
+  const view = new DataView(buffer);
+  view.setUint32(offset, code, true);
+  view.setUint32(offset + 4, 0, true);                    // ExceptionFlags
+  view.setBigUint64(offset + 8, 0n, true);                // ExceptionRecord link
+  view.setBigUint64(offset + 16, address, true);          // ExceptionAddress
+  view.setUint32(offset + 24, 2, true);                   // NumberParameters
+  view.setUint32(offset + 28, 0, true);                   // alignment
+  view.setBigUint64(offset + 32, info0, true);
+  view.setBigUint64(offset + 40, info1, true);
+}
+
+test('extractExceptionInfo accepts a genuine kernel EXCEPTION_RECORD64', async () => {
+  const { extractExceptionInfo } = await loadDumpParser();
+
+  const buffer = new ArrayBuffer(0x1000);
+  writeExceptionRecord64(buffer, 0xF00, {
+    code: 0x80000003,
+    address: 0xFFFFF802ABCDEF00n,       // kernel text — rejected by the old check
+    info0: 0x10n,
+    info1: 0n
+  });
+
+  const info = extractExceptionInfo(buffer);
+  assert.ok(info, 'expected the kernel-space record to be accepted');
+  assert.equal(info.code, 0x80000003);
+  assert.equal(info.address, 0xFFFFF802ABCDEF00n);
+  assert.equal(info.parameter1, 0x10n);
+});
+
+test('extractExceptionInfo tolerates an exception hit near the buffer tail', async () => {
+  const { extractExceptionInfo } = await loadDumpParser();
+
+  // Code in the last bytes of the buffer: the 64-bit reads must not go out of
+  // bounds, and the all-zero tail must not yield a fabricated record.
+  const buffer = new ArrayBuffer(64);
+  const view = new DataView(buffer);
+  view.setUint32(56, 0xC0000005, true);
+
+  const info = extractExceptionInfo(buffer);
+  assert.equal(info, null);
+});

@@ -826,43 +826,64 @@ function extractLegacyDumpHeader(view: DataView): DumpHeader {
     };
 }
 
+// Canonical x64 exception-address ranges: the kernel-space high half, or a
+// mapped user address. Near-NULL stays rejected — it is indistinguishable from
+// an all-zero fabricated record.
+function isPlausibleExceptionAddress(address: bigint): boolean {
+    if (address >= BigInt('0xFFFF800000000000')) return true; // kernel space
+    return address >= BigInt('0x1000') && address < BigInt('0x800000000000'); // user space
+}
+
 export function extractExceptionInfo(buffer: ArrayBuffer): ExceptionInfo | null {
     const view = new DataView(buffer);
-    
-    // Search for exception codes in the first 64KB
+
+    // Search for exception codes in the first 64KB. The 64-bit record reads
+    // span i..i+48, so the bound must reserve 48 bytes — a looser bound let
+    // a hit near the tail throw RangeError and fall into the 32-bit path.
     const searchLimit = Math.min(buffer.byteLength, 65536);
-    
-    for (let i = 0; i < searchLimit - 32; i += 4) {
+
+    for (let i = 0; i + 48 <= searchLimit; i += 4) {
         const code = view.getUint32(i, true);
-        
+
         if (EXCEPTION_CODES[code]) {
             // Found a known exception code, extract the record
             try {
-                // EXCEPTION_RECORD64 structure
+                // EXCEPTION_RECORD64: ExceptionCode@+0, ExceptionFlags@+4,
+                // ExceptionRecord (link)@+8, ExceptionAddress@+16,
+                // NumberParameters@+24, ExceptionInformation[0]@+32, [1]@+40.
+                // The old read took the link pointer as the address and
+                // NumberParameters as a parameter.
                 const info: ExceptionInfo = {
                     code: code,
                     name: EXCEPTION_CODES[code],
-                    address: view.getBigUint64(i + 8, true),
-                    parameter1: view.getBigUint64(i + 24, true),
-                    parameter2: view.getBigUint64(i + 32, true),
+                    address: view.getBigUint64(i + 16, true),
+                    parameter1: view.getBigUint64(i + 32, true),
+                    parameter2: view.getBigUint64(i + 40, true),
                 };
-                
-                // Validate the address looks reasonable (kernel space)
-                if (info.address > BigInt('0xFFFF000000000000') || info.address < BigInt('0x1000')) {
+
+                // Validate the address is in a canonical range (kernel or
+                // user space). The old check rejected kernel addresses
+                // outright, skipping real records for fabricated ones.
+                if (!isPlausibleExceptionAddress(info.address)) {
                     continue; // Invalid address, keep searching
                 }
-                
+
                 return info;
             } catch (e) {
-                // Try 32-bit structure
+                // Try 32-bit EXCEPTION_RECORD: ExceptionCode@+0,
+                // ExceptionFlags@+4, ExceptionRecord@+8, ExceptionAddress@+12,
+                // NumberParameters@+16, ExceptionInformation[0]@+20, [1]@+24.
                 try {
                     const info: ExceptionInfo = {
                         code: code,
                         name: EXCEPTION_CODES[code],
-                        address: BigInt(view.getUint32(i + 4, true)),
-                        parameter1: BigInt(view.getUint32(i + 12, true)),
-                        parameter2: BigInt(view.getUint32(i + 16, true)),
+                        address: BigInt(view.getUint32(i + 12, true)),
+                        parameter1: BigInt(view.getUint32(i + 20, true)),
+                        parameter2: BigInt(view.getUint32(i + 24, true)),
                     };
+                    if (!isPlausibleExceptionAddress(info.address)) {
+                        continue;
+                    }
                     return info;
                 } catch (e) {
                     continue;
@@ -870,7 +891,7 @@ export function extractExceptionInfo(buffer: ArrayBuffer): ExceptionInfo | null 
             }
         }
     }
-    
+
     return null;
 }
 
@@ -1018,20 +1039,23 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
         // Check for other kernel dump signatures
         const sig1 = view.getUint32(0, true);
         const sig2 = view.getUint32(4, true);
-        
+
         // PAGEDUMP signature (older format)
         if (sig1 === 0x45474150 && sig2 === 0x504D5544) { // 'PAGE' 'DUMP'
             console.log('[BugCheck] Detected PAGEDUMP format');
             try {
-                // For PAGEDUMP, bug check might be at different offset
-                const code = view.getUint32(0x40, true);
+                // 32-bit DUMP_HEADER: BugCheckCode @0x28, ULONG parameters
+                // @0x2C-0x38. 0x3C onward is the VersionUser ASCII text — the
+                // old 0x40 read saw "Service Pack…" bytes, failed validation,
+                // and let the unanchored heuristic scans fabricate a code.
+                const code = view.getUint32(0x28, true);
                 if (isValidBugCheckCode(code)) {
                     return createBugCheckInfo(
                         code,
-                        BigInt(view.getUint32(0x44, true)),
-                        BigInt(view.getUint32(0x48, true)),
-                        BigInt(view.getUint32(0x4C, true)),
-                        BigInt(view.getUint32(0x50, true))
+                        BigInt(view.getUint32(0x2C, true)),
+                        BigInt(view.getUint32(0x30, true)),
+                        BigInt(view.getUint32(0x34, true)),
+                        BigInt(view.getUint32(0x38, true))
                     );
                 }
             } catch (e) {
@@ -1129,6 +1153,15 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
         }
     }
     
+    // A user-mode MDMP has no bug check location beyond the exception-stream
+    // convention handled above. The KiBug anchor and STOP-text scans below run
+    // over raw dump bytes — on a minidump those bytes are process memory and
+    // stream metadata, and any "STOP: 0x…" string found there would be
+    // fabricated evidence, so minidumps stop here (issue #106).
+    if (isMinidump) {
+        return null;
+    }
+
     // Strategy 2: Look for KiBugCheckData pattern (kernel dumps)
     const kibugPattern = new Uint8Array([0x4B, 0x69, 0x42, 0x75, 0x67]); // "KiBug"
     for (let i = 0; i < Math.min(buffer.byteLength, 65536) - 100; i++) {
@@ -1194,12 +1227,9 @@ export function extractBugCheckInfo(buffer: ArrayBuffer): BugCheckInfo | null {
     }
     
     // Strategy 4: Comprehensive heuristic search
-    // Last resort - search for any valid bug check pattern. Skipped for
-    // minidumps: with no KiBugCheckData anchor, this scan accepts thread ids
-    // and stream metadata as bug check codes.
-    if (isMinidump) {
-        return null;
-    }
+    // Last resort - search for any valid bug check pattern (kernel dumps only:
+    // the isMinidump gate above already returned for user-mode MDMPs, whose
+    // stream payloads otherwise read as thread ids and RVAs).
     const searchLimit = Math.min(buffer.byteLength, 131072); // Search first 128KB
     for (let i = 0; i < searchLimit - 20; i += 4) {
         const candidate = tryExtractBugCheck32(view, i);

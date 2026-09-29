@@ -102,8 +102,14 @@ export function createCrashPriors({ reader, path = 'priors/000000000000.json', t
       const byKind = { bugcheck: new Map(), image: new Map() };
       for (const row of rows || []) {
         if (!row || !byKind[row.kind]) continue;
+        // Canonicalize both kinds at index time: lookups go through
+        // normalizePriorCode/normalizePriorImage, so a padded or lowercase
+        // bugcheck key from the corpus would otherwise be stored under a form
+        // no lookup can ever produce (issue #116).
+        const key = row.kind === 'image' ? normalizePriorImage(row.key) : normalizePriorCode(row.key);
+        if (!key) continue;
         try {
-          byKind[row.kind].set(row.kind === 'image' ? String(row.key).toLowerCase() : row.key, JSON.parse(row.payload));
+          byKind[row.kind].set(key, JSON.parse(row.payload));
         } catch { /* skip malformed row */ }
       }
       indexed = { rows, byKind };

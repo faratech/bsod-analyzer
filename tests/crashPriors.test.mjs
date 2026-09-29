@@ -34,6 +34,23 @@ test('unknown keys, pseudo-modules and missing input give an empty context', asy
   assert.equal(formatPriorContext({}), '');
 });
 
+test('bugcheck keys are canonicalized at index time, not just at lookup', async () => {
+  // The corpus stores signal.bugcheck.code verbatim: a padded or lowercase
+  // key from the upstream must still be found by the canonical lookup
+  // (issue #116), and keys that fail normalization are skipped.
+  const padded = [
+    { kind: 'bugcheck', key: '0x00000116', payload: JSON.stringify({ n: 508, share_of_all: 0.0328, corpus_size: 15474 }) },
+    { kind: 'bugcheck', key: '0x1a', payload: JSON.stringify({ n: 900, share_of_all: 0.058, corpus_size: 15474 }) },
+    { kind: 'bugcheck', key: 'garbage', payload: JSON.stringify({ n: 1, share_of_all: 0.0001, corpus_size: 15474 }) }
+  ];
+  const priors = createCrashPriors({ reader: reader(padded) });
+  const text = await priors.contextFor({ bugcheckCode: '0x00000116' });
+  assert.match(text, /Stop code 0x116.*3%/);
+  const lower = await priors.contextFor({ bugcheckCode: '0x1A' });
+  assert.match(lower, /Stop code 0x1A/);
+  assert.equal(await priors.contextFor({ bugcheckCode: 'garbage' }), '');
+});
+
 test('a slow or failing priors file never blocks the analysis', async () => {
   const logger = { warn() {} };
   const slow = createCrashPriors({ reader: { read: () => new Promise(r => setTimeout(() => r(rows), 500)) }, timeoutMs: 20, logger });
