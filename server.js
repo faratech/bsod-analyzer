@@ -125,7 +125,10 @@ import {
   isCacheEnabled,
   disableRedis,
   getRedisDisabledReason,
-  checkCacheConnection
+  checkCacheConnection,
+  reserveSessionQuota,
+  commitSessionTokens,
+  refundSessionQuota
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2071,9 +2074,9 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   // a child of it. Declaring them inside the try made every failure path throw
   // `ReferenceError: quotaKey is not defined` before it could send an error
   // response — which both swallowed the real error and made refunds impossible.
-  // The catch guards on `quotaKey` being set, so failures before the reservation
-  // simply skip the refund.
+  // Refunds require an admitted reservation, so earlier failures skip them.
   let quotaKey;
+  let quotaReservation;
   let estimatedInputTokens = 0;
   const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
   let quotaRefundCap = 0;
@@ -2084,14 +2087,18 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   // accounting backwards, the refund counter is capped per window (issue #77,
   // #112). Declared in the handler scope, not inside the try: the catch is a
   // sibling of its try, not a child of it.
-  const refundReservation = (error) => {
-    if (!quotaKey || !shouldRefund(error)) return;
+  const refundReservation = async (error) => {
+    if (!quotaReservation?.allowed || !shouldRefund(error)) return;
     try {
-      const refund = sessionQuota.refund(quotaKey, {
+      const refundArgs = {
         requestCost: 1,
         tokenCost: estimatedInputTokens,
-        refundCap: quotaRefundCap
-      });
+        refundCap: quotaRefundCap,
+        windowSeconds: quotaWindowSeconds
+      };
+      const refund = quotaReservation.distributed
+        ? await refundSessionQuota(quotaKey, refundArgs)
+        : sessionQuota.refund(quotaKey, refundArgs);
       if (!refund.refunded) {
         log.warn('quota.refund_declined', {
           quotaKey: safeToken(quotaKey),
@@ -2241,14 +2248,23 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // both caps are checked before either counter moves, so concurrent
     // requests cannot all pass a read-then-write limit check. The reservation
     // happens after the cache-miss check, so cached answers still cost nothing.
-    const reserved = sessionQuota.reserve(quotaKey, {
+    const quotaArgs = {
       requestCost: 1,
       tokenCost: estimatedInputTokens,
       requestLimit: limits.requests,
       tokenLimit: limits.tokens,
       windowSeconds: quotaWindowSeconds
-    });
+    };
+    const reserved = await reserveSessionQuota(quotaKey, quotaArgs)
+      ?? sessionQuota.reserve(quotaKey, quotaArgs);
+    quotaReservation = reserved;
     if (!reserved.allowed) {
+      if (reserved.reason === 'unavailable') {
+        return res.status(503).json({
+          error: 'Quota service temporarily unavailable. Please try again later.',
+          code: 'QUOTA_UNAVAILABLE'
+        });
+      }
       const tokenExhausted = reserved.reason === 'tokens';
       log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
@@ -2321,9 +2337,12 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
-    sessionQuota.commit(quotaKey, {
-      tokenDelta: actualInputTokens + outputTokens - estimatedInputTokens
-    });
+    const tokenDelta = actualInputTokens + outputTokens - estimatedInputTokens;
+    if (reserved.distributed) {
+      await commitSessionTokens(quotaKey, { tokenDelta, windowSeconds: quotaWindowSeconds });
+    } else {
+      sessionQuota.commit(quotaKey, { tokenDelta });
+    }
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2361,7 +2380,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       // The provider call succeeded, so the reservation is live in the quota
       // window — refund it exactly as an adapter-thrown INVALID_AI_RESPONSE
       // would be refunded via the catch (issue #112).
-      refundReservation(Object.assign(new Error(reportValidation.reason), { code: 'INVALID_AI_RESPONSE' }));
+      await refundReservation(Object.assign(new Error(reportValidation.reason), { code: 'INVALID_AI_RESPONSE' }));
       return res.status(502).json({
         error: 'AI response failed validation',
         code: 'INVALID_AI_RESPONSE'
@@ -2418,7 +2437,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // Refund the reservation only for failure classes that are not the
     // client's fault (provider outage, transport stall, invalid upstream
     // payload) — see refundReservation above (issue #77, #112).
-    refundReservation(error);
+    await refundReservation(error);
     log.error('ai.error', {
       code: error.code,
       status: error.status,

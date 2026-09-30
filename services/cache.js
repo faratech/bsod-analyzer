@@ -87,6 +87,35 @@ export function isRedisConfigEnabled({ env = process.env, configPath = REDIS_CON
   }
 }
 
+// Session cookies are valid on every application instance, so quota counters
+// must be checked and incremented atomically in the shared store when present.
+const QUOTA_RESERVE_SCRIPT = `
+local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
+local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
+local add_req = tonumber(ARGV[1])
+local add_tok = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[5])
+if cur_req + add_req > tonumber(ARGV[3]) then return {0, 1, cur_req, cur_tok, redis.call('TTL', KEYS[1])} end
+if cur_tok + add_tok > tonumber(ARGV[4]) then return {0, 2, cur_req, cur_tok, redis.call('TTL', KEYS[2])} end
+redis.call('INCRBY', KEYS[1], add_req)
+redis.call('INCRBY', KEYS[2], add_tok)
+if redis.call('TTL', KEYS[1]) < 1 then redis.call('EXPIRE', KEYS[1], ttl) end
+if redis.call('TTL', KEYS[2]) < 1 then redis.call('EXPIRE', KEYS[2], ttl) end
+return {1, 0, cur_req + add_req, cur_tok + add_tok, redis.call('TTL', KEYS[1])}
+`;
+
+const QUOTA_REFUND_SCRIPT = `
+local refunded = tonumber(redis.call('GET', KEYS[3]) or '0')
+if refunded >= tonumber(ARGV[3]) then return {0, refunded} end
+redis.call('INCRBY', KEYS[3], 1)
+local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
+local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
+if cur_req > 0 then redis.call('INCRBY', KEYS[1], -math.min(cur_req, tonumber(ARGV[1]))) end
+if cur_tok > 0 then redis.call('INCRBY', KEYS[2], -math.min(cur_tok, tonumber(ARGV[2]))) end
+for i = 1, 3 do if redis.call('TTL', KEYS[i]) < 1 then redis.call('EXPIRE', KEYS[i], ARGV[4]) end end
+return {1, refunded + 1}
+`;
+
 // Runtime breaker: once Upstash fails in a way that will not clear on its own
 // (plan/quota limit, rejected credentials) or keeps failing, stop using it —
 // every cache helper then answers as a miss instead of failing requests — and
@@ -411,6 +440,75 @@ export async function checkCacheConnection() {
 /**
  * Generate an xxhash64 hash of content for cache keys.
  */
+function quotaCounterKeys(quotaKey) {
+  return {
+    requests: `runtime:quota:req:${quotaKey}`,
+    tokens: `runtime:quota:tok:${quotaKey}`,
+    refunds: `runtime:quota:ref:${quotaKey}`
+  };
+}
+
+// A null result means Redis was intentionally disabled and permits the
+// existing per-instance fallback. Redis errors instead fail closed, avoiding
+// a fresh local allowance after shared quota has already been consumed.
+export async function reserveSessionQuota(quotaKey, {
+  requestCost = 1, tokenCost, requestLimit, tokenLimit, windowSeconds
+}) {
+  if (!redis) return null;
+  if (!isCacheEnabled()) return { allowed: false, reason: 'unavailable', distributed: true };
+  try {
+    const keys = quotaCounterKeys(quotaKey);
+    const raw = await redis.eval(QUOTA_RESERVE_SCRIPT, [keys.requests, keys.tokens], [
+      String(requestCost), String(Math.max(0, Math.ceil(tokenCost))),
+      String(Math.max(0, Math.ceil(requestLimit))), String(Math.max(0, Math.ceil(tokenLimit))),
+      String(Math.max(1, Math.ceil(windowSeconds)))
+    ]);
+    const [allowed, reason, requests, tokens, ttl] = raw.map(Number);
+    return {
+      allowed: allowed === 1,
+      reason: allowed === 1 ? undefined : (reason === 1 ? 'requests' : 'tokens'),
+      requests, tokens,
+      resetTime: new Date(Date.now() + (ttl > 0 ? ttl : windowSeconds) * 1000),
+      distributed: true
+    };
+  } catch (error) {
+    console.error('[Cache] Error reserving session quota:', error.message);
+    return { allowed: false, reason: 'unavailable', distributed: true };
+  }
+}
+
+export async function commitSessionTokens(quotaKey, { tokenDelta, windowSeconds }) {
+  if (!redis) return false;
+  try {
+    const key = quotaCounterKeys(quotaKey).tokens;
+    await redis.incrby(key, Math.ceil(Number(tokenDelta) || 0));
+    if (Number(await redis.ttl(key)) < 1) await redis.expire(key, windowSeconds);
+    return true;
+  } catch (error) {
+    console.error('[Cache] Error committing session tokens:', error.message);
+    return false;
+  }
+}
+
+export async function refundSessionQuota(quotaKey, {
+  requestCost = 1, tokenCost, windowSeconds, refundCap
+}) {
+  if (!redis) return { refunded: false, refundsUsed: -1, refundCap };
+  try {
+    const keys = quotaCounterKeys(quotaKey);
+    const [refunded, refundsUsed] = await redis.eval(
+      QUOTA_REFUND_SCRIPT,
+      [keys.requests, keys.tokens, keys.refunds],
+      [String(requestCost), String(Math.max(0, Math.ceil(tokenCost))),
+        String(Math.max(0, Math.ceil(refundCap))), String(Math.max(1, Math.ceil(windowSeconds)))]
+    );
+    return { refunded: Number(refunded) === 1, refundsUsed: Number(refundsUsed), refundCap };
+  } catch (error) {
+    console.error('[Cache] Error refunding session quota:', error.message);
+    return { refunded: false, refundsUsed: -1, refundCap };
+  }
+}
+
 export function hashContent(content) {
   if (!hasher) {
     throw new Error('XXHash not initialized');

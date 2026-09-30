@@ -184,4 +184,64 @@ test('generateContent refunds the quota on the invalid-report early return', () 
   const refundIndex = statements.findIndex(s => callsRefund(s));
   assert.ok(refundIndex >= 0 && (returnIndex === -1 || refundIndex < returnIndex),
     'refundReservation must run before the early return');
+
+  walk(handler.body, (node, parent) => {
+    if (node.type === 'CallExpression' && node.callee?.name === 'refundReservation') {
+      assert.equal(parent?.type, 'AwaitExpression',
+        'finish asynchronous refunds before sending the failure response');
+    }
+  });
+});
+
+test('generateContent refunds the admitting backend and waits for shared accounting', async () => {
+  const source = readFileSync(SERVER, 'utf8');
+  const handler = findRouteHandler(acorn.parse(source, {
+    ecmaVersion: 'latest', sourceType: 'module'
+  }), '/api/gemini/generateContent');
+  const declaration = handler.body.body
+    .flatMap(statement => statement.type === 'VariableDeclaration' ? statement.declarations : [])
+    .find(node => node.id.name === 'refundReservation');
+  assert.ok(declaration, 'the shared failure cleanup must be found');
+  const makeRefund = new Function('quotaReservation', 'sessionQuota', 'refundSessionQuota', `
+    const quotaKey = 'session-a';
+    const estimatedInputTokens = 10;
+    const quotaRefundCap = 3;
+    const quotaWindowSeconds = 3600;
+    const shouldRefund = () => true;
+    const log = { warn() {} };
+    const safeToken = value => value;
+    const classifyQuotaFailure = () => 'upstream';
+    return (${source.slice(declaration.init.start, declaration.init.end)});
+  `);
+  const calls = [];
+  const localStore = { refund(key, args) {
+    calls.push(['local', key, args]);
+    return { refunded: true };
+  } };
+  let finishShared;
+  const sharedRefund = (key, args) => {
+    calls.push(['shared', key, args]);
+    return new Promise(resolve => { finishShared = resolve; });
+  };
+  const error = new Error('invalid upstream report');
+  let completed = false;
+  const pending = makeRefund({ allowed: true, distributed: true }, localStore, sharedRefund)(error)
+    .then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false, 'shared refunds must finish before cleanup resolves');
+  assert.deepEqual(calls, [['shared', 'session-a', {
+    requestCost: 1, tokenCost: 10, refundCap: 3, windowSeconds: 3600
+  }]]);
+  finishShared({ refunded: true });
+  await pending;
+
+  calls.length = 0;
+  await makeRefund({ allowed: true }, localStore, sharedRefund)(error);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'local');
+
+  calls.length = 0;
+  await makeRefund(undefined, localStore, sharedRefund)(error);
+  await makeRefund({ allowed: false, distributed: true }, localStore, sharedRefund)(error);
+  assert.deepEqual(calls, [], 'failures without an admitted reservation must not decrement quotas');
 });
