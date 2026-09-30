@@ -1,10 +1,33 @@
 import net from 'net';
 
+const IPV6_RATE_LIMIT_PREFIX_BITS = 64;
+const IPV6_HEXTET_COUNT = 8;
+const IPV6_PREFIX_HEXTET_COUNT = IPV6_RATE_LIMIT_PREFIX_BITS / 16;
+
+function expandIpv6Hextets(ip) {
+  const [head = '', tail = ''] = ip.toLowerCase().split('::');
+  const headParts = head.split(':').filter(Boolean);
+  const tailParts = tail.split(':').filter(Boolean);
+  const missing = IPV6_HEXTET_COUNT - headParts.length - tailParts.length;
+  if (missing < 0) return undefined;
+  return [
+    ...headParts,
+    ...Array(missing).fill('0'),
+    ...tailParts
+  ].map(part => Number.parseInt(part, 16).toString(16));
+}
+
+function normalizeIpv6ForRateLimit(ip) {
+  const hextets = expandIpv6Hextets(ip);
+  if (!hextets) return ip.toLowerCase();
+  return `${hextets.slice(0, IPV6_PREFIX_HEXTET_COUNT).join(':')}::/${IPV6_RATE_LIMIT_PREFIX_BITS}`;
+}
+
 export function normalizeRateLimitIp(value) {
   const ip = String(value || 'unknown').split(',')[0].trim();
   const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
   if (net.isIPv4(normalized)) return normalized;
-  if (net.isIPv6(normalized)) return normalized.toLowerCase();
+  if (net.isIPv6(normalized)) return normalizeIpv6ForRateLimit(normalized);
   return normalized || 'unknown';
 }
 
