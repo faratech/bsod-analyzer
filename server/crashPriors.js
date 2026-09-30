@@ -73,10 +73,14 @@ export function extractPromptSignal(promptText) {
   let code = null;
   let image = null;
 
-  const fenced = tail.match(/```json\s*([\s\S]*?)```/);
-  if (fenced) {
+  // Use delimiter searches rather than a regex whose whitespace and content
+  // repetitions can overlap and backtrack quadratically on a missing fence.
+  const fenceStart = tail.indexOf('```json');
+  const jsonStart = fenceStart < 0 ? -1 : fenceStart + '```json'.length;
+  const fenceEnd = jsonStart < 0 ? -1 : tail.indexOf('```', jsonStart);
+  if (fenceEnd >= 0) {
     try {
-      const signal = JSON.parse(fenced[1]);
+      const signal = JSON.parse(tail.slice(jsonStart, fenceEnd));
       code = signal?.bugcheck?.code ?? null;
       image = signal?.crash?.imageName ?? signal?.crash?.moduleName ?? null;
     } catch { /* fall through to regexes */ }
