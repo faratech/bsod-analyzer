@@ -59,3 +59,10 @@ test('extractPromptSignal reads the structured JSON of a web WinDBG prompt, then
   assert.deepEqual(extractPromptSignal(raw), { bugcheckCode: '0x116', imageName: 'nvlddmkm.sys' });
   assert.deepEqual(extractPromptSignal('no evidence here'), { bugcheckCode: null, imageName: null });
 });
+
+test('extractPromptSignal handles a large unterminated JSON fence in linear time', () => {
+  const prompt = `${WINDBG_OUTPUT_MARKER}\n\`\`\`json${' '.repeat(240_000)}x`;
+  const started = performance.now();
+  assert.deepEqual(extractPromptSignal(prompt), { bugcheckCode: null, imageName: null });
+  assert.ok(performance.now() - started < 500, 'unterminated fence should not cause excessive backtracking');
+});
