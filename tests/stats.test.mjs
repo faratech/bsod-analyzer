@@ -43,6 +43,9 @@ test('normalizers bound cardinality', () => {
   assert.equal(normalizeModuleKey('bad module name!'), undefined);
   assert.equal(normalizeOsVersion('10.0.26100.1'), '10.0.26100');
   assert.equal(normalizeOsVersion('Windows NT Kernel Version 10.0.19045.123'), '10.0.19045');
+  assert.equal(normalizeOsVersion('Windows 11 24H2 (26100.2033)'), '10.0.26100');
+  assert.equal(normalizeOsVersion('26100.2033'), '10.0.26100');
+  assert.equal(normalizeOsVersion('Windows 7 (7601.24545)'), '6.1.7601');
   assert.equal(normalizeDumpType('Kernel'), 'kernel');
   assert.equal(normalizeDumpType('zip'), undefined);
 });
@@ -83,6 +86,30 @@ test('extractStatsFacts reads ai-fallback report + prompt dump type', () => {
   assert.equal(facts.osVersion, '10.0.19045');
 });
 
+test('extractStatsFacts falls through an unparseable os_version candidate', () => {
+  // The server signal's os_version is banner-shaped (no dotted X.Y): the old
+  // single normalizeOsVersion(A || B || C) call let the truthy-but-unparseable
+  // candidate veto the OS_VERSION fallback that would have parsed (issue #115).
+  const facts = extractStatsFacts({
+    source: 'windbg',
+    structured: {
+      target: { os_version: 'Windows 11 Kernel Version 26100 MP (16 procs) Free x64' }
+    },
+    analysisText: 'OS_VERSION: 10.0.26100.1'
+  });
+  assert.equal(facts.osVersion, '10.0.26100');
+});
+
+test('extractStatsFacts keys the build-form os_version like the OS_VERSION path', () => {
+  const facts = extractStatsFacts({
+    source: 'windbg',
+    structured: {
+      target: { os_version: 'Windows 11 24H2 (26100.2033)' }
+    }
+  });
+  assert.equal(facts.osVersion, '10.0.26100');
+});
+
 test('extractStatsFacts rejects unknown sources and bad hashes', () => {
   assert.equal(extractStatsFacts({ source: 'nope' }), null);
   const noHash = extractStatsFacts({ source: 'windbg', fileHash: '../../etc/passwd' });
@@ -103,7 +130,7 @@ test('buildSnapshot zero-fills window and folds Other', () => {
     sources: { windbg: 30, 'ai-fallback': 12 },
     dumpTypes: { kernel: 20, minidump: 22 },
     osVersions: { '10.0.26100': 25, '10.0.19045': 17 },
-    stopCodes: { '0x1A': '10', '0x7E': 8, '0x50': 2 },
+    stopCodes: { '0x1A': '10', '0x7E': 8, '0x50': 2, '0x999': 1 },
     stopCodeLabels: { '0x1A': 'MEMORY_MANAGEMENT' },
     buckets: [['AV_nt!ExFreePool', 9], ['ZEROED', 2]],
     modules: [['nvlddmkm.sys', 7], ['ntfs.sys', 3]],
@@ -127,9 +154,14 @@ test('buildSnapshot zero-fills window and folds Other', () => {
   assert.equal(snapshot.topStopCodes.items[0].value, '0x1A');
   assert.equal(snapshot.topStopCodes.items[0].label, 'MEMORY_MANAGEMENT');
   assert.match(snapshot.topStopCodes.items[0].description, /memory management corruption/i);
-  // Unknown code with no label still gets a generic-but-useful line or none.
-  assert.equal(typeof snapshot.topStopCodes.items[2].description === 'string' ||
-    snapshot.topStopCodes.items[2].description === undefined, true);
+  // Known codes always get a non-empty description; a code unknown to the
+  // knowledge base with no label gets undefined — never null and never the
+  // attacker-supplied label echoed back.
+  assert.equal(typeof snapshot.topStopCodes.items[2].description, 'string');
+  assert.ok(snapshot.topStopCodes.items[2].description.length > 0);
+  assert.equal(snapshot.topStopCodes.items[2].label, undefined);
+  assert.equal(snapshot.topStopCodes.items[3].value, '0x999');
+  assert.equal(snapshot.topStopCodes.items[3].description, undefined);
   assert.equal(snapshot.topFailureBuckets.items[0].value, 'AV_nt!ExFreePool');
   assert.equal(snapshot.sources.total, 42);
 });

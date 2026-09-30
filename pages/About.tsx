@@ -1,5 +1,5 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import PageLayout from '../components/PageLayout';
 import StructuredData from '../components/StructuredData';
 import { MultiplexAd, HorizontalAd, InArticleAd, SquareAd } from '../components/AdSense';
@@ -10,7 +10,28 @@ import { BSOD_FORUM_URL } from '../shared/forumLinks.js';
 import BsodAnalyzerFlow from '../components/flow/BsodAnalyzerFlow';
 
 const About: React.FC = () => {
+    const location = useLocation();
     const activeSection = useActiveSection('.about-section');
+
+    // Deep links like /about#how-it-works (linked from Home): the router shell
+    // scrolls to top on every pathname change/mount, so the hash must be
+    // honored here, after this lazy chunk commits. getElementById cannot throw
+    // on metacharacters the way querySelector('#…') does, and the percent-decode
+    // needs its own guard (same pattern as Documentation).
+    useEffect(() => {
+        if (location.hash && location.hash.length > 1) {
+            let id: string;
+            try {
+                id = decodeURIComponent(location.hash.slice(1));
+            } catch {
+                return;
+            }
+            const element = document.getElementById(id);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+    }, [location]);
 
     const aboutStructuredData = {
         "@context": "https://schema.org",

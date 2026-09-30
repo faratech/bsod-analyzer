@@ -12,7 +12,7 @@ import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
 import { analyzeWithWinDBG, getCachedAnalysisByHash, getFileHandle, WinDBGAnalysisResult } from './windbgService';
-import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, wrapWithEvidence } from '../shared/promptTemplates.js';
+import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE, wrapWithEvidence } from '../shared/promptTemplates.js';
 import {
     mapStructuredSignalToReport,
     mergeReportWithWinDbgFields,
@@ -950,7 +950,7 @@ async function generateReportFromWinDBG(
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-${structuredSignal ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
+${structuredSignal ? WINDBG_STRUCTURED_NOTE : WINDBG_RAW_NOTE}
 \`\`\`${structuredSignal ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
@@ -1185,7 +1185,7 @@ export const analyzeDumpFiles = async (
                     if (onProgress) {
                         onProgress(stage, message);
                     }
-                }, onUploadProgress);
+                }, onUploadProgress, options?.signal);
 
                 if (windbgResult.success) {
                     console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
@@ -1274,6 +1274,12 @@ export const analyzeDumpFiles = async (
                     onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using local analysis (results may be less detailed)');
                 }
             }
+
+            // A cancelled run must not continue into the local-parse/AI fallback:
+            // the WinDBG leg aborts promptly now (issue #121), and this keeps the
+            // rest of the pipeline from doing zombie work too. It sits after the
+            // try/catch so the cancellation is not mistaken for a WinDBG failure.
+            throwIfAborted();
 
             if (useLightweightAiFailover) {
                 const report = await generateLargeDumpAiFailoverReport(dumpFile, fileLabel, windbgFailure);

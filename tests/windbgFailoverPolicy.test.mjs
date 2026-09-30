@@ -33,9 +33,18 @@ test('small dump failover policy keeps full local analysis available', () => {
   ]);
 });
 
-test('WinDBG-down fallback is not rejected solely because the dump is large', async () => {
+test('WinDBG-down failover wiring: both failure branches route large dumps to the lightweight AI fallback', async () => {
+  // Wiring guard, not a behavioral test: the policy itself is unit-tested above
+  // against shared/windbgFailoverPolicy.js. Here we pin that the pipeline still
+  // calls the gate and the failover report on BOTH WinDBG failure branches
+  // (returned failure and thrown error), so a large dump can never be rejected
+  // outright just because WinDBG is down — the failure mode of the legacy
+  // "WinDBG analysis is required for large dump files" rejection.
   const source = await fs.readFile(new URL('../services/geminiProxy.ts', import.meta.url), 'utf8');
 
-  assert.match(source, /generateLargeDumpAiFailoverReport/);
+  assert.match(source, /windbgResult = await analyzeWithWinDBG\(/);
+  const gates = [...source.matchAll(/shouldUseLightweightAiFailover\(dumpFile\.file\.size, FULL_LOCAL_ANALYSIS_LIMIT\)/g)];
+  assert.equal(gates.length, 2);
+  assert.match(source, /generateLargeDumpAiFailoverReport\(dumpFile, fileLabel, windbgFailure\)/);
   assert.doesNotMatch(source, /WinDBG analysis is required for large dump files/);
 });

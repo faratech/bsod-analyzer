@@ -1583,6 +1583,16 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Apply rate limiting to API endpoints. This MUST run before the register*Route
+// calls below: the compat layer snapshots each route's middleware stack at
+// registration time (server/fastifyCompat.js registerRoute), so a later
+// app.use('/api/', …) only reaches routes registered afterwards and the 404
+// fallback — attaching it here left /api/forum/related (registered below)
+// outside the general per-IP API budget. /health, /api/stats and
+// /api/stats/insight are exempted in the limiter's skip list by design, and
+// every other route in this file is registered after this line.
+app.use('/api/', apiLimiter);
+
 // Crash-statistics aggregation (public GET /api/stats). Each completed analysis
 // logs one `stats.analysis` line (see recordStats); the Cloud Logging sink
 // `bsod-stats-events` streams them into BigQuery, where the snapshot is
@@ -1600,10 +1610,11 @@ const statsStore = createStatsStore({
 registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
 
 // AI narrative over the aggregates (OpenRouter free tier, heavily cached).
+// The service resolves its model list itself (OPENROUTER_STATS_MODEL, then
+// OPENROUTER_FREE_MODEL) — it takes a `models` option, never `model`.
 const statsInsightService = createStatsInsightService({
   isEnabled: () => STATS_ENABLED && process.env.STATS_INSIGHT_ENABLED !== 'false',
-  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot(),
-  model: process.env.OPENROUTER_FREE_MODEL
+  getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot()
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
@@ -1697,8 +1708,6 @@ function recordStats(input) {
   if (facts) statsStore.recordAnalysis(facts);
 }
 
-// Apply rate limiting to API endpoints
-app.use('/api/', apiLimiter);
 
 // Endpoint to verify Turnstile and create session
 app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (req, res) => {
@@ -2065,13 +2074,43 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   // a child of it. Declaring them inside the try made every failure path throw
   // `ReferenceError: quotaKey is not defined` before it could send an error
   // response — which both swallowed the real error and made refunds impossible.
-  // The catch guards on `quotaKey` being set, so failures before the reservation
-  // simply skip the refund.
+  // Refunds require an admitted reservation, so earlier failures skip them.
   let quotaKey;
   let quotaReservation;
   let estimatedInputTokens = 0;
   const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
   let quotaRefundCap = 0;
+  // Shared by the catch below and the invalid-report early return: refunds
+  // the reservation for failure classes that are not the client's fault
+  // (provider outage, transport stall, invalid upstream payload) so outages
+  // do not burn tier quota — and so failures cannot be farmed to shift
+  // accounting backwards, the refund counter is capped per window (issue #77,
+  // #112). Declared in the handler scope, not inside the try: the catch is a
+  // sibling of its try, not a child of it.
+  const refundReservation = async (error) => {
+    if (!quotaReservation?.allowed || !shouldRefund(error)) return;
+    try {
+      const refundArgs = {
+        requestCost: 1,
+        tokenCost: estimatedInputTokens,
+        refundCap: quotaRefundCap,
+        windowSeconds: quotaWindowSeconds
+      };
+      const refund = quotaReservation.distributed
+        ? await refundSessionQuota(quotaKey, refundArgs)
+        : sessionQuota.refund(quotaKey, refundArgs);
+      if (!refund.refunded) {
+        log.warn('quota.refund_declined', {
+          quotaKey: safeToken(quotaKey),
+          refundsUsed: refund.refundsUsed,
+          refundCap: refund.refundCap,
+          failureClass: classifyQuotaFailure(error)
+        });
+      }
+    } catch (refundError) {
+      log.warn('ai.quota_refund_failed', { message: refundError.message });
+    }
+  };
   try {
     const modelName = getPrimaryModel();
     const provider = getAIProviderForModel(modelName);
@@ -2338,6 +2377,10 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         finishReason,
         responsePreview: responseText.substring(0, 200)
       });
+      // The provider call succeeded, so the reservation is live in the quota
+      // window — refund it exactly as an adapter-thrown INVALID_AI_RESPONSE
+      // would be refunded via the catch (issue #112).
+      await refundReservation(Object.assign(new Error(reportValidation.reason), { code: 'INVALID_AI_RESPONSE' }));
       return res.status(502).json({
         error: 'AI response failed validation',
         code: 'INVALID_AI_RESPONSE'
@@ -2352,10 +2395,13 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       text: validatedText
     };
 
-    // Cache only a validated analysis response.
+    // Cache only a validated analysis response. The cache is keyed by the
+    // REQUESTED model — readers look the primary model up (issue #120);
+    // response.cacheModel names the serving leg and stays corpus/log
+    // provenance, never the cache key.
     await setCachedAnalysis(cacheKey, {
       aiReport: responseData,
-      aiModel: response.cacheModel || modelName
+      aiModel: modelName
     });
     recordAiReport({
       origin: 'web',
@@ -2390,32 +2436,8 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   } catch (error) {
     // Refund the reservation only for failure classes that are not the
     // client's fault (provider outage, transport stall, invalid upstream
-    // payload) so outages do not burn tier quota — and so failures cannot be
-    // farmed to shift accounting backwards, the refund counter is capped per
-    // window (issue #77).
-    if (quotaKey && shouldRefund(error)) {
-      try {
-        const refundArgs = {
-          requestCost: 1,
-          tokenCost: estimatedInputTokens,
-          refundCap: quotaRefundCap,
-          windowSeconds: quotaWindowSeconds
-        };
-        const refund = quotaReservation?.distributed
-          ? await refundSessionQuota(quotaKey, refundArgs)
-          : sessionQuota.refund(quotaKey, refundArgs);
-        if (!refund.refunded) {
-          log.warn('quota.refund_declined', {
-            quotaKey: safeToken(quotaKey),
-            refundsUsed: refund.refundsUsed,
-            refundCap: refund.refundCap,
-            failureClass: classifyQuotaFailure(error)
-          });
-        }
-      } catch (refundError) {
-        log.warn('ai.quota_refund_failed', { message: refundError.message });
-      }
-    }
+    // payload) — see refundReservation above (issue #77, #112).
+    await refundReservation(error);
     log.error('ai.error', {
       code: error.code,
       status: error.status,
@@ -3139,10 +3161,12 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
     // Cache the compact AI response; deterministic WinDBG fields are rebuilt from
     // the separately cached raw/structured evidence on every return path. The
-    // provenance stamp marks this as WinDBG-derived analysis (issue #78).
+    // provenance stamp marks this as WinDBG-derived analysis (issue #78). The
+    // entry is keyed by the REQUESTED model — readers look the primary model up
+    // (issue #120); cacheModel stays corpus/log provenance.
     await setCachedAnalysis(cacheKey, {
       aiReport,
-      aiModel: response.cacheModel || modelName,
+      aiModel: modelName,
       windbgDerived: true
     });
     crashSignal.record(report, fileHash);   // durable WF capture (best-effort, env-gated)

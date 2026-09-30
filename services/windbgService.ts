@@ -266,12 +266,23 @@ export async function getCachedAnalysisByHash(hash: string): Promise<CachedAnaly
 }
 
 
+// Cancellation marker for a superseded analysis run. Callers (the per-run
+// AbortController in useAnalysis) drop stale results via the runId guard, so
+// this only needs to stop the work, not surface an error banner.
+function createCancelledError(): Error & { code: string } {
+    const error = new Error('Analysis cancelled') as Error & { code: string };
+    error.name = 'AbortError';
+    error.code = 'ABORTED';
+    return error;
+}
+
 /**
  * Upload a .dmp file to the WinDBG server via our backend
  */
 export async function uploadToWinDBG(
     file: File,
-    onUploadProgress?: (percent: number) => void
+    onUploadProgress?: (percent: number) => void,
+    signal?: AbortSignal
 ): Promise<WinDBGUploadResponse> {
     // Use file hash as UID for deterministic caching
     const uid = await generateFileHash(file);
@@ -292,6 +303,14 @@ export async function uploadToWinDBG(
         }
         xhr.timeout = UPLOAD_TIMEOUT_MS;
 
+        // Cancel the request the moment the owning analysis run is cancelled:
+        // a zombie upload holds a backend concurrency slot (and a WinDBG server
+        // job) for up to UPLOAD_TIMEOUT_MS, which starves legitimate retries.
+        const onAbort = () => {
+            xhr.abort();
+            reject(createCancelledError());
+        };
+
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 onUploadProgress?.(Math.round((e.loaded / e.total) * 100));
@@ -299,6 +318,7 @@ export async function uploadToWinDBG(
         };
 
         xhr.onload = () => {
+            signal?.removeEventListener('abort', onAbort);
             try {
                 const data: WinDBGUploadResponse = JSON.parse(xhr.responseText);
                 if (xhr.status === 401) {
@@ -310,9 +330,24 @@ export async function uploadToWinDBG(
             }
         };
 
-        xhr.onerror = () => reject(new Error('Upload network error'));
-        xhr.ontimeout = () => reject(new Error('Upload timed out'));
+        xhr.onerror = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(new Error('Upload network error'));
+        };
+        xhr.ontimeout = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(new Error('Upload timed out'));
+        };
+        xhr.onabort = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(createCancelledError());
+        };
 
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
         xhr.send(formData);
     });
 
@@ -398,7 +433,8 @@ export async function downloadAnalysis(uid: string): Promise<{
 export async function analyzeWithWinDBG(
     file: File,
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'complete', message: string) => void,
-    onUploadProgress?: (percent: number) => void
+    onUploadProgress?: (percent: number) => void,
+    signal?: AbortSignal
 ): Promise<WinDBGAnalysisResult> {
     // Hard timeout wrapper - WINDBG_TOTAL_TIMEOUT_MS max for entire WinDBG process.
     // The handle is cleared once the race settles, and timedOut lets the
@@ -419,7 +455,7 @@ export async function analyzeWithWinDBG(
         let uploadResult: WinDBGUploadResponse | null = null;
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                uploadResult = await uploadToWinDBG(file, onUploadProgress);
+                uploadResult = await uploadToWinDBG(file, onUploadProgress, signal);
                 break;
             } catch (error) {
                 if (!isBusyError(error) || attempt === 2) {
@@ -428,6 +464,9 @@ export async function analyzeWithWinDBG(
                 const delayMs = 1500 * (attempt + 1);
                 onProgress?.('queued', `WinDBG server is busy, retrying upload in ${Math.round(delayMs / 1000)}s...`);
                 await sleep(delayMs);
+                if (signal?.aborted) {
+                    throw createCancelledError();
+                }
             }
         }
 
@@ -467,6 +506,12 @@ export async function analyzeWithWinDBG(
             attempts++;
             if (timedOut) {
                 throw new Error('WinDBG analysis timed out - stopping background polling');
+            }
+            // Cancelled runs stop cooperatively at the next poll boundary (the
+            // poll-interval sleep is not abort-woken; ≤POLL_INTERVAL_MS of zombie
+            // polling is acceptable, minutes of it is not).
+            if (signal?.aborted) {
+                throw createCancelledError();
             }
             console.log(`[WinDBG] Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
 
@@ -546,6 +591,9 @@ export async function analyzeWithWinDBG(
         // Stage 3: Download the analysis
         if (timedOut) {
             throw new Error('WinDBG analysis timed out - stopping background download');
+        }
+        if (signal?.aborted) {
+            throw createCancelledError();
         }
         onProgress?.('downloading', 'Downloading WinDBG analysis...');
         const downloadedAnalysis = await downloadAnalysis(uid);

@@ -1,6 +1,6 @@
 // Pure AI-report parsing/validation shared by server.js and offline scripts
 // (scripts/regenerate-ai-reports.mjs). No I/O.
-import { WINDBG_OUTPUT_MARKER } from '../shared/promptTemplates.js';
+import { WINDBG_OUTPUT_MARKER, WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE } from '../shared/promptTemplates.js';
 
 // Per-dump tail of the WinDBG prompt (after the shared, cache-stable
 // WINDBG_PREFIX): file info plus the structured signal or a raw excerpt.
@@ -11,7 +11,7 @@ export function buildWinDbgEvidence({ fileName, dumpType, fileSize, analysisForP
 - File Size: ${fileSize} bytes
 
 ${WINDBG_OUTPUT_MARKER}
-${structured ? 'Relevant structured JSON extracted from the WinDBG API result. Full stdout is intentionally omitted.' : 'Relevant WinDBG crash excerpt from the raw output.'}
+${structured ? WINDBG_STRUCTURED_NOTE : WINDBG_RAW_NOTE}
 \`\`\`${structured ? 'json' : ''}
 ${analysisForPrompt}
 \`\`\``;
@@ -20,7 +20,35 @@ ${analysisForPrompt}
 // verbatim (the client forwards analysisSignalText unchanged). Only such a
 // prompt's report may share the per-file cache entry: otherwise one uploader
 // could plant a report written from invented evidence for everyone else.
+//
+// The check is structural, not a substring search. The tail after
+// WINDBG_OUTPUT_MARKER must be exactly: one builder note line, then the fenced
+// block that IS the signal, byte-for-byte, closing the prompt. Anything else —
+// appended "debugger correction" prose after the block, a fabricated block
+// with the real signal elsewhere, or steering prose between the marker and the
+// fence — fails the gate and falls back to the attacker-private prompt-keyed
+// entry (issue #113).
 export function promptCarriesWinDbgSignal(promptText, analysisSignalText) {
+  const signal = typeof analysisSignalText === 'string' ? analysisSignalText.trim() : '';
+  if (!signal) return false;
+  const text = String(promptText || '');
+  const at = text.indexOf(WINDBG_OUTPUT_MARKER);
+  if (at < 0) return false;
+  const tail = text.slice(at + WINDBG_OUTPUT_MARKER.length);
+  const notes = [WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE]
+    .map(note => note.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  const shape = new RegExp(`^\\n(?:${notes})\\n\`\`\`(?:json)?[ \\t]*\\n([\\s\\S]*)\\n\`\`\`[ \\t]*$`);
+  const block = tail.match(shape);
+  return Boolean(block) && block[1].trim() === signal;
+}
+
+// Weaker companion for callers that only need the prompt to be *consistent
+// with* the upstream evidence rather than to prove cache provenance (crash-
+// signal recording merges server-fetched evidence regardless): the signal text
+// appears somewhere in the prompt. The strict check above remains the gate for
+// sharing the per-file cache entry.
+export function promptIncludesWinDbgSignal(promptText, analysisSignalText) {
   const signal = typeof analysisSignalText === 'string' ? analysisSignalText.trim() : '';
   return Boolean(signal) && String(promptText || '').includes(signal);
 }

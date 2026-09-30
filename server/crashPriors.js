@@ -73,10 +73,14 @@ export function extractPromptSignal(promptText) {
   let code = null;
   let image = null;
 
-  const fenced = tail.match(/```json\s*([\s\S]*?)```/);
-  if (fenced) {
+  // Use delimiter searches rather than a regex whose whitespace and content
+  // repetitions can overlap and backtrack quadratically on a missing fence.
+  const fenceStart = tail.indexOf('```json');
+  const jsonStart = fenceStart < 0 ? -1 : fenceStart + '```json'.length;
+  const fenceEnd = jsonStart < 0 ? -1 : tail.indexOf('```', jsonStart);
+  if (fenceEnd >= 0) {
     try {
-      const signal = JSON.parse(fenced[1]);
+      const signal = JSON.parse(tail.slice(jsonStart, fenceEnd));
       code = signal?.bugcheck?.code ?? null;
       image = signal?.crash?.imageName ?? signal?.crash?.moduleName ?? null;
     } catch { /* fall through to regexes */ }
@@ -102,8 +106,14 @@ export function createCrashPriors({ reader, path = 'priors/000000000000.json', t
       const byKind = { bugcheck: new Map(), image: new Map() };
       for (const row of rows || []) {
         if (!row || !byKind[row.kind]) continue;
+        // Canonicalize both kinds at index time: lookups go through
+        // normalizePriorCode/normalizePriorImage, so a padded or lowercase
+        // bugcheck key from the corpus would otherwise be stored under a form
+        // no lookup can ever produce (issue #116).
+        const key = row.kind === 'image' ? normalizePriorImage(row.key) : normalizePriorCode(row.key);
+        if (!key) continue;
         try {
-          byKind[row.kind].set(row.kind === 'image' ? String(row.key).toLowerCase() : row.key, JSON.parse(row.payload));
+          byKind[row.kind].set(key, JSON.parse(row.payload));
         } catch { /* skip malformed row */ }
       }
       indexed = { rows, byKind };

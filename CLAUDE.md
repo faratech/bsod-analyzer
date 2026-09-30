@@ -78,10 +78,11 @@ npm run optimize-css     # Apply CSS purging
   `minidumpStreams.ts` cannot import from `dumpParser.ts` (circular), so gates
   that need `BUG_CHECK_CODES` live in dumpParser. Extraction must be
   evidence-based: bug check codes come from structured dump headers
-  (PAGEDU64 @0x38, PAGEDUMP @0x40) or the 0x80000003 BREAKPOINT
-  exception-stream convention — never from fixed-offset scans of minidump
-  stream metadata (those fabricated STOP codes; tests in
-  `tests/dumpParserBugCheck.test.mjs` pin this).
+  (PAGEDU64 @0x38, PAGEDUMP BugCheckCode @0x28 + ULONG params @0x2C-0x38) or
+  the 0x80000003 BREAKPOINT exception-stream convention — never from
+  fixed-offset scans of minidump stream metadata, from unanchored STOP-text
+  scans, or from KiBug-anchor heuristics on minidumps (those fabricated STOP
+  codes; tests in `tests/dumpParserBugCheck.test.mjs` pin this).
 
 ### AI provider chain (server-owned, never client-selected)
 
@@ -152,9 +153,10 @@ prerendered markup — never another route's — or hydration mismatches.
 - Each fake Redis client (e.g. in `tests/cacheIntegration.test.mjs`)
   implements only the operations the code under test uses — add any new
   command to the fake too, or calls silently return nothing instead of failing.
-- The Lua lease/job scripts in `services/cache.js` have no test fake; verify
-  script semantics by extracting them and running under `lua`/`luac` with a
-  stubbed `redis.call` (Upstash is Lua 5.1).
+- `tests/cacheZstdDictionary.test.mjs` and `tests/upstashBinary.test.mjs`
+  exercise the RESP2/binary envelope logic directly; the old Lua lease/job
+  scripts are gone with the stateless refactor, so there is nothing to run
+  under `lua`/`luac` anymore.
 
 ## Security Architecture (6 Layers)
 

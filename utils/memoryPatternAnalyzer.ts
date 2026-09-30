@@ -31,40 +31,43 @@ class MemoryPatternAnalyzer {
      */
     public analyzeCorruptionPatterns(): CorruptionIndicator[] {
         const indicators: CorruptionIndicator[] = [];
-        
-        // Check for use-after-free patterns
-        indicators.push(...this.detectUseAfterFree());
-        
-        // Check for buffer overflow patterns
-        indicators.push(...this.detectBufferOverflow());
-        
-        // Check for double-free patterns
-        indicators.push(...this.detectDoubleFree());
-        
-        // Check for uninitialized memory usage
-        indicators.push(...this.detectUninitializedMemory());
-        
-        // Check for stack corruption
-        indicators.push(...this.detectStackCorruption());
-        
-        // Check for heap corruption
-        indicators.push(...this.detectHeapCorruption());
-        
+
+        // Accumulate with iteration, not push(...spread): a spread over a huge
+        // array exceeds V8's call-argument limit and throws RangeError.
+        const detectors = [
+            this.detectUseAfterFree(),
+            this.detectBufferOverflow(),
+            this.detectDoubleFree(),
+            this.detectUninitializedMemory(),
+            this.detectStackCorruption(),
+            this.detectHeapCorruption(),
+        ];
+        for (const found of detectors) {
+            for (const indicator of found) {
+                indicators.push(indicator);
+            }
+        }
+
         return indicators;
     }
     
+    // Result cap shared by every detector: the summary only counts indicators,
+    // so a dump saturated with guard/free patterns must not allocate millions
+    // of them (the buffer-overflow scan already worked this way).
+    private static readonly MAX_INDICATORS = 100;
+
     /**
      * Detect use-after-free patterns
      */
     private detectUseAfterFree(): CorruptionIndicator[] {
         const indicators: CorruptionIndicator[] = [];
-        
+
         // Ensure buffer is properly aligned for Uint32Array
         const alignedLength = Math.floor(this.buffer.byteLength / 4) * 4;
         if (alignedLength < 4) return indicators; // Buffer too small
-        
+
         const uint32Array = new Uint32Array(this.buffer, 0, Math.floor(this.buffer.byteLength / 4));
-        
+
         // Common free patterns
         const freePatterns = [
             0xFEEEFEEE, // Freed heap memory (debug)
@@ -72,9 +75,9 @@ class MemoryPatternAnalyzer {
             0xDEADBEEF, // Common marker
             0xBAD0B0B0, // Bad memory marker
         ];
-        
+
         // Scan for freed memory patterns
-        for (let i = 0; i < uint32Array.length - 16; i++) {
+        for (let i = 0; i < uint32Array.length - 16 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS; i++) {
             const value = uint32Array[i];
             
             for (const pattern of freePatterns) {
@@ -111,7 +114,7 @@ class MemoryPatternAnalyzer {
      */
     private detectBufferOverflow(): CorruptionIndicator[] {
         const indicators: CorruptionIndicator[] = [];
-        const MAX_INDICATORS = 100;
+        const MAX_INDICATORS = MemoryPatternAnalyzer.MAX_INDICATORS;
         const STRIDE = 16;
         const uint8Array = new Uint8Array(this.buffer);
 
@@ -161,7 +164,7 @@ class MemoryPatternAnalyzer {
             { offset: 8, value: 0xFEEEFEEE },
         ];
         
-        for (let i = 0; i < this.buffer.byteLength - 32; i += 8) {
+        for (let i = 0; i < this.buffer.byteLength - 32 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS; i += 8) {
             let matches = 0;
             
             for (const sig of heapSignatures) {
@@ -203,12 +206,13 @@ class MemoryPatternAnalyzer {
             0x00000000, // Zeros (if extensive)
             0xFFFFFFFF, // All ones (if extensive)
         ];
-        
+
         for (const pattern of uninitPatterns) {
+            if (indicators.length >= MemoryPatternAnalyzer.MAX_INDICATORS) break;
             let maxConsecutive = 0;
             let currentConsecutive = 0;
             let startOffset = 0;
-            
+
             for (let i = 0; i < uint32Array.length; i++) {
                 if (uint32Array[i] === pattern) {
                     if (currentConsecutive === 0) startOffset = i * 4;
@@ -216,8 +220,12 @@ class MemoryPatternAnalyzer {
                 } else {
                     if (currentConsecutive > maxConsecutive) {
                         maxConsecutive = currentConsecutive;
-                        
-                        if (maxConsecutive >= 64) { // At least 256 bytes
+
+                        // At least 256 bytes. This push fires once per new
+                        // record run length, so a dump of many zero runs grows
+                        // the array without a cap — bound it like the other
+                        // detectors (issue #109).
+                        if (maxConsecutive >= 64 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS) {
                             indicators.push({
                                 type: 'UNINITIALIZED_MEMORY',
                                 offset: startOffset,
@@ -242,7 +250,7 @@ class MemoryPatternAnalyzer {
         
         // Look for corrupted stack frames
         // Valid stack frames should have RBP chains
-        for (let i = 0; i < this.buffer.byteLength - 32; i += 8) {
+        for (let i = 0; i < this.buffer.byteLength - 32 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS; i += 8) {
             const rbp = this.view.getBigUint64(i, true);
             const retAddr = this.view.getBigUint64(i + 8, true);
             
@@ -280,7 +288,7 @@ class MemoryPatternAnalyzer {
         
         // Look for corrupted heap headers
         // Heap blocks typically have size/flags at -8 and -4 offsets
-        for (let i = 16; i < this.buffer.byteLength - 32; i += 8) {
+        for (let i = 16; i < this.buffer.byteLength - 32 && indicators.length < MemoryPatternAnalyzer.MAX_INDICATORS; i += 8) {
             this.view.getUint32(i - 8, true);
             const size = this.view.getUint32(i - 4, true);
             

@@ -177,16 +177,36 @@ export const useAnalysis = () => {
         if (!sessionReady) {
             abortRef.current = null;
             setError('Security check expired. Please complete Turnstile again, then retry analysis.');
+            // The aborted run can no longer settle itself (every completion
+            // path is guarded by its now-stale runId), so the state it was
+            // driving must be closed out here — otherwise isAnalyzing sticks
+            // true and the interrupted files stay ANALYZING forever (issue #119).
+            setIsAnalyzing(false);
+            setProgress(null);
+            onUpdate(prevFiles =>
+                prevFiles.map(df =>
+                    df.status === FileStatus.ANALYZING
+                        ? { ...df, status: FileStatus.ERROR, error: 'Analysis cancelled' }
+                        : df
+                )
+            );
             return;
         }
 
-        // Reset file status to ANALYZING
+        // Reset file status to ANALYZING. The batch this retry just aborted
+        // was interrupted mid-flight, and its completion callbacks are now
+        // runId-stale: settle every other ANALYZING file so the new single-file
+        // run does not leave them stuck (issue #119).
         onUpdate(prevFiles =>
-            prevFiles.map(df =>
-                df.id === fileId
-                    ? { ...df, status: FileStatus.ANALYZING, error: undefined }
-                    : df
-            )
+            prevFiles.map(df => {
+                if (df.id === fileId) {
+                    return { ...df, status: FileStatus.ANALYZING, error: undefined };
+                }
+                if (df.status === FileStatus.ANALYZING) {
+                    return { ...df, status: FileStatus.ERROR, error: 'Analysis cancelled' };
+                }
+                return df;
+            })
         );
 
         setIsAnalyzing(true);

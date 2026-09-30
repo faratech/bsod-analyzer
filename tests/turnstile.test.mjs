@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTurnstileReplayGuard } from '../server/turnstile.js';
+import { createTurnstileReplayGuard, fingerprintToken } from '../server/turnstile.js';
 
 test('first reservation wins, replays are rejected (issue #72)', () => {
   const guard = createTurnstileReplayGuard();
@@ -35,8 +35,15 @@ test('release frees the reservation so a failed verification can retry', () => {
 });
 
 test('different tokens never collide and raw tokens are not retained', () => {
-  const guard = createTurnstileReplayGuard();
+  // Reservations are keyed on the 32-hex fingerprint, never the raw token
+  // (the guard's in-memory map must not hold live Turnstile tokens).
+  for (const token of ['token-e', 'x'.repeat(4096)]) {
+    assert.match(fingerprintToken(token), /^[0-9a-f]{32}$/);
+    assert.notEqual(fingerprintToken(token), token);
+  }
+  assert.notEqual(fingerprintToken('token-e'), fingerprintToken('token-f'));
 
+  const guard = createTurnstileReplayGuard();
   assert.equal(guard.reserve('token-e').reserved, true);
   assert.equal(guard.reserve('token-f').reserved, true);
   assert.equal(guard.size(), 2);

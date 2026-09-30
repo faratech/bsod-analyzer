@@ -60,11 +60,21 @@ export function normalizeLabel(label) {
 }
 
 // '10.0.26100.1' | '10.0.26100' | banner text -> first three numeric parts.
+// A dotted build.UBR pair (first part >= 9200, e.g. '26100.2033' from a
+// "Windows 11 24H2 (26100.2033)" banner) is canonicalized to the same
+// 'major.minor.build' key the OS_VERSION path records, so one Windows build
+// always lands in one bucket (issue #115).
 export function normalizeOsVersion(value) {
   const m = String(value || '').match(/\b(\d{1,5}\.\d{1,5}(?:\.\d{1,5})?)\b/);
   if (!m) return undefined;
   const parts = m[1].split('.');
-  return parts.length >= 3 ? m[1] : `${m[1]}.0`;
+  if (parts.length >= 3) return m[1];
+  const lead = Number(parts[0]);
+  if (lead >= 10240) return `10.0.${parts[0]}`;
+  if (lead >= 9600) return `6.3.${parts[0]}`;
+  if (lead >= 9200) return `6.2.${parts[0]}`;
+  if (lead >= 7600) return `6.1.${parts[0]}`;
+  return `${m[1]}.0`;
 }
 
 // FAILURE_BUCKET_ID values embed symbol offsets ('AV_nt!ExFreePool+0x12');
@@ -133,11 +143,21 @@ export function extractStatsFacts(input = {}) {
     // Culprits are often prose; keep bare driver-ish tokens only.
     || (String(report.culprit || '').trim().match(/^([A-Za-z0-9_.!+-]{1,64})(\.sys|\.exe|\.dll)?$/i) || [])[1]?.toLowerCase();
 
-  const osVersion = normalizeOsVersion(
-    (structured.target && (structured.target.os_version || structured.target.osVersion))
-    || (report.systemInfo && (report.systemInfo.windowsVersion || report.systemInfo.kernelBuild))
-    || extractWinDbgWindowsVersion(input.analysisText)
-  );
+  // Try each candidate through the normalizer in priority order instead of
+  // normalizing only the first truthy one: the server signal's os_version is
+  // banner-shaped and often unparseable, which used to veto the OS_VERSION
+  // fallback that would have parsed (issue #115).
+  const osVersionCandidates = [
+    structured.target && (structured.target.os_version || structured.target.osVersion),
+    report.systemInfo && (report.systemInfo.windowsVersion || report.systemInfo.kernelBuild),
+    extractWinDbgWindowsVersion(input.analysisText),
+  ];
+  let osVersion;
+  for (const candidate of osVersionCandidates) {
+    if (!candidate) continue;
+    osVersion = normalizeOsVersion(candidate);
+    if (osVersion) break;
+  }
 
   const dumpType = normalizeDumpType(input.dumpType)
     || normalizeDumpType((input.promptText || '').match(/-\s*Dump Type:\s*(minidump|kernel)/i)?.[1]);

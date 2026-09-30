@@ -72,11 +72,13 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
         // Never override an explicit ?theme= embed override.
         const urlTheme = new URLSearchParams(window.location.search).get('theme');
         if (urlTheme === 'light' || urlTheme === 'dark') return;
-      } catch { /* no window (SSR) — nothing to override */ }
-      // Only auto-switch if user hasn't manually set a preference
-      const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
-      if (!hasUserPreference) {
-        setTheme(e.matches ? 'light' : 'dark');
+        // Only auto-switch if user hasn't manually set a preference
+        const hasUserPreference = localStorage.getItem('theme-manually-set') === 'true';
+        if (!hasUserPreference) {
+          setTheme(e.matches ? 'light' : 'dark');
+        }
+      } catch {
+        /* localStorage unavailable (storage blocked) — nothing to persist */
       }
     };
 
@@ -95,14 +97,22 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
     // Mark that user has manually set a preference
-    localStorage.setItem('theme-manually-set', 'true');
-    localStorage.setItem('theme', theme === 'dark' ? 'light' : 'dark');
+    try {
+      localStorage.setItem('theme-manually-set', 'true');
+      localStorage.setItem('theme', theme === 'dark' ? 'light' : 'dark');
+    } catch {
+      /* localStorage unavailable (storage blocked) — apply without persisting */
+    }
   };
 
   const resetToSystemPreference = () => {
     // Clear manual preference
-    localStorage.removeItem('theme');
-    localStorage.removeItem('theme-manually-set');
+    try {
+      localStorage.removeItem('theme');
+      localStorage.removeItem('theme-manually-set');
+    } catch {
+      /* localStorage unavailable (storage blocked) — still reset the theme */
+    }
 
     // Set theme based on system preference
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {

@@ -52,3 +52,16 @@ test('a failing live file surfaces, optional files only warn', async () => {
   assert.equal(ok.live.total, 3);
   assert.equal(ok.live.asOf, null);
 });
+
+test('corrupt optional-file JSON degrades to null and never fails the snapshot', async () => {
+  // A partial/corrupt export leaves valid JSON rows with a bad `raw`/`payload`
+  // string column: the parse must degrade exactly like a failed read (issue #114).
+  const { live: l, baseline, insights } = await createGcsStatsSource({ reader: reader({
+    [STATS_FILES.live]: [{ generated_at: '2026-09-27 23:40:01.123456 UTC', aggregates: JSON.stringify(live) }],
+    [STATS_FILES.baseline]: [{ captured_at: 'y', raw: '{not json' }],
+    [STATS_FILES.insights]: [{ generated_at: 'z', payload: '{also not json' }]
+  }) }).load();
+  assert.equal(l.total, 3);
+  assert.equal(baseline, null);
+  assert.equal(insights, null);
+});

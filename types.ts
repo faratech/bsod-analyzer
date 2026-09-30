@@ -97,8 +97,6 @@ export interface AnalysisReportData {
   driverWarnings?: DriverWarning[];
   hardwareError?: HardwareErrorInfo;
   parameterAnalysis?: ParameterAnalysis[];  // AI-decoded bug check parameters
-  // Legacy field - module list fallback when loadedModules is empty
-  stackTrace?: string[];
   // Legacy field for bug check code (deprecated, use bugCheck instead)
   bugCheckCode?: string;
   // WinDBG-specific fields (parsed directly from raw output)

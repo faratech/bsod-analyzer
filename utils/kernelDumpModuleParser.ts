@@ -369,15 +369,22 @@ export function parseKernelDumpHeader(buffer: ArrayBuffer): KernelDumpHeader | n
     const numberOfRuns = view.getUint32(physMemOffset, true);
     const numberOfPages = view.getBigUint64(physMemOffset + 8, true);
 
+    // numberOfRuns is an unvalidated uint32 from the dump; real dumps carry a
+    // handful of runs, so bound both the trust and the loop before allocating
+    // (same shape as extractPhysicalMemoryRuns in dumpParser.ts).
+    const MAX_RUNS = 0x10000;
+    const MAX_PARSED_RUNS = 4096;
     const runs: PhysicalMemoryRun[] = [];
     let runOffset = physMemOffset + 16;
 
-    for (let i = 0; i < numberOfRuns && runOffset + 16 <= buffer.byteLength; i++) {
-      runs.push({
-        basePage: view.getBigUint64(runOffset, true),
-        pageCount: view.getBigUint64(runOffset + 8, true),
-      });
-      runOffset += 16;
+    if (numberOfRuns > 0 && numberOfRuns <= MAX_RUNS) {
+      for (let i = 0; i < Math.min(numberOfRuns, MAX_PARSED_RUNS) && runOffset + 16 <= buffer.byteLength; i++) {
+        runs.push({
+          basePage: view.getBigUint64(runOffset, true),
+          pageCount: view.getBigUint64(runOffset + 8, true),
+        });
+        runOffset += 16;
+      }
     }
 
     header.physicalMemoryDescriptor = {

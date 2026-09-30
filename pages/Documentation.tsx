@@ -11,10 +11,19 @@ const Documentation: React.FC = () => {
     const location = useLocation();
     const activeSection = useActiveSection('.docs-section');
 
-    // Smooth scroll to section on hash change
+    // Smooth scroll to section on hash change. The hash is attacker/link-
+    // controlled: getElementById cannot throw on metacharacters the way
+    // querySelector('#…') does (a fragment like "#1-intro" used to white-screen
+    // the whole app), and the percent-decode needs its own guard.
     useEffect(() => {
-        if (location.hash) {
-            const element = document.querySelector(location.hash);
+        if (location.hash && location.hash.length > 1) {
+            let id: string;
+            try {
+                id = decodeURIComponent(location.hash.slice(1));
+            } catch {
+                return;
+            }
+            const element = document.getElementById(id);
             if (element) {
                 element.scrollIntoView({ behavior: 'smooth' });
             }

@@ -126,3 +126,122 @@ test('generateContent catch block only reads names declared in the handler scope
     'hoist them to the handler scope or they throw ReferenceError on every failure path'
   );
 });
+
+// The locally-invalid-report path (parseAndValidateAnalysisReport failing on a
+// successful provider response) returns early — its catch sibling never runs,
+// so the quota refund must be invoked inline. This pins issue #112: without
+// the call, every LENGTH-truncated JSON response permanently burned a tiered
+// request + token estimate with no analysis delivered.
+test('generateContent refunds the quota on the invalid-report early return', () => {
+  const ast = acorn.parse(readFileSync(SERVER, 'utf8'), {
+    ecmaVersion: 'latest',
+    sourceType: 'module'
+  });
+
+  const handler = findRouteHandler(ast, '/api/gemini/generateContent');
+  assert.ok(handler, 'the /api/gemini/generateContent handler must be found');
+
+  const tryStatement = handler.body.body.find(node => node.type === 'TryStatement');
+  assert.ok(tryStatement, 'the handler must wrap its work in a try/catch');
+
+  // Find `if (!reportValidation.valid) { … }` inside the try block.
+  const invalidReportIf = tryStatement.block.body.find(node =>
+    node.type === 'IfStatement' &&
+    node.test.type === 'UnaryExpression' &&
+    node.test.operator === '!' &&
+    node.test.argument.type === 'MemberExpression' &&
+    node.test.argument.property?.name === 'valid' &&
+    node.test.argument.object?.name === 'reportValidation'
+  );
+  assert.ok(invalidReportIf, 'the invalid-report early return must be recognizable');
+
+  const callsRefund = (node) => {
+    if (!node || typeof node.type !== 'string') return false;
+    if (node.type === 'CallExpression' && node.callee?.name === 'refundReservation') return true;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'loc' || key === 'range') continue;
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const child of value) {
+          if (child && typeof child.type === 'string' && callsRefund(child)) return true;
+        }
+      } else if (value && typeof value.type === 'string' && callsRefund(value)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  assert.ok(
+    invalidReportIf.consequent && callsRefund(invalidReportIf.consequent),
+    'the invalid-report path must call refundReservation before returning the 502'
+  );
+
+  // And the refund must actually be reachable: the block must return only
+  // after the refund call, not before.
+  const statements = invalidReportIf.consequent.body ?? [invalidReportIf.consequent];
+  const returnIndex = statements.findIndex(s => s.type === 'ReturnStatement');
+  const refundIndex = statements.findIndex(s => callsRefund(s));
+  assert.ok(refundIndex >= 0 && (returnIndex === -1 || refundIndex < returnIndex),
+    'refundReservation must run before the early return');
+
+  walk(handler.body, (node, parent) => {
+    if (node.type === 'CallExpression' && node.callee?.name === 'refundReservation') {
+      assert.equal(parent?.type, 'AwaitExpression',
+        'finish asynchronous refunds before sending the failure response');
+    }
+  });
+});
+
+test('generateContent refunds the admitting backend and waits for shared accounting', async () => {
+  const source = readFileSync(SERVER, 'utf8');
+  const handler = findRouteHandler(acorn.parse(source, {
+    ecmaVersion: 'latest', sourceType: 'module'
+  }), '/api/gemini/generateContent');
+  const declaration = handler.body.body
+    .flatMap(statement => statement.type === 'VariableDeclaration' ? statement.declarations : [])
+    .find(node => node.id.name === 'refundReservation');
+  assert.ok(declaration, 'the shared failure cleanup must be found');
+  const makeRefund = new Function('quotaReservation', 'sessionQuota', 'refundSessionQuota', `
+    const quotaKey = 'session-a';
+    const estimatedInputTokens = 10;
+    const quotaRefundCap = 3;
+    const quotaWindowSeconds = 3600;
+    const shouldRefund = () => true;
+    const log = { warn() {} };
+    const safeToken = value => value;
+    const classifyQuotaFailure = () => 'upstream';
+    return (${source.slice(declaration.init.start, declaration.init.end)});
+  `);
+  const calls = [];
+  const localStore = { refund(key, args) {
+    calls.push(['local', key, args]);
+    return { refunded: true };
+  } };
+  let finishShared;
+  const sharedRefund = (key, args) => {
+    calls.push(['shared', key, args]);
+    return new Promise(resolve => { finishShared = resolve; });
+  };
+  const error = new Error('invalid upstream report');
+  let completed = false;
+  const pending = makeRefund({ allowed: true, distributed: true }, localStore, sharedRefund)(error)
+    .then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false, 'shared refunds must finish before cleanup resolves');
+  assert.deepEqual(calls, [['shared', 'session-a', {
+    requestCost: 1, tokenCost: 10, refundCap: 3, windowSeconds: 3600
+  }]]);
+  finishShared({ refunded: true });
+  await pending;
+
+  calls.length = 0;
+  await makeRefund({ allowed: true }, localStore, sharedRefund)(error);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'local');
+
+  calls.length = 0;
+  await makeRefund(undefined, localStore, sharedRefund)(error);
+  await makeRefund({ allowed: false, distributed: true }, localStore, sharedRefund)(error);
+  assert.deepEqual(calls, [], 'failures without an admitted reservation must not decrement quotas');
+});
