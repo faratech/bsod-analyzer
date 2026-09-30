@@ -11,6 +11,7 @@ import {
   initCache,
   initCacheCompression,
   isAnalysisCached,
+  reserveSessionQuota,
   isCacheEnabled,
   setCachedAnalysis,
 } from '../services/cache.js';
@@ -58,6 +59,20 @@ function createFakeClients() {
     async ttl(key) {
       return ttls.has(key) ? ttls.get(key) : -1;
     },
+    async eval(_script, keys, args) {
+      if (keys.length !== 2) throw new Error('unexpected script');
+      const requests = Number(values.get(keys[0]) || 0);
+      const tokens = Number(values.get(keys[1]) || 0);
+      const requestCost = Number(args[0]);
+      const tokenCost = Number(args[1]);
+      if (requests + requestCost > Number(args[2])) return [0, 1, requests, tokens, ttls.get(keys[0]) ?? -1];
+      if (tokens + tokenCost > Number(args[3])) return [0, 2, requests, tokens, ttls.get(keys[1]) ?? -1];
+      values.set(keys[0], String(requests + requestCost));
+      values.set(keys[1], String(tokens + tokenCost));
+      ttls.set(keys[0], Number(args[4]));
+      ttls.set(keys[1], Number(args[4]));
+      return [1, 0, requests + requestCost, tokens + tokenCost, Number(args[4])];
+    },
   };
 
   const analysisClient = {
@@ -88,6 +103,19 @@ function createFakeClients() {
 
   return { redisClient, analysisClient, values, ttls, events };
 }
+
+test('session quota reservations use the shared Redis counters', async () => {
+  const fake = createFakeClients();
+  initCache({ redisClient: fake.redisClient, analysisClient: fake.analysisClient });
+  const args = { requestCost: 1, tokenCost: 10, requestLimit: 2, tokenLimit: 100, windowSeconds: 3600 };
+
+  assert.equal((await reserveSessionQuota('same-session', args)).allowed, true);
+  assert.equal((await reserveSessionQuota('same-session', args)).allowed, true);
+  const rejected = await reserveSessionQuota('same-session', args);
+  assert.equal(rejected.allowed, false);
+  assert.equal(rejected.reason, 'requests');
+  assert.equal(rejected.requests, 2);
+});
 
 function trainedDictionaryFixture() {
   const phrase = Buffer.from(

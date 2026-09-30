@@ -125,7 +125,10 @@ import {
   isCacheEnabled,
   disableRedis,
   getRedisDisabledReason,
-  checkCacheConnection
+  checkCacheConnection,
+  reserveSessionQuota,
+  commitSessionTokens,
+  refundSessionQuota
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2065,6 +2068,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   // The catch guards on `quotaKey` being set, so failures before the reservation
   // simply skip the refund.
   let quotaKey;
+  let quotaReservation;
   let estimatedInputTokens = 0;
   const quotaWindowSeconds = 60 * 60; // Reset after 1 hour
   let quotaRefundCap = 0;
@@ -2205,14 +2209,23 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // both caps are checked before either counter moves, so concurrent
     // requests cannot all pass a read-then-write limit check. The reservation
     // happens after the cache-miss check, so cached answers still cost nothing.
-    const reserved = sessionQuota.reserve(quotaKey, {
+    const quotaArgs = {
       requestCost: 1,
       tokenCost: estimatedInputTokens,
       requestLimit: limits.requests,
       tokenLimit: limits.tokens,
       windowSeconds: quotaWindowSeconds
-    });
+    };
+    const reserved = await reserveSessionQuota(quotaKey, quotaArgs)
+      ?? sessionQuota.reserve(quotaKey, quotaArgs);
+    quotaReservation = reserved;
     if (!reserved.allowed) {
+      if (reserved.reason === 'unavailable') {
+        return res.status(503).json({
+          error: 'Quota service temporarily unavailable. Please try again later.',
+          code: 'QUOTA_UNAVAILABLE'
+        });
+      }
       const tokenExhausted = reserved.reason === 'tokens';
       log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
@@ -2285,9 +2298,12 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const responseText = response.text ?? '';
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
-    sessionQuota.commit(quotaKey, {
-      tokenDelta: actualInputTokens + outputTokens - estimatedInputTokens
-    });
+    const tokenDelta = actualInputTokens + outputTokens - estimatedInputTokens;
+    if (reserved.distributed) {
+      await commitSessionTokens(quotaKey, { tokenDelta, windowSeconds: quotaWindowSeconds });
+    } else {
+      sessionQuota.commit(quotaKey, { tokenDelta });
+    }
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2379,11 +2395,15 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // window (issue #77).
     if (quotaKey && shouldRefund(error)) {
       try {
-        const refund = sessionQuota.refund(quotaKey, {
+        const refundArgs = {
           requestCost: 1,
           tokenCost: estimatedInputTokens,
-          refundCap: quotaRefundCap
-        });
+          refundCap: quotaRefundCap,
+          windowSeconds: quotaWindowSeconds
+        };
+        const refund = quotaReservation?.distributed
+          ? await refundSessionQuota(quotaKey, refundArgs)
+          : sessionQuota.refund(quotaKey, refundArgs);
         if (!refund.refunded) {
           log.warn('quota.refund_declined', {
             quotaKey: safeToken(quotaKey),
