@@ -19,7 +19,7 @@ All sensitive configuration values are stored in Google Secret Manager and injec
 - **How to obtain**: https://platform.deepseek.com/api_keys
 
 ### 1c. Experiential Labs API Key (`experiential-labs-api-key`)
-- **Purpose**: OpenAI-compatible `gpt-5.6-luna` fallback for the BSOD analyzer
+- **Purpose**: OpenAI-compatible `gpt-6-luna` fallback for the BSOD analyzer
 - **Usage**: Optional. When enabled, the service tries Experiential Cloud before
   the existing OpenAI Luna route and meters input/output tokens in Redis against
   the configured daily and hourly free-tier limits.
