@@ -59,7 +59,7 @@ fi
 if gcloud secrets describe openrouter-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
   RUNTIME_SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,${RUNTIME_SECRETS}"
 fi
-# Optional OpenAI-compatible free-tier route for gpt-5.6-luna. Keep the
+# Optional OpenAI-compatible Experiential route for gpt-6-luna. Keep the
 # existing OpenAI binding as the per-request fallback when this is absent or
 # its quota is exhausted.
 if gcloud secrets versions list experiential-labs-api-key \

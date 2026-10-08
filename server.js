@@ -108,6 +108,7 @@ import {
   DEFAULT_OPENROUTER_BASE_URL,
   DEFAULT_OPENROUTER_FREE_MODEL,
   DEFAULT_OPENAI_FREE_MODEL,
+  DEFAULT_EXPERIENTIAL_MODEL,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel
@@ -218,7 +219,7 @@ const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPS
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
 const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || DEFAULT_OPENROUTER_FREE_MODEL;
-// OpenAI data-sharing incentive (complimentary tokens): gpt-5.6-luna is used
+// OpenAI data-sharing incentive (complimentary tokens): gpt-6-luna is used
 // FIRST each UTC day while the free quota lasts, then the chain falls back to
 // DeepSeek -> OpenRouter. OPENAI_ADMIN_KEY enables an org-wide usage cross-check.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -232,7 +233,7 @@ const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY
 // budget is tracked per instance (server/quotaStore.js).
 const EXPERIENTIAL_API_KEY = process.env.EXPLABS_API_KEY;
 const EXPERIENTIAL_BASE_URL = process.env.EXPLABS_BASE_URL || 'https://api.experientiallabs.ai/v1';
-const EXPERIENTIAL_MODEL = process.env.EXPLABS_MODEL || 'gpt-5.6-luna';
+const EXPERIENTIAL_MODEL = process.env.EXPLABS_MODEL || DEFAULT_EXPERIENTIAL_MODEL;
 const EXPERIENTIAL_DAILY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_INPUT_LIMIT, 15_000_000);
 const EXPERIENTIAL_DAILY_OUTPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_LIMIT, 3_000_000);
 const EXPERIENTIAL_HOURLY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_LIMIT, 3_000_000);
@@ -774,7 +775,7 @@ function markExperientialExhausted(scope = 'hour') {
 }
 
 function reserveExperientialQuota(inputTokens, outputTokens) {
-  if (!EXPERIENTIAL_API_KEY || EXPERIENTIAL_MODEL !== 'gpt-5.6-luna') {
+  if (!EXPERIENTIAL_API_KEY || EXPERIENTIAL_MODEL !== DEFAULT_EXPERIENTIAL_MODEL) {
     return null;
   }
   return providerQuota.reserve('experiential-luna', {

@@ -90,8 +90,9 @@ npm run optimize-css     # Apply CSS purging
 
 1. `model.cfg` names the primary model (re-read with a 30s cache; currently
    `deepseek-v4-flash`). Gemini models fall back to `gemini-2.5-flash-lite`.
-2. DeepSeek requests first try **Experiential Cloud** (`gpt-5.6-luna`) when
-   `EXPLABS_API_KEY` is bound. `server/quotaStore.js` reserves estimated input
+2. DeepSeek requests first try **Experiential Cloud** (`gpt-6-luna`, since
+   2026-10-08; `DEFAULT_EXPERIENTIAL_MODEL` — any other `EXPLABS_MODEL`
+   disables the leg) when `EXPLABS_API_KEY` is bound. `server/quotaStore.js` reserves estimated input
    and output tokens against this instance's share of the provider's
    daily/hourly free-tier limits, then settles to reported usage. Quota/auth
    failures latch for the current window and fall through to the existing
