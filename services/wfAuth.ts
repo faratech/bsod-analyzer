@@ -25,6 +25,12 @@ export const PREMIUM_UPGRADE_URL = `${FORUM_ORIGIN}/account/upgrade-purchase?use
 // Where the redirect-fallback lands back on this app.
 const CALLBACK_PATH = '/analyzer';
 const AUTO_SIGN_IN_SUPPRESSED_KEY = 'wf_sso_auto_sign_in_suppressed';
+// Sign-in state for the redirect fallback (login CSRF, issue #137). Kept in
+// sessionStorage: per tab and per origin, so a page on another site can neither
+// read it nor plant one.
+const SIGN_IN_STATE_KEY = 'wf_sso_sign_in_state';
+// Long enough for a forum login with two-step verification.
+const SIGN_IN_STATE_MAX_AGE_MS = 30 * 60 * 1000;
 
 interface WhoamiResponse {
   logged_in: boolean;
@@ -123,10 +129,39 @@ export async function exchangeToken(token: string): Promise<WfUser | null> {
   }
 }
 
+function newSignInState(): string {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Read and delete the pending sign-in state: each state answers one callback.
+function takeSignInState(): string | null {
+  try {
+    const raw = window.sessionStorage.getItem(SIGN_IN_STATE_KEY);
+    window.sessionStorage.removeItem(SIGN_IN_STATE_KEY);
+    if (!raw) return null;
+    const pending = JSON.parse(raw) as { state?: unknown; at?: unknown };
+    if (typeof pending?.state !== 'string' || !/^[a-f0-9]{32}$/.test(pending.state)) return null;
+    const age = Date.now() - Number(pending.at);
+    if (!Number.isFinite(age) || age < 0 || age > SIGN_IN_STATE_MAX_AGE_MS) return null;
+    return pending.state;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Redirect-fallback: read a token from the URL fragment (#wf_sso=… / #wf_sso_anon=1)
  * set by the forum's redirect mode, then strip it from the address bar. Fragments
  * are never sent to a server or in Referer, so the token stays private.
+ *
+ * The fragment is honored only when its wf_sso_state echoes the state this tab
+ * stored in signInRedirect(). Otherwise anyone holding a token for their own
+ * forum account could send a link that signs the visitor's browser in as that
+ * account (login CSRF, issue #137). A rejected callback returns null and the
+ * caller falls through to the silent same-site check, which still signs in a
+ * visitor who really did just log in to the forum.
  */
 export function consumeCallbackToken(): { token?: string; anon?: boolean } | null {
   if (typeof window === 'undefined') return null;
@@ -136,9 +171,13 @@ export function consumeCallbackToken(): { token?: string; anon?: boolean } | nul
   const params = new URLSearchParams(hash.replace(/^#/, ''));
   const token = params.get('wf_sso') || undefined;
   const anon = params.get('wf_sso_anon') === '1';
+  const returnedState = params.get('wf_sso_state');
 
   // Remove the fragment so it doesn't linger in history / the address bar.
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
+
+  const expectedState = takeSignInState();
+  if (!expectedState || returnedState !== expectedState) return null;
 
   if (token) {
     allowForumAutoSignIn();
@@ -151,12 +190,20 @@ export function consumeCallbackToken(): { token?: string; anon?: boolean } | nul
 /**
  * Sign-in fallback: top-level navigation to the forum login, which bounces back
  * through the forum's own /sso/whoami (the only host XenForo's redirect honors)
- * and on to this app's callback with a token.
+ * and on to this app's callback with a token. `state` must come back as
+ * #…&wf_sso_state=<state> for consumeCallbackToken() to accept the token.
  */
 export function signInRedirect(): void {
   allowForumAutoSignIn();
+  const state = newSignInState();
+  try {
+    window.sessionStorage.setItem(SIGN_IN_STATE_KEY, JSON.stringify({ state, at: Date.now() }));
+  } catch {
+    // Storage blocked: the callback token will be ignored, and the silent
+    // same-site check after the redirect still picks up the forum login.
+  }
   const callback = `${APP_ORIGIN}${CALLBACK_PATH}`;
-  window.location.href = `${FORUM_ORIGIN}/sso/whoami?login=1&redirect=${encodeURIComponent(callback)}`;
+  window.location.href = `${FORUM_ORIGIN}/sso/whoami?login=1&state=${state}&redirect=${encodeURIComponent(callback)}`;
 }
 
 /** Go to the forum's Premium Supporter upgrade purchase page (XenForo handles checkout). */
