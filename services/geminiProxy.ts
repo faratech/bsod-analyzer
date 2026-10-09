@@ -188,7 +188,7 @@ const reportSchema = {
     properties: {
         summary: { type: Type.STRING, description: "A brief, one-sentence summary of the crash." },
         probableCause: { type: Type.STRING, description: "A detailed but easy-to-understand explanation of the likely cause of the blue screen error, based on the provided data." },
-        culprit: { type: Type.STRING, description: "The driver or system file causing the crash. Use ONLY the verified culprit from VERIFIED CRASH LOCATION if provided." },
+        culprit: { type: Type.STRING, description: "The driver or system file causing the crash. Use ONLY the module named in the \"Crash location\" section if one is provided." },
         recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of actionable steps the user should take to fix the issue." },
         driverWarnings: {
             type: Type.ARRAY,
@@ -1444,11 +1444,14 @@ export const analyzeDumpFiles = async (
             // Priority 1: Core crash information
             if (bugCheckCode) addSection('bugcheck', `\n**Bug Check:** ${bugCheckCode}`, 1);
 
-            // Add VERIFIED culprit module from accurate kernel dump parsing
+            // Crash location from the kernel dump's exception address and module
+            // ranges. The module name is read from the dump file, which may be
+            // crafted, so it is framed as dump evidence rather than verified fact
+            // (kernelDumpModuleParser only keeps file-name-shaped names; #150).
             if (accurateModuleInfo?.culpritModule) {
-                const culpritInfo = `\n**⚠️ VERIFIED CRASH LOCATION (from exception address matching):**
-The exception occurred at address ${accurateModuleInfo.exception.address ? `0x${accurateModuleInfo.exception.address.toString(16)}` : 'unknown'} which is INSIDE the module: **${accurateModuleInfo.culpritModule}**
-This is the DEFINITIVE crash location - do NOT guess a different driver.`;
+                const culpritInfo = `\n**Crash location (exception address matched to the dump's loaded-module ranges):**
+The exception occurred at address ${accurateModuleInfo.exception.address ? `0x${accurateModuleInfo.exception.address.toString(16)}` : 'unknown'}, inside the module named **${accurateModuleInfo.culpritModule}** in the dump's module list.
+Use this module as the crash location rather than guessing a different driver.`;
                 addSection('verified_culprit', culpritInfo, 1);
             }
 
@@ -1513,8 +1516,8 @@ ${adjustedHexDump}
             // Use accurate module list from kernelDumpModuleParser if we have it
 	            if (accurateModuleInfo?.modules && accurateModuleInfo.modules.length > 0) {
 	                const moduleCount = Math.min(accurateModuleInfo.modules.length, 50); // Limit to 50 modules
-	                const moduleSection = `\n\n**VERIFIED Module List (${moduleCount} of ${accurateModuleInfo.modules.length}):**
-	IMPORTANT: Only these modules were loaded at crash time. Do NOT reference any module not in this list.
+	                const moduleSection = `\n\n**Loaded Module List from the Dump (${moduleCount} of ${accurateModuleInfo.modules.length}):**
+	Do NOT reference any module that is not in this list.
 	${accurateModuleInfo.modules.slice(0, moduleCount).map(m => `- ${m.name}`).join('\n')}`;
 	                addSection('modules', moduleSection, 7);
 	            } else {
@@ -1679,7 +1682,7 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
             // Use verified culprit from accurate kernel dump parsing
             if (report && accurateModuleInfo?.culpritModule) {
                 if (report.culprit !== accurateModuleInfo.culpritModule) {
-                    console.log(`[Analyzer] Using VERIFIED culprit from kernel dump: '${accurateModuleInfo.culpritModule}' (was: '${report.culprit}')`);
+                    console.log(`[Analyzer] Using culprit from the kernel dump's exception address: '${accurateModuleInfo.culpritModule}' (was: '${report.culprit}')`);
                     report.culprit = accurateModuleInfo.culpritModule;
                 }
             }

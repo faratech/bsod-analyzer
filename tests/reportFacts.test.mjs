@@ -99,6 +99,41 @@ test('public redaction removes direct identifiers', () => {
   assert.equal(text, 'ip [ip-redacted] path [path-redacted] id [id-redacted]');
 });
 
+test('public redaction removes whole paths with spaces, device and forward-slash forms (issue #151)', () => {
+  const cases = [
+    ['C:\\Users\\Jane Doe\\AppData\\Local\\x.sys was loaded', '[path-redacted] was loaded'],
+    ['"C:\\Program Files\\Acme Corp\\agent.sys"', '"[path-redacted]"'],
+    ['(see C:\\Program Files (x86)\\Foo\\bar.sys)', '(see [path-redacted])'],
+    ['see \\Device\\HarddiskVolume3\\Users\\jdoe\\Downloads\\x.dmp now', 'see [path-redacted] now'],
+    ['C:/Users/jdoe/Desktop/x.dmp', '[path-redacted]'],
+    ['\\??\\C:\\Users\\jdoe\\x.sys', '[path-redacted]'],
+    ['\\\\server\\share\\Jane Doe\\x.txt ok', '[path-redacted] ok'],
+    ['escaped C:\\\\Users\\\\jdoe\\\\x.sys end', 'escaped [path-redacted] end'],
+    ['profile C:\\Users\\Jane Doe', 'profile [path-redacted]'],
+    ['%SystemDrive%\\Users\\jdoe\\file.txt', '%SystemDrive%\\Users\\[user-redacted]\\file.txt'],
+    ['**Likely culprit:** `C:\\Users\\jdoe\\x.sys`', '**Likely culprit:** `[path-redacted]`'],
+    // The sentence after a path survives, and URLs and \SystemRoot paths are untouched.
+    ['Update C:\\Windows\\System32\\drivers\\nvlddmkm.sys to the latest version.', 'Update [path-redacted] to the latest version.'],
+    ['Analyzed with BSOD Analyzer: https://bsod.windowsforum.com/', 'Analyzed with BSOD Analyzer: https://bsod.windowsforum.com/'],
+    ['Image path: \\SystemRoot\\system32\\drivers\\nvlddmkm.sys', 'Image path: \\SystemRoot\\system32\\drivers\\nvlddmkm.sys'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(redactPublicReportText(input), expected, input);
+  }
+});
+
+test('the forum report never carries a profile name from the AI text', () => {
+  const report = generateForumReport(dumpFile({
+    summary: 'The dump at C:\\Users\\Jane Doe\\Desktop\\crash.dmp shows a driver fault.',
+    probableCause: 'nt',
+    culprit: 'C:\\Users\\Jane Doe\\AppData\\Local\\Acme\\agent.sys',
+    recommendations: ['Remove \\Device\\HarddiskVolume3\\Users\\jdoe\\Tools\\hook.sys and reboot.']
+  }));
+  assert.doesNotMatch(report, /Jane|Doe|jdoe/);
+  assert.match(report, /shows a driver fault/);
+  assert.match(report, /and reboot\./);
+});
+
 test('markdown links in AI-derived report text are neutralized (issue #81)', () => {
   const markdown = generateMarkdownReport(dumpFile({
     summary: 'Crash in nt. See [our forum](https://evil.example/spam) for details.',
