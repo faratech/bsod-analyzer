@@ -26,7 +26,10 @@ CREATE OR REPLACE FUNCTION `project-bigfoot.bsod_corpus.norm_manufacturer`(m STR
     WHEN REGEXP_CONTAINS(LOWER(m), r'riot|vanguard') THEN 'Riot (Vanguard)'
     WHEN REGEXP_CONTAINS(LOWER(m), r'battleye') THEN 'BattlEye'
     WHEN REGEXP_CONTAINS(LOWER(m), r'easy ?anti|epic') THEN 'Epic (EasyAntiCheat)'
-    ELSE TRIM(SPLIT(m, '(')[OFFSET(0)])
+    -- Free text from AI reports never passes through: it reached /stats and,
+    -- via crash_priors, other users' prompts (issue #148). Keep this list in
+    -- sync with KNOWN_MANUFACTURERS in server/crashPriors.js.
+    ELSE 'Other'
   END
 );
 
