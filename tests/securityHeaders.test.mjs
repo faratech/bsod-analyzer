@@ -215,3 +215,103 @@ test('wasm stays enabled for xxhash-wasm, quoted so the browser honours it', asy
     await server.close();
   }
 });
+
+// --- Issue #154: the hash-based ("strict") policy is ready to enforce. ---
+
+const WILDCARD_SCRIPT_HOSTS = [
+  'https://*.cloudflare.com', 'https://*.google ', 'https://*.google.com', 'https://*.googletagmanager.com',
+  'https://*.googlesyndication.com', 'https://*.doubleclick.net',
+];
+
+function scriptSrc(policy) {
+  return policy.split(';').map(d => d.trim()).find(d => d.startsWith('script-src ')) + ' ';
+}
+
+async function headersFor(cspMode, path = '/about') {
+  const middleware = createSecurityHeadersMiddleware({ cspMode });
+  middleware.updateInlineScriptHashes(["'sha256-abc='"]);
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { connection: 'close' } });
+    return {
+      csp: response.headers.get('content-security-policy'),
+      reportOnly: response.headers.get('content-security-policy-report-only'),
+    };
+  } finally {
+    await server.close();
+  }
+}
+
+test('enforced strict policy: no unsafe-inline and no wildcard script hosts (issue #154)', async () => {
+  for (const path of ['/about', '/stats/embed']) {
+    const { csp } = await headersFor('enforce', path);
+    const scripts = scriptSrc(csp);
+    assert.doesNotMatch(scripts, /'unsafe-inline'/, path);
+    for (const host of WILDCARD_SCRIPT_HOSTS) {
+      assert.ok(!scripts.includes(`${host.trim()} `), `${path}: ${host.trim()} must not be in script-src`);
+    }
+    // The hosts the site's own third parties load from are still there.
+    for (const host of ['https://challenges.cloudflare.com', 'https://www.googletagmanager.com',
+      'https://pagead2.googlesyndication.com', 'https://www.paypalobjects.com']) {
+      assert.ok(scripts.includes(`${host} `), `${path}: ${host} missing`);
+    }
+  }
+});
+
+test('the strict policy reports violations to /api/csp-report', async () => {
+  for (const mode of ['enforce', 'report-only']) {
+    const headers = await headersFor(mode);
+    const strict = mode === 'enforce' ? headers.csp : headers.reportOnly;
+    assert.match(strict, /report-uri \/api\/csp-report/, mode);
+    // A report-to group would make Chrome skip report-uri entirely.
+    assert.doesNotMatch(strict, /report-to/, mode);
+    assert.match(scriptSrc(strict), /'report-sample'/, mode);
+  }
+});
+
+test('report-only stages exactly the script-src that enforce would send', async () => {
+  const staged = await headersFor('report-only');
+  const enforced = await headersFor('enforce');
+  assert.equal(scriptSrc(staged.reportOnly), scriptSrc(enforced.csp));
+  // Meanwhile the legacy enforcing policy is untouched.
+  assert.equal(staged.csp, CSP_HEADER);
+  assert.match(scriptSrc(staged.csp), /'unsafe-inline'/);
+});
+
+test('without hashes enforce mode falls back to the legacy policy, unreported', async () => {
+  const middleware = createSecurityHeadersMiddleware({ cspMode: 'enforce' });
+  const server = await listenCompat(buildApp(middleware));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/about`, { headers: { connection: 'close' } });
+    assert.equal(response.headers.get('content-security-policy'), CSP_HEADER);
+    assert.doesNotMatch(CSP_HEADER, /report-uri/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('computeInlineScriptSources is not fooled by a script tag inside an HTML comment', () => {
+  const sha256 = content => Buffer.from(content).toString('base64');
+  const html = '<head><!-- swap runs from the <script> below --><script>real()</script></head>';
+  assert.deepEqual(computeInlineScriptSources(html, { sha256 }), [`'sha256-${sha256('real()')}'`]);
+});
+
+test('index.html: every inline script is hashed and nothing needs an inline event handler', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createHash } = await import('node:crypto');
+  const html = await (await import('node:fs/promises')).readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const sha256 = content => createHash('sha256').update(content).digest('base64');
+  const hashed = new Set(computeInlineScriptSources(html, { sha256 }));
+  const { document } = new JSDOM(html).window;
+
+  const inline = [...document.querySelectorAll('script:not([src])')]
+    .filter(s => !s.type || s.type === 'text/javascript' || s.type === 'module');
+  assert.ok(inline.length >= 3, 'theme, analytics and stylesheet-swap scripts are inline');
+  for (const script of inline) {
+    assert.ok(hashed.has(`'sha256-${sha256(script.textContent)}'`), `unhashed inline script: ${script.textContent.trim().slice(0, 60)}`);
+  }
+
+  const handlers = [...document.querySelectorAll('*')]
+    .flatMap(el => [...el.attributes].filter(a => /^on/i.test(a.name)).map(a => `<${el.tagName.toLowerCase()} ${a.name}>`));
+  assert.deepEqual(handlers, [], 'inline event handlers cannot be allowed by a hash-based CSP');
+});

@@ -20,6 +20,9 @@ WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL-"https://search.windowsforum.com/api/i
 # Cloud Run --max-instances, also passed to the app as MAX_INSTANCES so its
 # per-instance budgets are sized for every instance that can run at once.
 MAX_INSTANCES=${MAX_INSTANCES:-"10"}
+# Content-Security-Policy rollout mode (server/securityHeaders.js); keep in step
+# with _CSP_MODE in cloudbuild.yaml.
+CSP_MODE=${CSP_MODE:-"report-only"}
 
 echo "🚀 Deploying BSOD Analyzer to Google Cloud Run"
 echo "Project: ${PROJECT_ID}"
@@ -33,6 +36,11 @@ fi
 
 if [[ "${CACHE_ZSTD_WRITES_ENABLED}" != "true" && "${CACHE_ZSTD_WRITES_ENABLED}" != "false" ]]; then
   echo "CACHE_ZSTD_WRITES_ENABLED must be exactly 'true' or 'false'."
+  exit 1
+fi
+
+if [[ "${CSP_MODE}" != "report-only" && "${CSP_MODE}" != "enforce" ]]; then
+  echo "CSP_MODE must be exactly 'report-only' or 'enforce'."
   exit 1
 fi
 
@@ -136,7 +144,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --cpu-boost \
   --memory 1Gi \
   --cpu 1 \
-  --update-env-vars NODE_ENV=production,MAX_INSTANCES=${MAX_INSTANCES},ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
+  --update-env-vars NODE_ENV=production,MAX_INSTANCES=${MAX_INSTANCES},ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL},CSP_MODE=${CSP_MODE} \
   --update-secrets "${RUNTIME_SECRETS},${CACHE_ZSTD_DICTIONARY_PATH}=${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}" \
   --project ${PROJECT_ID}
 

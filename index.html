@@ -374,11 +374,30 @@
     
     <!-- No external fonts - using system fonts for zero layout shift -->
     
-    <!-- Main CSS - loaded async since critical CSS is inlined above -->
-    <link rel="stylesheet" href="/styles.css" media="print" onload="this.media='all'">
+    <!-- Main CSS - loaded async since critical CSS is inlined above. The
+         media="print" -> "all" swap runs from the inline script below rather
+         than from onload attributes: a hash-based CSP can allow an inline
+         script element (server.js hashes the served bytes at boot) but never an
+         inline event handler, so the stylesheets would stay print-only (issue
+         #154). Never write a literal script tag inside an HTML comment here:
+         the boot-time hasher scans raw HTML and would hash the wrong bytes. -->
+    <link rel="stylesheet" href="/styles.css" media="print" data-async-css>
     <noscript><link rel="stylesheet" href="/styles.css"></noscript>
-    <link rel="stylesheet" href="/styles/adsense-fix.css" media="print" onload="this.media='all'">
+    <link rel="stylesheet" href="/styles/adsense-fix.css" media="print" data-async-css>
     <noscript><link rel="stylesheet" href="/styles/adsense-fix.css"></noscript>
+    <script>
+    (function () {
+        var links = document.querySelectorAll('link[data-async-css]');
+        for (var i = 0; i < links.length; i++) {
+            (function (link) {
+                var apply = function () { link.media = 'all'; };
+                // Already loaded (cached): swap now; otherwise on load, as onload did.
+                if (link.sheet) apply();
+                else link.addEventListener('load', apply);
+            })(links[i]);
+        }
+    })();
+    </script>
     
 </head>
 <body>

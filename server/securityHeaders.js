@@ -12,12 +12,52 @@
 // served HTML at boot (see updateInlineScriptHashes) rather than at build time.
 // Until hashes are provided (or in CSP_MODE=report-only), the enforcing header
 // keeps the legacy 'unsafe-inline' policy so nothing regresses.
+//
+// Issue #154: the hash-based ("strict") policy also narrows the wildcard script
+// hosts to the hosts the site's third parties load from, and reports every
+// violation to CSP_REPORT_PATH, so Report-Only mode yields the data needed to
+// flip CSP_MODE to 'enforce'. The legacy policy keeps its original host list:
+// it is what enforces today, and its 'unsafe-inline' makes host gadgets moot.
 
+// Legacy enforcing policy only (unchanged).
 const AD_SCRIPT_SOURCES =
   'https://*.cloudflare.com https://static.cloudflareinsights.com https://*.google ' +
   'https://*.google.com https://*.googletagmanager.com https://*.googlesyndication.com ' +
   'https://*.doubleclick.net https://www.googleadservices.com https://adnxs.com ' +
   'https://www.paypalobjects.com';
+
+// Strict policy: exact hosts instead of https://*.cloudflare.com (which covers
+// cdnjs.cloudflare.com and every historic library version on it, a classic
+// script-gadget source), https://*.google(.com), *.googletagmanager.com,
+// *.googlesyndication.com and *.doubleclick.net.
+export const STRICT_SCRIPT_HOSTS = [
+  // Turnstile (components/CloudflareTurnstile.tsx) and Cloudflare Web Analytics.
+  'https://challenges.cloudflare.com',
+  'https://static.cloudflareinsights.com',
+  // gtag.js (index.html) and the Google Ads conversion scripts it pulls in.
+  'https://www.googletagmanager.com',
+  'https://www.google.com',
+  'https://www.googleadservices.com',
+  'https://googleads.g.doubleclick.net',
+  // AdSense (adsbygoogle.js) and what it loads: ad runtime, safeframe/sodar,
+  // ad-traffic-quality, the integrator and the FundingChoices consent CMP.
+  'https://pagead2.googlesyndication.com',
+  'https://tpc.googlesyndication.com',
+  'https://*.adtrafficquality.google',
+  'https://adservice.google.com',
+  'https://fundingchoicesmessages.google.com',
+  'https://adnxs.com',
+  // PayPal donate SDK (components/PayPalDonateButton.tsx).
+  'https://www.paypalobjects.com',
+].join(' ');
+
+// Where browsers send violation reports for the strict policy, served by
+// server/cspReport.js. Only report-uri is used: a policy that also names a
+// report-to group makes Chrome skip report-uri and depend on Reporting API
+// delivery alone, which could not be verified end to end here (headless Chrome
+// delivered report-uri reports at once and Reporting API reports not at all).
+// report-uri is still honoured by Chrome, Firefox and Safari.
+export const CSP_REPORT_PATH = '/api/csp-report';
 
 const CONNECT_SOURCES =
   "'self' https://windowsforum.com https://challenges.cloudflare.com https://*.google " +
@@ -35,10 +75,15 @@ const CONNECT_SOURCES =
 // xxhash-wasm before uploading it.
 const WASM_SOURCE = "'wasm-unsafe-eval'";
 
-function scriptSources({ inlineScriptSources }) {
+function scriptSources({ inlineScriptSources, strict }) {
   // `inlineScriptSources` is either "'unsafe-inline'" or a list of
   // 'sha256-…' hashes covering every inline script actually served.
-  return `'self' ${inlineScriptSources} ${WASM_SOURCE} ${AD_SCRIPT_SOURCES}`;
+  // 'report-sample' puts the first 40 characters of a blocked inline script in
+  // the report, which is how an unhashed one (e.g. a CDN-injected snippet) is
+  // identified.
+  return strict
+    ? `'self' ${inlineScriptSources} 'report-sample' ${WASM_SOURCE} ${STRICT_SCRIPT_HOSTS}`
+    : `'self' ${inlineScriptSources} ${WASM_SOURCE} ${AD_SCRIPT_SOURCES}`;
 }
 
 // `reportOnly` drops directives that browsers refuse to honour in a
@@ -46,12 +91,12 @@ function scriptSources({ inlineScriptSources }) {
 // inert: Chrome logs an "is ignored when delivered in a report-only policy"
 // warning for each one, on every page load, which buries the actual violation
 // reports this staged rollout exists to collect.
-function cspDirectives(frameAncestors, inlineScriptSources, { reportOnly = false } = {}) {
+function cspDirectives(frameAncestors, inlineScriptSources, { reportOnly = false, strict = false } = {}) {
   return [
     "default-src 'self'",
     // *.doubleclick.net + www.googleadservices.com cover Google Ads conversion
     // tracking scripts (gtag loads viewthroughconversion/conversion_async from these).
-    `script-src ${scriptSources({ inlineScriptSources })}`,
+    `script-src ${scriptSources({ inlineScriptSources, strict })}`,
     // AdSense's adsbygoogle.js runtime injects a small container-sizing stylesheet
     // as a data:text/css URL, so 'data:' is required here for ad slots to render.
     "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://*.googleapis.com",
@@ -67,7 +112,8 @@ function cspDirectives(frameAncestors, inlineScriptSources, { reportOnly = false
     "base-uri 'self'",
     "form-action 'self' https://www.paypal.com",
     `frame-ancestors ${frameAncestors}`,
-    ...(reportOnly ? [] : ['upgrade-insecure-requests'])
+    ...(reportOnly ? [] : ['upgrade-insecure-requests']),
+    ...(strict ? [`report-uri ${CSP_REPORT_PATH}`] : [])
   ].join('; ');
 }
 
@@ -80,10 +126,12 @@ export const CSP_EMBED_HEADER = cspDirectives(EMBED_FRAME_ANCESTORS, LEGACY_INLI
 
 export const EMBEDDABLE_PATHS = ['/stats/embed'];
 
-// Rollout switch (issue #74):
+// Rollout switch (issues #74, #154), set explicitly on every deploy by
+// cloudbuild.yaml (_CSP_MODE) and deploy-with-secret.sh:
 // - 'report-only' (default): the enforcing header keeps the legacy policy and
-//   the hash-based policy ships as Content-Security-Policy-Report-Only, so any
-//   script the hashes miss surfaces in logs without breaking the site.
+//   the hash-based policy ships as Content-Security-Policy-Report-Only; its
+//   violations are logged as `csp.violation` events (server/cspReport.js)
+//   without breaking the site.
 // - 'enforce': the hash-based policy becomes the enforcing header.
 export const CSP_MODE = ['report-only', 'enforce'].includes(process.env.CSP_MODE)
   ? process.env.CSP_MODE
@@ -97,7 +145,10 @@ export function computeInlineScriptSources(html, { sha256 }) {
     throw new TypeError('computeInlineScriptSources requires a sha256(content) function');
   }
   const hashes = new Set();
-  const scripts = String(html || '').matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi);
+  // HTML comments are matched (and skipped) in the same pass, so a comment that
+  // mentions a script tag can't start a bogus match that swallows the real
+  // script's bytes and leaves it unhashed.
+  const scripts = String(html || '').matchAll(/<!--[\s\S]*?-->|<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi);
   for (const [, content] of scripts) {
     if (!content || !content.trim()) continue;
     hashes.add(`'sha256-${sha256(content)}'`);
@@ -128,11 +179,12 @@ export function createSecurityHeadersMiddleware({
   let strictReportOnlyHeaders = null;
   let strictEmbedReportOnlyHeaders = null;
 
-  function strictPolicyFor(variant, options) {
+  function strictPolicyFor(variant, options = {}) {
     const inline = inlineScriptSources ? inlineScriptSources.join(' ') : LEGACY_INLINE_SOURCES;
+    const strictOptions = { ...options, strict: true };
     return variant === 'embed'
-      ? cspDirectives(EMBED_FRAME_ANCESTORS, inline, options)
-      : cspDirectives(DEFAULT_FRAME_ANCESTORS, inline, options);
+      ? cspDirectives(EMBED_FRAME_ANCESTORS, inline, strictOptions)
+      : cspDirectives(DEFAULT_FRAME_ANCESTORS, inline, strictOptions);
   }
 
   function recompute() {

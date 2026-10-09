@@ -58,6 +58,7 @@ import {
   computeInlineScriptSources,
   createSecurityHeadersMiddleware
 } from './server/securityHeaders.js';
+import { createCspReportCollector, registerCspReportRoute } from './server/cspReport.js';
 import {
   DEFAULT_DAILY_WINDOW_DAYS,
   DEFAULT_SNAPSHOT_TTL_SECONDS,
@@ -1588,14 +1589,24 @@ app.get('/health', (req, res) => {
   });
 });
 
+// CSP violation reports for the hash-based policy (issue #154; the policy's
+// report-uri / report-to point here). Registered before the general API limiter
+// so a page view's reports never spend the visitor's API budget; it has its own
+// per-IP limiter, logs each distinct violation once per window, and stores nothing.
+registerCspReportRoute(app, {
+  collector: createCspReportCollector({ log }),
+  limiter: makeLimiter({ windowMs: 15 * 60 * 1000, max: 60, name: 'csp-report' })
+});
+
 // Apply rate limiting to API endpoints. This MUST run before the register*Route
 // calls below: the compat layer snapshots each route's middleware stack at
 // registration time (server/fastifyCompat.js registerRoute), so a later
 // app.use('/api/', …) only reaches routes registered afterwards and the 404
 // fallback — attaching it here left /api/forum/related (registered below)
 // outside the general per-IP API budget. /health, /api/stats and
-// /api/stats/insight are exempted in the limiter's skip list by design, and
-// every other route in this file is registered after this line.
+// /api/stats/insight are exempted in the limiter's skip list by design,
+// /api/csp-report is registered above with its own limiter, and every other
+// route in this file is registered after this line.
 app.use('/api/', apiLimiter);
 
 // Crash-statistics aggregation (public GET /api/stats). Each completed analysis
