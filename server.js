@@ -80,7 +80,15 @@ import {
 } from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
-import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport, promptCarriesWinDbgSignal } from './server/analysisReport.js';
+import {
+  SERVER_PROMPT_FILE_NAME,
+  buildServerWinDbgPrompt,
+  buildWinDbgEvidence,
+  normalizeAnalysisReport,
+  parseAndValidateAnalysisReport,
+  promptCarriesWinDbgSignal,
+  winDbgPromptFileFacts
+} from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -88,8 +96,11 @@ import { createFileHandleCodec, createSessionCodec } from './server/sessionToken
 import {
   createProviderQuotaStore,
   createSessionQuotaStore,
+  providerBackoffFor,
+  settleFailedProviderReservation,
   settleProviderTokenReservation
 } from './server/quotaStore.js';
+import { createQuotaLedger, createSharedCounterStoreFromEnv } from './server/sharedCounters.js';
 import { createArchiveDumpExtractor } from './server/archiveExtract.js';
 import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
@@ -118,7 +129,6 @@ import {
 import {
   initCache,
   initCacheCompression,
-  initHashing,
   hashContent,
   getPromptCacheKey,
   getCachedAnalysis,
@@ -127,10 +137,7 @@ import {
   isCacheEnabled,
   disableRedis,
   getRedisDisabledReason,
-  checkCacheConnection,
-  reserveSessionQuota,
-  commitSessionTokens,
-  refundSessionQuota
+  checkCacheConnection
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -200,7 +207,8 @@ const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
 const MAX_EXTRACTED_ARCHIVE_SIZE = SECURITY_CONFIG.api.maxExtractedArchiveSize;
 const MAX_ARCHIVE_FILE_COUNT = FILE_LIMITS.maxArchiveFileCount;
 const MAX_ARCHIVE_COMPRESSION_RATIO = FILE_LIMITS.maxCompressionRatio;
-const HASH_RE = /^[a-f0-9]{8,16}$/i;
+// SHA-256 file identity (shared/hash.js, issue #146).
+const HASH_RE = /^[a-f0-9]{64}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 // Output budget for an analysis response. On a reasoning model the reasoning trace
@@ -243,9 +251,17 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAIL
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
-// Free-tier budgets are split into this many per-instance shares so several
-// Cloud Run instances cannot overshoot a provider's free tier by the instance
-// count; each provider's own quota errors still latch its route off.
+// Cloud Run --max-instances. deploy-with-secret.sh and cloudbuild.yaml pass the
+// value they deploy with (the GitHub trigger's inline build does not, so the
+// default must match the service's --max-instances).
+const MAX_INSTANCES = readPositiveInt(process.env.MAX_INSTANCES, 10);
+// Free-tier budgets are split into this many per-instance shares; each
+// provider's own quota errors still latch its route off (402 / quota 429).
+// The default stays 2 until the provider budget itself counts in the shared
+// quota store (issue #134 follow-up): binding that store does not share these
+// budgets, and 1/MAX_INSTANCES shares would cut the free tier each running
+// instance can use five-fold and push peak traffic to the paid legs. Set
+// PROVIDER_QUOTA_SHARDS=<max instances> to opt into the hard per-instance bound.
 const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, 2);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
@@ -422,8 +438,14 @@ const fileHandleCodec = createFileHandleCodec({
   ttlMs: SESSION_MAX_AGE_MS
 });
 
-// Per-session AI request/token quotas (server/quotaStore.js)
-const sessionQuota = createSessionQuotaStore();
+// Per-key counters that must hold across Cloud Run instances (issue #134): the
+// AI quota and the cost-bearing limiters. Shared through a dedicated Upstash
+// database when QUOTA_REDIS_REST_URL/TOKEN are bound (server/sharedCounters.js),
+// per instance otherwise or while that store is failing.
+const sharedCounters = createSharedCounterStoreFromEnv(process.env, {
+  onError: error => log.warn('quota.shared_store_error', { message: error.message?.slice(0, 160) })
+});
+const quotaLedger = createQuotaLedger({ shared: sharedCounters, local: createSessionQuotaStore() });
 const REQUEST_LIMIT_PER_SESSION = 50; // Legacy flat cap; superseded by TIER_LIMITS below.
 const TOKEN_LIMIT_PER_SESSION = 500000;
 
@@ -599,7 +621,7 @@ setInterval(() => {
   for (const [jti, expiresAt] of usedSsoNonces.entries()) {
     if (expiresAt <= now) usedSsoNonces.delete(jti);
   }
-  sessionQuota.prune(now);
+  quotaLedger.prune(now);
   providerQuota.prune(now);
   for (const [fileHash, entry] of recentExternalSubmissions.entries()) {
     if (entry.expiresAt <= now) recentExternalSubmissions.delete(fileHash);
@@ -856,16 +878,18 @@ async function generateAIContent(request) {
         });
         return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
       } catch (error) {
-        providerQuota.adjust(experientialReservation, {
-          inputDelta: -experientialReservation.reservedInput,
-          outputDelta: -experientialReservation.reservedOutput
-        });
-        const exhausted = error instanceof AIProviderError
-          && ['AI_QUOTA_EXHAUSTED', 'AI_DAILY_QUOTA_EXHAUSTED', 'AI_AUTH_FAILED'].includes(error.code);
-        if (exhausted) {
-          markExperientialExhausted(error.code === 'AI_QUOTA_EXHAUSTED' ? 'hour' : 'day');
-        }
-        log.warn(exhausted ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
+        // Release the reservation only when the provider never ran the
+        // request; otherwise keep it (or settle it to reported usage) so
+        // failed calls cannot consume the free tier uncounted (issue #138).
+        const settlement = settleFailedProviderReservation(experientialReservation, error);
+        providerQuota.adjust(experientialReservation, settlement);
+        const backoff = error instanceof AIProviderError ? providerBackoffFor(error) : null;
+        if (backoff?.latch) markExperientialExhausted(backoff.latch);
+        if (backoff?.pauseMs) providerQuota.pause('experiential-luna', backoff.pauseMs);
+        log.warn(backoff?.latch ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
+          code: error.code,
+          released: settlement.released,
+          pauseMs: backoff?.pauseMs,
           message: error.message?.slice(0, 140)
         });
         // Fall through to the OpenAI Luna route.
@@ -1105,12 +1129,19 @@ const cacheLimiter = makeLimiter({
   max: readPositiveInt(process.env.CACHE_RATE_LIMIT_MAX, 300),
   name: 'cache'
 });
-const geminiLimiter = makeLimiter({
+// The cost-bearing limiters count in the shared store (issue #134), so a
+// client spread over several instances still gets one budget. Routes run them
+// after requireSession / requireApiKey, so only authenticated requests spend
+// shared-store commands; the per-instance apiLimiter shields /api/ first.
+function sharedLimiter(options) {
+  return makeLimiter({ ...options, store: sharedCounters.rateLimitStore(options.name, options.windowMs) });
+}
+const geminiLimiter = sharedLimiter({
   windowMs: 15 * 60 * 1000,
   max: readPositiveInt(process.env.GEMINI_RATE_LIMIT_MAX, 80),
   name: 'gemini'
 });
-const windbgUploadLimiter = makeLimiter({
+const windbgUploadLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: readPositiveInt(process.env.WINDBG_UPLOAD_RATE_LIMIT_MAX, 50),
   name: 'windbg-upload'
@@ -1120,12 +1151,28 @@ const windbgPollLimiter = makeLimiter({
   max: readPositiveInt(process.env.WINDBG_POLL_RATE_LIMIT_MAX, 600),
   name: 'windbg-poll'
 });
-const archiveLimiter = makeLimiter({
+const archiveLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: readPositiveInt(process.env.ARCHIVE_RATE_LIMIT_MAX, 30),
   name: 'archive'
 });
-const externalAnalyzeSubmitLimiter = makeLimiter({
+// Session-scoped twins of the upload/archive limits (issue #135). A session
+// cookie works from any IP, so per-IP limits alone let one Turnstile solve
+// spend a fresh budget from every address it is presented from.
+const sessionRateLimitKey = req => `sess:${req.sessionId}`;
+const windbgUploadSessionLimiter = sharedLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX, 50),
+  name: 'windbg-upload-session',
+  keyGenerator: sessionRateLimitKey
+});
+const archiveSessionLimiter = sharedLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.ARCHIVE_SESSION_RATE_LIMIT_MAX, 30),
+  name: 'archive-session',
+  keyGenerator: sessionRateLimitKey
+});
+const externalAnalyzeSubmitLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: 60,
   name: 'external-analyze-submit',
@@ -1576,6 +1623,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     redis: isCacheEnabled(),
+    quotaStore: sharedCounters.configured ? 'shared' : 'per-instance',
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -1711,6 +1759,55 @@ function recordWebCrashSignal(sessionId, fileHash, fileHandle, promptText, aiRep
       signal: timeoutSignal(WINDBG_DOWNLOAD_TIMEOUT_MS)
     }))
   });
+}
+
+// Structured WinDBG signal of jobs this instance just served through
+// /api/windbg/download, so the generateContent request that follows can rebuild
+// its prompt without a second upstream fetch. Bounded; oldest entries go first.
+const winDbgSignalMemo = new Map(); // upstreamJobId -> { analysisSignalText, expiresAt }
+const WINDBG_SIGNAL_MEMO_MAX = 256;
+const WINDBG_EVIDENCE_TIMEOUT_MS = 10_000;
+
+function rememberWinDbgSignal(upstreamJobId, analysisSignalText) {
+  if (!upstreamJobId || !analysisSignalText) return;
+  const now = Date.now();
+  for (const [jobId, entry] of winDbgSignalMemo) {
+    if (entry.expiresAt > now && winDbgSignalMemo.size < WINDBG_SIGNAL_MEMO_MAX) break;
+    winDbgSignalMemo.delete(jobId);
+  }
+  winDbgSignalMemo.delete(upstreamJobId);
+  winDbgSignalMemo.set(upstreamJobId, { analysisSignalText, expiresAt: now + OWNERSHIP_EXPIRY });
+}
+
+// WinDBG evidence for a dump this session uploaded (issues #145/#147): the
+// WinDBG-derived cache entry when the analysis cache holds one, else the
+// session's own upstream job. Null when there is no structured signal or the
+// job cannot be read; generateContent then treats the client prompt as
+// unverified (prompt-keyed cache, unlinked corpus row).
+async function loadOwnedWinDbgEvidence(sessionId, fileHash, fileHandle) {
+  const job = getOwnedWinDbgJob(sessionId, fileHash, fileHandle);
+  const cachedEntry = await getCachedAnalysis(fileHash);
+  if (cachedEntry && (cachedEntry.windbgDerived || cachedEntry.windbgOutput) && cachedEntry.analysisSignalText) {
+    return { analysisSignalText: cachedEntry.analysisSignalText, dumpType: job?.dumpType, upstreamJobId: job?.upstreamJobId, cachedEntry };
+  }
+  if (!job?.upstreamJobId || !WINDBG_API_KEY) return null;
+  const memo = winDbgSignalMemo.get(job.upstreamJobId);
+  let analysisSignalText = memo && memo.expiresAt > Date.now() ? memo.analysisSignalText : '';
+  if (!analysisSignalText) {
+    try {
+      analysisSignalText = extractWinDbgAnalysisPackage(await getWinDbgJob({
+        baseUrl: WINDBG_API_BASE_URL,
+        apiKey: WINDBG_API_KEY,
+        jobId: job.upstreamJobId,
+        signal: timeoutSignal(WINDBG_EVIDENCE_TIMEOUT_MS)
+      })).analysisSignalText;
+      rememberWinDbgSignal(job.upstreamJobId, analysisSignalText);
+    } catch (error) {
+      log.warn('ai.windbg_evidence_unavailable', { message: String(error?.message || '').slice(0, 160) });
+      return null;
+    }
+  }
+  return analysisSignalText ? { analysisSignalText, dumpType: job.dumpType, upstreamJobId: job.upstreamJobId } : null;
 }
 
 // Best-effort stats recording; never affects the analysis response.
@@ -2080,7 +2177,7 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
 });
 
 // Browser compatibility endpoint. Provider/model selection remains server-owned.
-app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, requireDataUseTerms, defaultJsonParser, async (req, res) => {
+app.post('/api/gemini/generateContent', requireSession, geminiLimiter, geminiConcurrency, requireDataUseTerms, defaultJsonParser, async (req, res) => {
   // Declared in the handler scope, not inside the try: the catch below reads them
   // to refund the quota reservation, and a catch block is a sibling of its try, not
   // a child of it. Declaring them inside the try made every failure path throw
@@ -2102,15 +2199,12 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   const refundReservation = async (error) => {
     if (!quotaReservation?.allowed || !shouldRefund(error)) return;
     try {
-      const refundArgs = {
+      const refund = await quotaLedger.refund(quotaReservation, {
         requestCost: 1,
         tokenCost: estimatedInputTokens,
         refundCap: quotaRefundCap,
         windowSeconds: quotaWindowSeconds
-      };
-      const refund = quotaReservation.distributed
-        ? await refundSessionQuota(quotaKey, refundArgs)
-        : sessionQuota.refund(quotaKey, refundArgs);
+      });
       if (!refund.refunded) {
         log.warn('quota.refund_declined', {
           quotaKey: safeToken(quotaKey),
@@ -2161,6 +2255,13 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
       quotaKey = sessionId;
     }
+    const quotaScopes = [{ key: quotaKey, requestLimit: limits.requests, tokenLimit: limits.tokens }];
+    // The anonymous SSO-mode key is the client IP, but the session cookie
+    // works from any IP: charge the session too, so one session presented
+    // from N addresses still gets one allowance (issue #135).
+    if (WF_SSO_ENABLED && !req.wfUserId) {
+      quotaScopes.push({ key: `sess:${sessionId}`, requestLimit: limits.requests, tokenLimit: limits.tokens });
+    }
     quotaRefundCap = refundCapFor(limits.requests);
 
     const validation = validateAnalysisPrompt(contents);
@@ -2183,37 +2284,43 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     // Cache-stable prefix + dump evidence already arrives fully formed from the
     // client; the JSON contract lives inside the shared prefix. Forwarding it
-    // verbatim keeps the implicit-cache prefix byte-stable.
-    const serverPrompt = validation.promptText;
+    // verbatim keeps the implicit-cache prefix byte-stable. A WinDBG prompt about
+    // the session's own job is rebuilt server-side below.
+    let serverPrompt = validation.promptText;
 
     // Estimate tokens in request (rough estimate: 1 token = 4 characters)
     const requestText = serverPrompt;
     estimatedInputTokens = Math.ceil(requestText.length / 4);
 
-    // Check cache using fileHash only after the session has proven ownership by
-    // uploading that exact file — AND only when the hash-keyed entry carries
-    // WinDBG provenance (issue #78). Pure-AI reports never take over a shared
-    // hash key, so one uploader cannot plant a fabricated report that other
-    // uploaders of the same dump would be served. The prompt must also carry the
-    // entry's own WinDBG signal: the prompt is client-built, so without that a
-    // session owning the dump could write a report from invented evidence.
+    // The fileHash counts only after the session has proven ownership by
+    // uploading that exact file (issue #40).
     let ownedFileHash = false;
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = sessionOwnsHash(req.sessionId, fileHash, fileHandle);
     }
-    let cacheKey = getPromptCacheKey(hashContent(requestText));
-    let cachedAnalysis = null;
-    if (ownedFileHash) {
-      const provenEntry = await getCachedAnalysis(fileHash);
-      if (provenEntry && (provenEntry.windbgDerived || provenEntry.windbgOutput)
-        && promptCarriesWinDbgSignal(requestText, provenEntry.analysisSignalText)) {
-        cacheKey = fileHash;
-        cachedAnalysis = provenEntry;
+    // A WinDBG prompt about a dump this session uploaded, whose evidence block
+    // is that job's own signal, is rebuilt server-side from the server's copy of
+    // the evidence (issues #145/#147). Only that prompt may use the shared
+    // per-file cache entry (issue #78) or link the corpus row to the WinDBG job,
+    // and nothing the client wrote (the File Information lines and everything
+    // before the evidence block included) reaches the model. Any other prompt
+    // stays private: prompt-keyed cache entry, unlinked corpus row.
+    let ownedEvidence = null;
+    if (validation.promptType === 'windbg' && ownedFileHash) {
+      const evidence = await loadOwnedWinDbgEvidence(req.sessionId, fileHash, fileHandle);
+      if (evidence && promptCarriesWinDbgSignal(requestText, evidence.analysisSignalText)) {
+        ownedEvidence = evidence;
+        const facts = winDbgPromptFileFacts(requestText);
+        serverPrompt = buildServerWinDbgPrompt({
+          analysisSignalText: evidence.analysisSignalText,
+          dumpType: evidence.dumpType || facts.dumpType,
+          fileSize: facts.fileSize
+        });
+        estimatedInputTokens = Math.ceil(serverPrompt.length / 4);
       }
     }
-    if (!cachedAnalysis) {
-      cachedAnalysis = await getCachedAnalysis(cacheKey);
-    }
+    const cacheKey = ownedEvidence ? fileHash : getPromptCacheKey(hashContent(requestText));
+    const cachedAnalysis = ownedEvidence?.cachedEntry ?? await getCachedAnalysis(cacheKey);
     const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
@@ -2229,16 +2336,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         });
         // Hook D (cache-hit): local-parser analyses served from cache still
         // count once per file per day; windbg-prompt requests are excluded
-        // because hook A already counted them.
-        if (validation.promptType === 'local') {
+        // because hook A already counted them. Only a dump this session
+        // uploaded counts: hashless events cannot be deduplicated (issue #149).
+        if (validation.promptType === 'local' && ownedFileHash) {
           recordStats({
             source: 'ai-fallback',
-            fileHash: ownedFileHash ? fileHash : undefined,
+            fileHash,
             aiReport: cachedValidation.report,
             promptText: validation.promptText
           });
-        } else if (validation.promptType === 'windbg' && ownedFileHash) {
-          recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, cachedValidation.report);
+        } else if (ownedEvidence) {
+          recordWebCrashSignal(req.sessionId, fileHash, fileHandle, serverPrompt, cachedValidation.report);
         }
         return res.json({
           ...cachedResponse,
@@ -2260,23 +2368,14 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // both caps are checked before either counter moves, so concurrent
     // requests cannot all pass a read-then-write limit check. The reservation
     // happens after the cache-miss check, so cached answers still cost nothing.
-    const quotaArgs = {
+    // The ledger counts in the shared store when one is bound (issue #134).
+    const reserved = await quotaLedger.reserve(quotaScopes, {
       requestCost: 1,
       tokenCost: estimatedInputTokens,
-      requestLimit: limits.requests,
-      tokenLimit: limits.tokens,
       windowSeconds: quotaWindowSeconds
-    };
-    const reserved = await reserveSessionQuota(quotaKey, quotaArgs)
-      ?? sessionQuota.reserve(quotaKey, quotaArgs);
+    });
     quotaReservation = reserved;
     if (!reserved.allowed) {
-      if (reserved.reason === 'unavailable') {
-        return res.status(503).json({
-          error: 'Quota service temporarily unavailable. Please try again later.',
-          code: 'QUOTA_UNAVAILABLE'
-        });
-      }
       const tokenExhausted = reserved.reason === 'tokens';
       log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
@@ -2350,11 +2449,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
     const tokenDelta = actualInputTokens + outputTokens - estimatedInputTokens;
-    if (reserved.distributed) {
-      await commitSessionTokens(quotaKey, { tokenDelta, windowSeconds: quotaWindowSeconds });
-    } else {
-      sessionQuota.commit(quotaKey, { tokenDelta });
-    }
+    await quotaLedger.commit(reserved, { tokenDelta });
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2415,13 +2510,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       aiReport: responseData,
       aiModel: modelName
     });
+    // Only the server-rebuilt WinDBG prompt is linked to its dump and job and
+    // marked verified (issue #147); a client-built prompt is recorded unlinked,
+    // so it can never become a job's AI facts in /stats or the corpus priors.
     recordAiReport({
       origin: 'web',
       dataUseTerms: DATA_USE_TERMS_VERSION,
-      source: validation.promptType === 'local' ? 'ai-fallback' : 'windbg',
+      source: ownedEvidence ? 'windbg' : validation.promptType === 'local' ? 'ai-fallback' : 'unverified',
       promptType: validation.promptType,
-      fileHash: ownedFileHash ? fileHash : undefined,
-      jobId: ownedFileHash ? getOwnedWinDbgJob(req.sessionId, fileHash, fileHandle)?.upstreamJobId : undefined,
+      promptVerified: Boolean(ownedEvidence),
+      fileHash: ownedEvidence ? fileHash : undefined,
+      jobId: ownedEvidence?.upstreamJobId,
       model: response.cacheModel || modelName,
       modelVersion: response.modelVersion,
       serviceTier: response.serviceTier,
@@ -2432,16 +2531,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       usage: response.usageMetadata
     });
 
-    // Hook D (fresh): local-parser + AI fallback completed — record stats.
-    if (validation.promptType === 'local') {
+    // Hook D (fresh): local-parser + AI fallback completed — record stats, for
+    // a dump this session uploaded only (issue #149).
+    if (validation.promptType === 'local' && ownedFileHash) {
       recordStats({
         source: 'ai-fallback',
-        fileHash: ownedFileHash ? fileHash : undefined,
+        fileHash,
         aiReport: reportValidation.report,
         promptText: validation.promptText
       });
-    } else if (validation.promptType === 'windbg' && ownedFileHash) {
-      recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, reportValidation.report);
+    } else if (ownedEvidence) {
+      recordWebCrashSignal(req.sessionId, fileHash, fileHandle, serverPrompt, reportValidation.report);
     }
 
     res.json(responseData);
@@ -2632,7 +2732,7 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
+app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), requireSession, windbgUploadLimiter, windbgUploadSessionLimiter, windbgUploadConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
     // tiers (anonymous + logged-in members) fall back client-side to the local
@@ -2878,6 +2978,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
     if (!analysisText) {
       throw new Error('Completed WinDBG job did not include analysis output');
     }
+    rememberWinDbgSignal(upstreamJobId, analysisSignalText);
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes', 'AI signal:', analysisSignalText.length, 'bytes');
 
     // Cache the WinDBG output (UID is the file hash)
@@ -2920,7 +3021,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
 // ============================================================
 // Archive Extraction Endpoint (7z/RAR)
 // ============================================================
-app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), archiveConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
+app.post('/api/extract-archive', rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), requireSession, archiveLimiter, archiveSessionLimiter, archiveConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -3139,8 +3240,10 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
   // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
   // the tail so provider-side prefix caching can be reused across analyses.
+  // The caller-supplied name (a forum attachment name) stays out of the prompt:
+  // this report is written to the shared per-file cache entry (issue #145).
   const evidence = buildWinDbgEvidence({
-    fileName,
+    fileName: SERVER_PROMPT_FILE_NAME,
     dumpType,
     fileSize,
     analysisForPrompt,
@@ -3187,6 +3290,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
       dataUseTerms: `api-${DATA_USE_TERMS_VERSION}`,
       source: 'windbg',
       promptType: 'windbg',
+      promptVerified: true,
       fileHash,
       jobId: options.jobId,
       model: response.cacheModel || modelName,
@@ -3221,8 +3325,37 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
 const externalJobCodec = createExternalJobCodec({
   secret: ACTUAL_SESSION_SECRET,
-  previousSecret: process.env.SESSION_SECRET_PREVIOUS
+  previousSecret: process.env.SESSION_SECRET_PREVIOUS,
+  // A uid answers polls for as long as its result is memoized, and never for
+  // less than the processing deadline (issue #136).
+  maxAgeMs: Math.max(EXTERNAL_JOB_TTL_MS, EXTERNAL_JOB_DEADLINE_SECONDS * 1000)
 });
+// Report generation reached from a status poll runs inside the poll, after
+// the client may have gone (server/concurrency.js), so it takes its own slot
+// like the submit route does; a busy instance answers "processing" and the
+// next poll retries (issue #136).
+const externalReportConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
+
+async function generateExternalReport(job, analysis) {
+  const release = externalReportConcurrency.tryAcquire();
+  if (!release) throw Object.assign(new Error('report generation busy'), { code: 'ANALYSIS_BUSY' });
+  try {
+    return await generateAIReportFromWinDBG(
+      job.fileName,
+      job.dumpType,
+      job.fileSize,
+      analysis.windbgOutput,
+      job.fileHash,
+      {
+        analysisSignalText: analysis.analysisSignalText,
+        structured: analysis.structured,
+        jobId: job.upstreamJobId
+      }
+    );
+  } finally {
+    release();
+  }
+}
 const externalJobResolver = createExternalJobResolver({
   // One GET returns status and, once completed, the full analysis.
   getUpstreamJob: jobId => getWinDbgJob({
@@ -3235,18 +3368,7 @@ const externalJobResolver = createExternalJobResolver({
   extractAnalysis: extractWinDbgAnalysisPackage,
   loadCachedAnalysis: fileHash => getCachedAnalysis(fileHash),
   cacheAnalysis: cacheExternalWinDbgAnalysis,
-  generateReport: (job, analysis) => generateAIReportFromWinDBG(
-    job.fileName,
-    job.dumpType,
-    job.fileSize,
-    analysis.windbgOutput,
-    job.fileHash,
-    {
-      analysisSignalText: analysis.analysisSignalText,
-      structured: analysis.structured,
-      jobId: job.upstreamJobId
-    }
-  ),
+  generateReport: generateExternalReport,
   recordStats: (job, analysis) => recordStats({
     source: 'windbg',
     fileHash: job.fileHash,
@@ -3376,7 +3498,7 @@ const ARCHIVE_EXTRACT_ENGINE =
 
 // Main external API endpoint
 // Main external API endpoint
-app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
+app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -3468,7 +3590,9 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     if (cachedAnalysis?.windbgOutput) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
       const uid = externalJobCodec.issue({ fileHash, fileName, fileSize, dumpType, originalZip });
-      const result = await externalJobResolver.resolve(externalJobCodec.parse(uid));
+      // A busy report slot or transient trouble leaves it to the first poll.
+      const result = await externalJobResolver.resolve(externalJobCodec.parse(uid))
+        .catch(() => ({ status: 'processing' }));
       log.info('analyze.complete', {
         status: result.status,
         processingTime: (Date.now() - startTime) / 1000,
@@ -3555,7 +3679,7 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
   }
   const job = externalJobCodec.parse(uid);
   if (!job) {
-    return res.status(404).json({ success: false, error: 'Job not found' });
+    return res.status(404).json({ success: false, error: 'Job not found or expired' });
   }
 
   let result;
@@ -3753,7 +3877,7 @@ app.use((req, res) => {
   res.send(html);
 });
 
-// Cache index.html in memory and ensure xxhash is ready before accepting requests
+// Cache index.html in memory before accepting requests
 let cachedIndexHtml;
 // Prerendered homepage HTML served for the "/" route (falls back to index.html)
 let cachedHomeHtml;
@@ -3776,9 +3900,6 @@ async function startServer() {
     throw new Error('WF_DEV_TIER is a development-only escape hatch and must not be set in production');
   }
 
-  // Content hashing (analysis cache keys) must be ready before accepting requests
-  await initHashing();
-
   // Never crash-loop over Redis (2026-09 outage: an exhausted Upstash quota
   // failed this probe on every cold start). Serve from in-memory state instead.
   if (isCacheEnabled() && !(await checkCacheConnection())) {
@@ -3786,6 +3907,17 @@ async function startServer() {
   }
   if (!isCacheEnabled()) {
     log.warn('redis.off', { reason: getRedisDisabledReason() || 'not configured' });
+  }
+  // Visible, not fatal: refusing to boot would turn a missing quota store into
+  // an outage (2026-09). Without it the AI quota and the upload/archive/AI
+  // limiters are per instance (today's behavior) and admit up to MAX_INSTANCES
+  // times their limit. WARNING, like redis.off: an expected configuration
+  // state, not a fault, so it adds no ERROR entry to every instance start.
+  if (!sharedCounters.configured && process.env.NODE_ENV === 'production') {
+    log.warn('quota.shared_store_missing', {
+      maxInstances: MAX_INSTANCES,
+      message: 'QUOTA_REDIS_REST_URL/QUOTA_REDIS_REST_TOKEN not bound; per-key quotas and limits are per instance'
+    });
   }
   await initCacheCompression();
 

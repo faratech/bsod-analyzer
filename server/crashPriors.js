@@ -2,11 +2,31 @@
 // faulting module from bigquery/crash_insights.sql (published daily to Cloud
 // Storage, read through server/gcsJson.js). Best-effort by design: a missing,
 // slow or malformed priors file yields '' and never blocks or fails an analysis.
-import { normalizeStopCode } from './stats.js';
+import { normalizeLabel, normalizeModuleKey, normalizeStopCode } from './stats.js';
 import { WINDBG_OUTPUT_MARKER } from '../shared/promptTemplates.js';
 
 export const PSEUDO_MODULES = new Set(['unknown_image', 'unknown', 'memory_corruption', 'ntoskrnl.wrong.symbols.exe']);
 const MAX_CONTEXT_CHARS = 1200;
+
+// Every value below lands in OTHER users' AI prompts, and comes from WinDBG
+// output of uploaded (craftable) dumps or from AI reports, so each one is
+// clamped to its expected shape and dropped otherwise (issue #148), as #79
+// did for the stats-insight digest.
+// The canonical names bigquery/routines.sql norm_manufacturer() produces.
+export const KNOWN_MANUFACTURERS = new Set([
+  'NVIDIA', 'AMD', 'Intel', 'Microsoft', 'Realtek', 'Qualcomm / Killer', 'MediaTek', 'Broadcom',
+  'VMware', 'Oracle (VirtualBox)', 'Logitech', 'Corsair', 'Razer', 'ASUS', 'MSI', 'Gigabyte',
+  'Riot (Vanguard)', 'BattlEye', 'Epic (EasyAntiCheat)'
+]);
+
+function normalizePriorVersion(value) {
+  const text = String(value ?? '').trim();
+  return /^\d{1,5}(?:\.\d{1,5}){0,3}$/.test(text) ? text : null;
+}
+
+function normalizePriorManufacturer(value) {
+  return KNOWN_MANUFACTURERS.has(value) ? value : null;
+}
 
 function pct(share) {
   const value = Number(share);
@@ -15,11 +35,12 @@ function pct(share) {
   return `${Math.round(value * 100)}%`;
 }
 
-function listOf(items, key, limit) {
+function listOf(items, key, limit, normalize) {
   return (Array.isArray(items) ? items : [])
-    .filter(item => item && item[key] && !PSEUDO_MODULES.has(String(item[key]).toLowerCase()))
+    .map(item => ({ value: item ? normalize(item[key]) : null, share: item?.share }))
+    .filter(item => item.value)
     .slice(0, limit)
-    .map(item => `${item[key]} (${pct(item.share)})`)
+    .map(item => `${item.value} (${pct(item.share)})`)
     .join(', ');
 }
 
@@ -28,30 +49,36 @@ export function normalizePriorCode(value) {
 }
 
 export function normalizePriorImage(value) {
-  const image = String(value || '').trim().toLowerCase();
+  const image = normalizeModuleKey(value);
   return image && !PSEUDO_MODULES.has(image) ? image : null;
 }
 
 function bugcheckLine(code, p) {
   const parts = [`${pct(p.share_of_all)} of analyses`];
-  const modules = listOf(p.top_modules, 'image', 3);
+  const modules = listOf(p.top_modules, 'image', 3, normalizePriorImage);
   if (modules) parts.push(`faulting module most often ${modules}`);
   if (p.hardware_share != null) parts.push(`judged hardware-caused ${pct(p.hardware_share)}`);
   if (p.first_minute_share) parts.push(`${pct(p.first_minute_share)} within the first minute after boot`);
-  return `- Stop code ${code}${p.name ? ` ${p.name}` : ''}: ${parts.join('; ')}.`;
+  const name = normalizeLabel(p.name);
+  return `- Stop code ${code}${name ? ` ${name}` : ''}: ${parts.join('; ')}.`;
 }
 
 function imageLine(image, p) {
   const parts = [`${Number(p.n).toLocaleString('en-US')} analyses`];
-  const codes = listOf(p.top_stop_codes, 'code', 3);
+  const codes = listOf(p.top_stop_codes, 'code', 3, normalizePriorCode);
   if (codes) parts.push(`usually ${codes}`);
-  const versions = listOf(p.top_versions, 'version', 2);
+  const versions = listOf(p.top_versions, 'version', 2, normalizePriorVersion);
   if (versions) parts.push(`most seen versions ${versions}`);
   if (p.hardware_share) parts.push(`judged hardware-caused ${pct(p.hardware_share)}`);
-  return `- ${image}${p.manufacturer ? ` (${p.manufacturer})` : ''}: ${parts.join('; ')}.`;
+  const manufacturer = normalizePriorManufacturer(p.manufacturer);
+  return `- ${image}${manufacturer ? ` (${manufacturer})` : ''}: ${parts.join('; ')}.`;
 }
 
-export function formatPriorContext({ code, codePrior, image, imagePrior }) {
+export function formatPriorContext({ code: rawCode, codePrior, image: rawImage, imagePrior }) {
+  const code = normalizePriorCode(rawCode);
+  const image = normalizePriorImage(rawImage);
+  if (!code) codePrior = null;
+  if (!image) imagePrior = null;
   const lines = [];
   if (codePrior) lines.push(bugcheckLine(code, codePrior));
   if (imagePrior) lines.push(imageLine(image, imagePrior));

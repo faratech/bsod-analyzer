@@ -262,18 +262,30 @@ for SECRET in "gemini-api-key" "deepseek-api-key" "experiential-labs-api-key" "t
     fi
 done
 
-# Grant Cloud Build service account access to Cloudflare secrets
-# (needed for cloudbuild.yaml secretEnv in the cache purge step)
+# Grant the Cloud Build trigger's service account deploy-as on the runtime SA
+# and access to the Cloudflare secrets (cloudbuild.yaml secretEnv in the cache
+# purge step). Only the account the trigger actually runs as gets these: pass
+# it as CLOUDBUILD_SERVICE_ACCOUNT, ideally a dedicated build SA. The default
+# Compute Engine SA is never granted: it is the identity of every VM, Cloud
+# Run service and function in the project that names no account of its own
+# (issue #143).
 echo "🔓 Granting Cloud Build access to Cloudflare secrets..."
 PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)" 2>/dev/null || echo "")
-if [ -n "$PROJECT_NUMBER" ]; then
-    CLOUDBUILD_SERVICE_ACCOUNTS=(
-        "${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-        "${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-    )
+if [ -n "${CLOUDBUILD_SERVICE_ACCOUNT:-}" ] || [ -n "$PROJECT_NUMBER" ]; then
     if [ -n "${CLOUDBUILD_SERVICE_ACCOUNT:-}" ]; then
-        CLOUDBUILD_SERVICE_ACCOUNTS+=("${CLOUDBUILD_SERVICE_ACCOUNT}")
+        CLOUDBUILD_SERVICE_ACCOUNTS=("${CLOUDBUILD_SERVICE_ACCOUNT}")
+    else
+        # Legacy default for triggers still running as the Cloud Build SA.
+        CLOUDBUILD_SERVICE_ACCOUNTS=("${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com")
+        echo "  ℹ️  CLOUDBUILD_SERVICE_ACCOUNT not set; granting the legacy Cloud Build SA only."
+        echo "     Check the trigger: gcloud builds triggers describe <trigger> --format='value(serviceAccount)'"
     fi
+    case " ${CLOUDBUILD_SERVICE_ACCOUNTS[*]} " in
+        *"-compute@developer.gserviceaccount.com "*)
+            echo "  ❌ Refusing to grant the default Compute Engine SA; run the trigger as a dedicated build SA."
+            exit 1
+            ;;
+    esac
 
     for CLOUDBUILD_SA in "${CLOUDBUILD_SERVICE_ACCOUNTS[@]}"; do
         MEMBER="serviceAccount:${CLOUDBUILD_SA}"
@@ -300,7 +312,7 @@ if [ -n "$PROJECT_NUMBER" ]; then
         done
     done
 else
-    echo "  ⚠️  Could not determine project number, skipping Cloud Build SA grants"
+    echo "  ⚠️  Could not determine project number and CLOUDBUILD_SERVICE_ACCOUNT is unset, skipping Cloud Build SA grants"
 fi
 
 echo ""

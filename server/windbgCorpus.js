@@ -127,7 +127,10 @@ export function buildAiReportRow(entry, { now = Date.now(), reportId } = {}) {
     final_report: jsonValue(entry.finalReport),
     usage: jsonValue(entry.usage),
     prompt_omitted_for_size: false,
-    data_use_terms: text(entry.dataUseTerms)
+    data_use_terms: text(entry.dataUseTerms),
+    // True only for prompts the server built from the job's own evidence
+    // (issue #147); only these may become a job's AI facts.
+    prompt_verified: entry.promptVerified === true
   };
 }
 

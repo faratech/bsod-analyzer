@@ -56,3 +56,16 @@ test('eventsQuery reads stats.analysis events from the given table', () => {
   assert.match(sql, /jsonPayload\.event = 'stats\.analysis'/);
   assert.match(sql, /@window_days/);
 });
+
+test('hashless ai-fallback events never count (issue #149)', () => {
+  const sql = eventsQuery('proj.bsod_stats.events');
+  assert.match(sql, /AND \(jsonPayload\.source = 'windbg' OR NULLIF\(jsonPayload\.file_hash, ''\) IS NOT NULL\)/);
+});
+
+test('bigquery/live_stats.sql is the generated eventsQuery', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const committed = await readFile(new URL('../bigquery/live_stats.sql', import.meta.url), 'utf8');
+  const events = eventsQuery('project-bigfoot.bsod_stats.run_googleapis_com_stdout');
+  assert.ok(committed.includes(events.trim().split('\n').slice(0, 20).join('\n')),
+    'regenerate with: node scripts/build-live-stats-sql.mjs > bigquery/live_stats.sql');
+});

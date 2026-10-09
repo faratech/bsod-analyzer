@@ -1,12 +1,15 @@
 // Per-instance quota accounting: per-session AI request/token quotas (issue #77)
 // and the AI providers' free-tier token budgets.
 //
-// Neither needs a shared store to be safe. Session affinity keeps a client on
-// one Cloud Run instance, so session quotas stay close to exact. Provider
-// budgets are split into `shards` shares so several instances cannot overshoot
-// a free tier by the instance count, and each provider's own quota errors
-// latch its route off (markExhausted). Counts reset when an instance restarts,
-// which hourly/daily windows tolerate.
+// Session affinity does NOT keep a client on one Cloud Run instance: it is
+// best effort, a client can drop the affinity cookie, and requests beyond
+// --concurrency spill to other instances (issue #134). Session quotas here are
+// therefore only the fallback for server/sharedCounters.js, which keeps them
+// shared when QUOTA_REDIS_REST_URL/TOKEN are bound. Provider budgets are split
+// into `shards` shares, one per possible instance (MAX_INSTANCES), so the
+// instances together can never overshoot a free tier; each provider's own
+// quota errors also latch its route off (markExhausted). Counts reset when an
+// instance restarts, which hourly/daily windows tolerate.
 
 export function createSessionQuotaStore() {
   const entries = new Map(); // quotaKey -> { requests, tokens, refunds, resetTime }
@@ -55,13 +58,22 @@ export function createSessionQuotaStore() {
     return { refunded: true, refundsUsed: entry.refunds, refundCap };
   }
 
+  // Undoes a reservation outright (no refund cap): used when another scope of
+  // the same request rejected it, so the request never ran.
+  function release(quotaKey, { requestCost = 1, tokenCost, now = Date.now() }) {
+    const entry = liveEntry(quotaKey, now);
+    if (!entry) return;
+    entry.requests = Math.max(0, entry.requests - requestCost);
+    entry.tokens = Math.max(0, entry.tokens - Math.max(0, Math.ceil(Number(tokenCost) || 0)));
+  }
+
   function prune(now = Date.now()) {
     for (const [key, entry] of entries) {
       if (now > entry.resetTime) entries.delete(key);
     }
   }
 
-  return { reserve, commit, refund, prune, size: () => entries.size };
+  return { reserve, commit, refund, release, prune, size: () => entries.size };
 }
 
 function utcWindows(now) {
@@ -98,7 +110,14 @@ export function createProviderQuotaStore({ shards = 1 } = {}) {
   }
 
   function isExhausted(provider, now = Date.now()) {
-    return ['day', 'hour'].some(scope => (exhaustedUntil.get(`${provider}:${scope}`) || 0) > now);
+    return ['day', 'hour', 'pause'].some(scope => (exhaustedUntil.get(`${provider}:${scope}`) || 0) > now);
+  }
+
+  // Short back-off after a transient rate limit (issue #138): unlike
+  // markExhausted it never outlasts `ms`.
+  function pause(provider, ms, now = Date.now()) {
+    const until = now + Math.max(0, Number(ms) || 0);
+    if (until > (exhaustedUntil.get(`${provider}:pause`) || 0)) exhaustedUntil.set(`${provider}:pause`, until);
   }
 
   // Latch a provider off until the end of the current UTC hour or day.
@@ -172,7 +191,7 @@ export function createProviderQuotaStore({ shards = 1 } = {}) {
     }
   }
 
-  return { reserve, adjust, markExhausted, isExhausted, prune, shardCount };
+  return { reserve, adjust, markExhausted, pause, isExhausted, prune, shardCount };
 }
 
 /**
@@ -197,4 +216,48 @@ export function settleProviderTokenReservation(reservation, {
     outputDelta: actualOutput - reservation.reservedOutput,
     usageEstimated: !inputKnown || !outputKnown
   };
+}
+
+const RATE_LIMIT_PAUSE_DEFAULT_MS = 30 * 1000;
+const RATE_LIMIT_PAUSE_MAX_MS = 5 * 60 * 1000;
+
+/**
+ * Settles a provider reservation after a failed call (issue #138). Only a
+ * request the provider provably never processed (error.notProcessed) releases
+ * its reservation; one that may have run keeps it, moved to the reported usage
+ * when the error carries any, so failures cannot spend tokens uncounted.
+ */
+export function settleFailedProviderReservation(reservation, error) {
+  if (!reservation?.allowed) return null;
+  if (error?.notProcessed === true) {
+    return { inputDelta: -reservation.reservedInput, outputDelta: -reservation.reservedOutput, released: true };
+  }
+  const usage = error?.usageMetadata;
+  if (usage) {
+    const settled = settleProviderTokenReservation(reservation, {
+      inputTokens: usage.promptTokenCount,
+      outputTokens: usage.candidatesTokenCount
+    });
+    return { inputDelta: settled.inputDelta, outputDelta: settled.outputDelta, released: false };
+  }
+  return { inputDelta: 0, outputDelta: 0, released: false };
+}
+
+/**
+ * How long a provider failure takes its route out of rotation (issue #138):
+ * an explicit quota response latches it for the UTC hour or day, a transient
+ * rate limit pauses it for Retry-After (bounded), anything else not at all.
+ */
+export function providerBackoffFor(error) {
+  switch (error?.code) {
+    case 'AI_QUOTA_EXHAUSTED': return { latch: 'hour' };
+    case 'AI_DAILY_QUOTA_EXHAUSTED':
+    case 'AI_AUTH_FAILED': return { latch: 'day' };
+    case 'AI_RATE_LIMITED': {
+      const wanted = Number(error.retryAfterMs);
+      const ms = Number.isFinite(wanted) && wanted > 0 ? wanted : RATE_LIMIT_PAUSE_DEFAULT_MS;
+      return { pauseMs: Math.min(ms, RATE_LIMIT_PAUSE_MAX_MS) };
+    }
+    default: return null;
+  }
 }

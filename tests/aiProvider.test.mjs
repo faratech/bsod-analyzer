@@ -96,6 +96,79 @@ test('Experiential adapter latches an explicitly daily quota response for the da
   );
 });
 
+// Issue #138: only explicit quota signals latch the route; other 429s are a
+// short rate limit. Errors say whether the provider can have run the request.
+const experiential = (fetchImpl, options = {}) => generateExperientialContent({ contents: 'x', config: {} }, {
+  apiKey: 'test-key',
+  maxRetries: 0,
+  sleepImpl: async () => {},
+  fetchImpl,
+  ...options
+});
+
+test('Experiential adapter treats a plain 429 as a transient rate limit, not quota', async () => {
+  await assert.rejects(
+    () => experiential(async () => new Response(
+      JSON.stringify({ error: { message: 'Rate limit reached, slow down', type: 'rate_limit_error' } }),
+      { status: 429, headers: { 'Retry-After': '7' } }
+    )),
+    error => error instanceof AIProviderError
+      && error.code === 'AI_RATE_LIMITED'
+      && error.retryable === true
+      && error.notProcessed === true
+      && error.retryAfterMs === 7000
+  );
+
+  const sleeps = [];
+  let calls = 0;
+  const result = await experiential(async () => (++calls === 1
+    ? new Response(JSON.stringify({ error: { message: 'Too many requests' } }), { status: 429, headers: { 'Retry-After': '1' } })
+    : new Response(JSON.stringify({ model: 'gpt-6-luna', choices: [{ message: { content: '{"ok":true}' } }], usage: {} }), { status: 200 })),
+  { maxRetries: 1, sleepImpl: async ms => { sleeps.push(ms); } });
+  assert.equal(result.text, '{"ok":true}');
+  assert.deepEqual(sleeps, [1000], 'the retry honors Retry-After');
+});
+
+test('Experiential adapter still latches explicit quota codes on a 429', async () => {
+  await assert.rejects(
+    () => experiential(async () => new Response(
+      JSON.stringify({ error: { message: 'You exceeded your current quota', code: 'insufficient_quota' } }),
+      { status: 429 }
+    )),
+    error => error.code === 'AI_QUOTA_EXHAUSTED' && error.notProcessed === true
+  );
+});
+
+test('Experiential failures say whether the provider can have run the request', async () => {
+  const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+  const reset = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+  const timeout = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+  const cases = [
+    [async () => { throw refused; }, true],
+    [async () => { throw reset; }, false],
+    [async () => { throw timeout; }, false],
+    [async () => new Response('bad request', { status: 400 }), true],
+    [async () => new Response('upstream', { status: 500 }), false],
+    [async () => new Response(JSON.stringify({ error: { message: 'model overloaded' } }), { status: 200 }), false]
+  ];
+  for (const [fetchImpl, notProcessed] of cases) {
+    await assert.rejects(() => experiential(fetchImpl), error => error.notProcessed === notProcessed);
+  }
+});
+
+test('an empty Experiential response carries the usage it consumed', async () => {
+  await assert.rejects(
+    () => experiential(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 1200, completion_tokens: 256 }
+    }), { status: 200 })),
+    error => error.code === 'INVALID_AI_RESPONSE'
+      && error.notProcessed === false
+      && error.usageMetadata.promptTokenCount === 1200
+      && error.usageMetadata.candidatesTokenCount === 256
+  );
+});
+
 test('AI provider selection accepts server-supported model IDs only', () => {
   assert.equal(getAIProviderForModel(DEFAULT_GEMINI_MODEL), 'gemini');
   assert.equal(getAIProviderForModel('gemini-3.5-flash'), 'gemini');
