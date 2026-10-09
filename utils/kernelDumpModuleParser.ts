@@ -139,6 +139,19 @@ function extractFilename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+// Module names come from the dump's own string table, which a crafted dump
+// controls (up to 256 UTF-16 code units, newlines and markdown included). They
+// reach the AI prompt, the report culprit, crashLocation, loadedModules and the
+// forum summary, so only names shaped like a module file name are kept
+// (issue #150). Inner dots are allowed for names such as
+// Microsoft.Bluetooth.Legacy.LEEnumerator.sys; the 64-character cap matches
+// isLegitimateModuleName in dumpParser.ts.
+const MODULE_FILE_NAME_RE = /^[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,59}\.(?:sys|dll|exe)$/i;
+
+export function isPlausibleModuleFileName(name: string): boolean {
+  return MODULE_FILE_NAME_RE.test(name);
+}
+
 /**
  * Parse a PAGEDU64 (64-bit Windows kernel crash dump) file
  */
@@ -194,9 +207,12 @@ function parseKernelDump64(buffer: ArrayBuffer): KernelDumpResult | null {
     const size = view.getBigUint64(offset + MODULE64_SIZE_OFFSET, true);
 
     const fullPath = strings.get(nameRva);
-    if (fullPath && baseAddr > 0n && size > 0n) {
+    const name = fullPath ? extractFilename(fullPath) : '';
+    // A module whose name fails the check is dropped, so it can never become
+    // the culprit either; the report then falls back to the AI's culprit.
+    if (name && isPlausibleModuleFileName(name) && baseAddr > 0n && size > 0n) {
       modules.push({
-        name: extractFilename(fullPath),
+        name,
         base: baseAddr,
         size: size,
         end: baseAddr + size,

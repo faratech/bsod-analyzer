@@ -128,12 +128,35 @@ export function getReportFacts(dumpFile) {
   };
 }
 
+// Path redaction for the forum-safe summary (issue #151). A path is redacted as
+// a whole span: directory segments may contain spaces ("Jane Doe", "Program
+// Files (x86)") because the next separator closes them, while the last segment
+// stops at whitespace so the sentence after a path survives. Separator runs
+// cover JSON-escaped paths (C:\\Users\\...). Segment characters exclude ':'
+// and the markdown/quote delimiters, so a scan never runs past the next
+// drive prefix or delimiter and stays linear.
+const PATH_SEGMENT = String.raw`[^\\/\r\n"'\x60|<>*?:]+`;
+const PATH_LAST_SEGMENT = String.raw`[^\\/\s"'\x60|<>*?:)]*`;
+const PATH_TAIL = String.raw`(?:${PATH_SEGMENT}[\\/]+)*${PATH_LAST_SEGMENT}`;
+// C:\..., C:/..., and the \??\C:\ / \\?\C:\ / \\.\C:\ prefixed forms.
+const DRIVE_PATH_RE = new RegExp(String.raw`(?:\\\\[?.]\\|\\\?\?\\)?\b[A-Z]:[\\/]+${PATH_TAIL}`, 'gi');
+// NT device paths: \Device\HarddiskVolume3\Users\<name>\...
+const DEVICE_PATH_RE = new RegExp(String.raw`\\Device[\\/]+${PATH_TAIL}`, 'gi');
+// UNC paths: \\server\share\...
+const UNC_PATH_RE = new RegExp(String.raw`\\\\(?=[^\\/\s])${PATH_TAIL}`, 'g');
+// A profile name in any remaining form (%SystemDrive%\Users\<name>, Users/<name>).
+// It may contain spaces and runs to the next separator or delimiter, so a
+// trailing "Users\Jane Doe" is masked whole.
+const PROFILE_NAME_RE = new RegExp(String.raw`\b(Users|Documents and Settings)([\\/]+)[^\\/\r\n"'\x60|<>*?:)]+`, 'gi');
+
 export function redactPublicReportText(value) {
   return String(value || '')
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip-redacted]')
     .replace(/\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]{1,}\b/gi, '[ip-redacted]')
-    .replace(/\b[A-Z]:\\[^\s`|)]+/gi, '[path-redacted]')
-    .replace(/\\\\[^\s`|)]+/g, '[path-redacted]')
+    .replace(PROFILE_NAME_RE, '$1$2[user-redacted]')
+    .replace(DRIVE_PATH_RE, '[path-redacted]')
+    .replace(DEVICE_PATH_RE, '[path-redacted]')
+    .replace(UNC_PATH_RE, '[path-redacted]')
     .replace(/\bWF-[0-9a-f-]{36}(?:-\d+)?\b/gi, '[job-redacted]')
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[id-redacted]');
 }
