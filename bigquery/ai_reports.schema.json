@@ -18,7 +18,7 @@
   {
     "name": "source",
     "type": "STRING",
-    "description": "windbg (from WinDBG evidence) or ai-fallback (local parser only)"
+    "description": "windbg (server-built prompt from the WinDBG evidence), ai-fallback (local parser only) or unverified (browser-built WinDBG prompt the server could not rebuild; never linked to a job)"
   },
   {
     "name": "prompt_type",
@@ -27,7 +27,7 @@
   {
     "name": "job_id",
     "type": "STRING",
-    "description": "WinDbg-API job id; joins bsod_corpus.windbg_analyses.job_id"
+    "description": "WinDbg-API job id; joins bsod_corpus.windbg_analyses.job_id. Set only when prompt_verified"
   },
   {
     "name": "file_hash",
@@ -90,5 +90,10 @@
     "name": "data_use_terms",
     "type": "STRING",
     "description": "Data-use terms version the submission was made under (web: YYYY-MM; API: api-YYYY-MM); NULL = collected before terms existed"
+  },
+  {
+    "name": "prompt_verified",
+    "type": "BOOLEAN",
+    "description": "True when the server built the prompt from the WinDBG job's own evidence (api, regenerated, and web prompts rebuilt server-side); only these rows feed ai_facts_since. NULL = recorded before the column existed"
   }
 ]

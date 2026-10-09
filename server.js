@@ -79,7 +79,15 @@ import {
 } from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
-import { buildWinDbgEvidence, normalizeAnalysisReport, parseAndValidateAnalysisReport, promptCarriesWinDbgSignal } from './server/analysisReport.js';
+import {
+  SERVER_PROMPT_FILE_NAME,
+  buildServerWinDbgPrompt,
+  buildWinDbgEvidence,
+  normalizeAnalysisReport,
+  parseAndValidateAnalysisReport,
+  promptCarriesWinDbgSignal,
+  winDbgPromptFileFacts
+} from './server/analysisReport.js';
 import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
@@ -1702,6 +1710,55 @@ function recordWebCrashSignal(sessionId, fileHash, fileHandle, promptText, aiRep
   });
 }
 
+// Structured WinDBG signal of jobs this instance just served through
+// /api/windbg/download, so the generateContent request that follows can rebuild
+// its prompt without a second upstream fetch. Bounded; oldest entries go first.
+const winDbgSignalMemo = new Map(); // upstreamJobId -> { analysisSignalText, expiresAt }
+const WINDBG_SIGNAL_MEMO_MAX = 256;
+const WINDBG_EVIDENCE_TIMEOUT_MS = 10_000;
+
+function rememberWinDbgSignal(upstreamJobId, analysisSignalText) {
+  if (!upstreamJobId || !analysisSignalText) return;
+  const now = Date.now();
+  for (const [jobId, entry] of winDbgSignalMemo) {
+    if (entry.expiresAt > now && winDbgSignalMemo.size < WINDBG_SIGNAL_MEMO_MAX) break;
+    winDbgSignalMemo.delete(jobId);
+  }
+  winDbgSignalMemo.delete(upstreamJobId);
+  winDbgSignalMemo.set(upstreamJobId, { analysisSignalText, expiresAt: now + OWNERSHIP_EXPIRY });
+}
+
+// WinDBG evidence for a dump this session uploaded (issues #145/#147): the
+// WinDBG-derived cache entry when the analysis cache holds one, else the
+// session's own upstream job. Null when there is no structured signal or the
+// job cannot be read; generateContent then treats the client prompt as
+// unverified (prompt-keyed cache, unlinked corpus row).
+async function loadOwnedWinDbgEvidence(sessionId, fileHash, fileHandle) {
+  const job = getOwnedWinDbgJob(sessionId, fileHash, fileHandle);
+  const cachedEntry = await getCachedAnalysis(fileHash);
+  if (cachedEntry && (cachedEntry.windbgDerived || cachedEntry.windbgOutput) && cachedEntry.analysisSignalText) {
+    return { analysisSignalText: cachedEntry.analysisSignalText, dumpType: job?.dumpType, upstreamJobId: job?.upstreamJobId, cachedEntry };
+  }
+  if (!job?.upstreamJobId || !WINDBG_API_KEY) return null;
+  const memo = winDbgSignalMemo.get(job.upstreamJobId);
+  let analysisSignalText = memo && memo.expiresAt > Date.now() ? memo.analysisSignalText : '';
+  if (!analysisSignalText) {
+    try {
+      analysisSignalText = extractWinDbgAnalysisPackage(await getWinDbgJob({
+        baseUrl: WINDBG_API_BASE_URL,
+        apiKey: WINDBG_API_KEY,
+        jobId: job.upstreamJobId,
+        signal: timeoutSignal(WINDBG_EVIDENCE_TIMEOUT_MS)
+      })).analysisSignalText;
+      rememberWinDbgSignal(job.upstreamJobId, analysisSignalText);
+    } catch (error) {
+      log.warn('ai.windbg_evidence_unavailable', { message: String(error?.message || '').slice(0, 160) });
+      return null;
+    }
+  }
+  return analysisSignalText ? { analysisSignalText, dumpType: job.dumpType, upstreamJobId: job.upstreamJobId } : null;
+}
+
 // Best-effort stats recording; never affects the analysis response.
 function recordStats(input) {
   if (!STATS_ENABLED) return;
@@ -2172,37 +2229,43 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
 
     // Cache-stable prefix + dump evidence already arrives fully formed from the
     // client; the JSON contract lives inside the shared prefix. Forwarding it
-    // verbatim keeps the implicit-cache prefix byte-stable.
-    const serverPrompt = validation.promptText;
+    // verbatim keeps the implicit-cache prefix byte-stable. A WinDBG prompt about
+    // the session's own job is rebuilt server-side below.
+    let serverPrompt = validation.promptText;
 
     // Estimate tokens in request (rough estimate: 1 token = 4 characters)
     const requestText = serverPrompt;
     estimatedInputTokens = Math.ceil(requestText.length / 4);
 
-    // Check cache using fileHash only after the session has proven ownership by
-    // uploading that exact file — AND only when the hash-keyed entry carries
-    // WinDBG provenance (issue #78). Pure-AI reports never take over a shared
-    // hash key, so one uploader cannot plant a fabricated report that other
-    // uploaders of the same dump would be served. The prompt must also carry the
-    // entry's own WinDBG signal: the prompt is client-built, so without that a
-    // session owning the dump could write a report from invented evidence.
+    // The fileHash counts only after the session has proven ownership by
+    // uploading that exact file (issue #40).
     let ownedFileHash = false;
     if (typeof fileHash === 'string' && HASH_RE.test(fileHash)) {
       ownedFileHash = sessionOwnsHash(req.sessionId, fileHash, fileHandle);
     }
-    let cacheKey = getPromptCacheKey(hashContent(requestText));
-    let cachedAnalysis = null;
-    if (ownedFileHash) {
-      const provenEntry = await getCachedAnalysis(fileHash);
-      if (provenEntry && (provenEntry.windbgDerived || provenEntry.windbgOutput)
-        && promptCarriesWinDbgSignal(requestText, provenEntry.analysisSignalText)) {
-        cacheKey = fileHash;
-        cachedAnalysis = provenEntry;
+    // A WinDBG prompt about a dump this session uploaded, whose evidence block
+    // is that job's own signal, is rebuilt server-side from the server's copy of
+    // the evidence (issues #145/#147). Only that prompt may use the shared
+    // per-file cache entry (issue #78) or link the corpus row to the WinDBG job,
+    // and nothing the client wrote (the File Information lines and everything
+    // before the evidence block included) reaches the model. Any other prompt
+    // stays private: prompt-keyed cache entry, unlinked corpus row.
+    let ownedEvidence = null;
+    if (validation.promptType === 'windbg' && ownedFileHash) {
+      const evidence = await loadOwnedWinDbgEvidence(req.sessionId, fileHash, fileHandle);
+      if (evidence && promptCarriesWinDbgSignal(requestText, evidence.analysisSignalText)) {
+        ownedEvidence = evidence;
+        const facts = winDbgPromptFileFacts(requestText);
+        serverPrompt = buildServerWinDbgPrompt({
+          analysisSignalText: evidence.analysisSignalText,
+          dumpType: evidence.dumpType || facts.dumpType,
+          fileSize: facts.fileSize
+        });
+        estimatedInputTokens = Math.ceil(serverPrompt.length / 4);
       }
     }
-    if (!cachedAnalysis) {
-      cachedAnalysis = await getCachedAnalysis(cacheKey);
-    }
+    const cacheKey = ownedEvidence ? fileHash : getPromptCacheKey(hashContent(requestText));
+    const cachedAnalysis = ownedEvidence?.cachedEntry ?? await getCachedAnalysis(cacheKey);
     const cachedResponse = getCachedAIReportForModel(cachedAnalysis, modelName);
     if (cachedResponse) {
       const cachedText = typeof cachedResponse.text === 'string'
@@ -2218,16 +2281,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
         });
         // Hook D (cache-hit): local-parser analyses served from cache still
         // count once per file per day; windbg-prompt requests are excluded
-        // because hook A already counted them.
-        if (validation.promptType === 'local') {
+        // because hook A already counted them. Only a dump this session
+        // uploaded counts: hashless events cannot be deduplicated (issue #149).
+        if (validation.promptType === 'local' && ownedFileHash) {
           recordStats({
             source: 'ai-fallback',
-            fileHash: ownedFileHash ? fileHash : undefined,
+            fileHash,
             aiReport: cachedValidation.report,
             promptText: validation.promptText
           });
-        } else if (validation.promptType === 'windbg' && ownedFileHash) {
-          recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, cachedValidation.report);
+        } else if (ownedEvidence) {
+          recordWebCrashSignal(req.sessionId, fileHash, fileHandle, serverPrompt, cachedValidation.report);
         }
         return res.json({
           ...cachedResponse,
@@ -2404,13 +2468,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       aiReport: responseData,
       aiModel: modelName
     });
+    // Only the server-rebuilt WinDBG prompt is linked to its dump and job and
+    // marked verified (issue #147); a client-built prompt is recorded unlinked,
+    // so it can never become a job's AI facts in /stats or the corpus priors.
     recordAiReport({
       origin: 'web',
       dataUseTerms: DATA_USE_TERMS_VERSION,
-      source: validation.promptType === 'local' ? 'ai-fallback' : 'windbg',
+      source: ownedEvidence ? 'windbg' : validation.promptType === 'local' ? 'ai-fallback' : 'unverified',
       promptType: validation.promptType,
-      fileHash: ownedFileHash ? fileHash : undefined,
-      jobId: ownedFileHash ? getOwnedWinDbgJob(req.sessionId, fileHash, fileHandle)?.upstreamJobId : undefined,
+      promptVerified: Boolean(ownedEvidence),
+      fileHash: ownedEvidence ? fileHash : undefined,
+      jobId: ownedEvidence?.upstreamJobId,
       model: response.cacheModel || modelName,
       modelVersion: response.modelVersion,
       serviceTier: response.serviceTier,
@@ -2421,16 +2489,17 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       usage: response.usageMetadata
     });
 
-    // Hook D (fresh): local-parser + AI fallback completed — record stats.
-    if (validation.promptType === 'local') {
+    // Hook D (fresh): local-parser + AI fallback completed — record stats, for
+    // a dump this session uploaded only (issue #149).
+    if (validation.promptType === 'local' && ownedFileHash) {
       recordStats({
         source: 'ai-fallback',
-        fileHash: ownedFileHash ? fileHash : undefined,
+        fileHash,
         aiReport: reportValidation.report,
         promptText: validation.promptText
       });
-    } else if (validation.promptType === 'windbg' && ownedFileHash) {
-      recordWebCrashSignal(req.sessionId, fileHash, fileHandle, validation.promptText, reportValidation.report);
+    } else if (ownedEvidence) {
+      recordWebCrashSignal(req.sessionId, fileHash, fileHandle, serverPrompt, reportValidation.report);
     }
 
     res.json(responseData);
@@ -2867,6 +2936,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
     if (!analysisText) {
       throw new Error('Completed WinDBG job did not include analysis output');
     }
+    rememberWinDbgSignal(upstreamJobId, analysisSignalText);
     console.log('[WinDBG] Downloaded analysis:', analysisText.length, 'bytes', 'AI signal:', analysisSignalText.length, 'bytes');
 
     // Cache the WinDBG output (UID is the file hash)
@@ -3128,8 +3198,10 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
   // Invariant WinDBG instructions + JSON schema live in WINDBG_PREFIX (shared,
   // cache-stable). Only per-dump file info + relevant WinDBG evidence goes in
   // the tail so provider-side prefix caching can be reused across analyses.
+  // The caller-supplied name (a forum attachment name) stays out of the prompt:
+  // this report is written to the shared per-file cache entry (issue #145).
   const evidence = buildWinDbgEvidence({
-    fileName,
+    fileName: SERVER_PROMPT_FILE_NAME,
     dumpType,
     fileSize,
     analysisForPrompt,
@@ -3176,6 +3248,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
       dataUseTerms: `api-${DATA_USE_TERMS_VERSION}`,
       source: 'windbg',
       promptType: 'windbg',
+      promptVerified: true,
       fileHash,
       jobId: options.jobId,
       model: response.cacheModel || modelName,

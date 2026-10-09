@@ -244,6 +244,12 @@ test('recordAiReport logs and returns false on failure, and skips when disabled 
   assert.equal(calls.length, 0);
 });
 
+test('AI rows are marked verified only when the server built the prompt (issue #147)', () => {
+  assert.equal(buildAiReportRow({ ...aiEntry, promptVerified: true }).prompt_verified, true);
+  assert.equal(buildAiReportRow({ ...aiEntry }).prompt_verified, false);
+  assert.equal(buildAiReportRow({ ...aiEntry, promptVerified: 'true' }).prompt_verified, false);
+});
+
 test('rows record the data-use terms version they were collected under', () => {
   assert.equal(buildCorpusRow(job, { dataUseTerms: '2026-09' }).data_use_terms, '2026-09');
   assert.equal(buildCorpusRow(job).data_use_terms, null);

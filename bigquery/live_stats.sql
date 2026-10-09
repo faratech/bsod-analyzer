@@ -16,6 +16,7 @@ WITH events AS (
   FROM `project-bigfoot.bsod_stats.run_googleapis_com_stdout`
   WHERE jsonPayload.event = 'stats.analysis'
     AND jsonPayload.source IN ('windbg', 'ai-fallback')
+    AND (jsonPayload.source = 'windbg' OR NULLIF(jsonPayload.file_hash, '') IS NOT NULL)
 ),
 counted AS (
   SELECT * EXCEPT (rn) FROM (

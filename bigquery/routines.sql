@@ -77,7 +77,9 @@ CREATE OR REPLACE TABLE FUNCTION `project-bigfoot.bsod_corpus.ai_facts_since`(si
     ARRAY(
       SELECT AS STRUCT
         LOWER(JSON_VALUE(d, '$.driverName')) AS driver,
-        LOWER(JSON_VALUE(d, '$.category')) AS category,
+        -- The report schema's categories; free text never reaches /stats (issue #147).
+        IF(LOWER(JSON_VALUE(d, '$.category')) IN ('graphics', 'audio', 'network', 'storage', 'security', 'virtualization'),
+           LOWER(JSON_VALUE(d, '$.category')), 'other') AS category,
         `project-bigfoot.bsod_corpus.norm_manufacturer`(JSON_VALUE(d, '$.manufacturer')) AS manufacturer
       FROM UNNEST(JSON_QUERY_ARRAY(report, '$.driverWarnings')) AS d
       WHERE SAFE.BOOL(d.isAssociatedWithBugCheck)
@@ -85,6 +87,10 @@ CREATE OR REPLACE TABLE FUNCTION `project-bigfoot.bsod_corpus.ai_facts_since`(si
     model AS ai_model
   FROM `project-bigfoot.bsod_corpus.ai_reports`
   WHERE created_at >= since AND job_id IS NOT NULL
+    -- Only prompts the server built from the job's own evidence (issue #147).
+    -- Rows from before prompt_verified existed count only from the origins that
+    -- always built their prompt server-side; old web rows were client-built.
+    AND (prompt_verified OR (prompt_verified IS NULL AND origin IN ('api', 'regenerated')))
   -- live reports win over regenerated ones; then the newest
   QUALIFY ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY (origin != 'regenerated') DESC, created_at DESC) = 1
 );

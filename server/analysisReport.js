@@ -1,14 +1,34 @@
 // Pure AI-report parsing/validation shared by server.js and offline scripts
 // (scripts/regenerate-ai-reports.mjs). No I/O.
-import { WINDBG_OUTPUT_MARKER, WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE } from '../shared/promptTemplates.js';
+import {
+  WINDBG_OUTPUT_MARKER,
+  WINDBG_PREFIX,
+  WINDBG_RAW_NOTE,
+  WINDBG_STRUCTURED_NOTE,
+  wrapWithEvidence
+} from '../shared/promptTemplates.js';
+
+// Server-built WinDBG prompts name the dump with this constant. The real name
+// is client- or forum-supplied text, and a prompt whose report lands in the
+// shared per-file cache entry or a job-linked corpus row must not carry any
+// (issue #145); the WinDBG evidence already identifies the crash.
+export const SERVER_PROMPT_FILE_NAME = 'crash.dmp';
+const DUMP_TYPES = new Set(['minidump', 'kernel']);
+
+// Charset-clamped so a caller-supplied name can never carry prose.
+function promptFileName(value) {
+  const name = String(value ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 64);
+  return /[A-Za-z0-9]/.test(name) ? name : SERVER_PROMPT_FILE_NAME;
+}
 
 // Per-dump tail of the WinDBG prompt (after the shared, cache-stable
 // WINDBG_PREFIX): file info plus the structured signal or a raw excerpt.
 export function buildWinDbgEvidence({ fileName, dumpType, fileSize, analysisForPrompt, structured }) {
+  const size = /^\d{1,15}$/.test(String(fileSize ?? '')) ? `${fileSize} bytes` : 'unknown';
   return `**File Information:**
-- Filename: ${fileName}
-- Dump Type: ${dumpType}
-- File Size: ${fileSize} bytes
+- Filename: ${promptFileName(fileName)}
+- Dump Type: ${DUMP_TYPES.has(dumpType) ? dumpType : 'unknown'}
+- File Size: ${size}
 
 ${WINDBG_OUTPUT_MARKER}
 ${structured ? WINDBG_STRUCTURED_NOTE : WINDBG_RAW_NOTE}
@@ -16,6 +36,32 @@ ${structured ? WINDBG_STRUCTURED_NOTE : WINDBG_RAW_NOTE}
 ${analysisForPrompt}
 \`\`\``;
 }
+
+// The WinDBG prompt the server builds from a job's own structured signal
+// (issues #145/#147). generateContent sends this instead of the browser's text
+// whenever it can load the evidence of a job the session owns, so nothing the
+// client wrote reaches the model, the shared per-file cache entry or a
+// job-linked corpus row.
+export function buildServerWinDbgPrompt({ analysisSignalText, dumpType, fileSize }) {
+  return wrapWithEvidence(WINDBG_PREFIX, buildWinDbgEvidence({
+    fileName: SERVER_PROMPT_FILE_NAME,
+    dumpType,
+    fileSize,
+    analysisForPrompt: String(analysisSignalText ?? '').trim(),
+    structured: true
+  }));
+}
+
+// Dump type and size from a browser-built WinDBG prompt, accepted only in the
+// builder's exact shapes (an enum and a number) for the server rebuild above.
+export function winDbgPromptFileFacts(promptText) {
+  const text = String(promptText || '');
+  return {
+    dumpType: /^- Dump Type: (minidump|kernel)$/m.exec(text)?.[1],
+    fileSize: /^- File Size: (\d{1,15}) bytes$/m.exec(text)?.[1]
+  };
+}
+
 // True when a browser-built prompt carries this WinDBG structured signal
 // verbatim (the client forwards analysisSignalText unchanged). Only such a
 // prompt's report may share the per-file cache entry: otherwise one uploader
