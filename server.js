@@ -240,14 +240,18 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAIL
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
-// Cloud Run --max-instances. cloudbuild.yaml and deploy-with-secret.sh pass the
-// value they deploy with, so per-instance budgets are sized for every
-// instance that can exist at once (issue #134).
+// Cloud Run --max-instances. deploy-with-secret.sh and cloudbuild.yaml pass the
+// value they deploy with (the GitHub trigger's inline build does not, so the
+// default must match the service's --max-instances).
 const MAX_INSTANCES = readPositiveInt(process.env.MAX_INSTANCES, 10);
-// Free-tier budgets are split into this many per-instance shares, one per
-// possible instance, so the instances together cannot overshoot a provider's
-// free tier; each provider's own quota errors still latch its route off.
-const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, MAX_INSTANCES);
+// Free-tier budgets are split into this many per-instance shares; each
+// provider's own quota errors still latch its route off (402 / quota 429).
+// The default stays 2 until the provider budget itself counts in the shared
+// quota store (issue #134 follow-up): binding that store does not share these
+// budgets, and 1/MAX_INSTANCES shares would cut the free tier each running
+// instance can use five-fold and push peak traffic to the paid legs. Set
+// PROVIDER_QUOTA_SHARDS=<max instances> to opt into the hard per-instance bound.
+const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, 2);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
 // has ever sent, so a lower setting is opt-in and instantly revertible via env
@@ -3799,11 +3803,13 @@ async function startServer() {
   if (!isCacheEnabled()) {
     log.warn('redis.off', { reason: getRedisDisabledReason() || 'not configured' });
   }
-  // Loud, not fatal: refusing to boot would turn a missing quota store into an
-  // outage (2026-09). Without it the AI quota and the upload/archive/AI
-  // limiters are per instance and admit up to MAX_INSTANCES times their limit.
+  // Visible, not fatal: refusing to boot would turn a missing quota store into
+  // an outage (2026-09). Without it the AI quota and the upload/archive/AI
+  // limiters are per instance (today's behavior) and admit up to MAX_INSTANCES
+  // times their limit. WARNING, like redis.off: an expected configuration
+  // state, not a fault, so it adds no ERROR entry to every instance start.
   if (!sharedCounters.configured && process.env.NODE_ENV === 'production') {
-    log.error('quota.shared_store_missing', {
+    log.warn('quota.shared_store_missing', {
       maxInstances: MAX_INSTANCES,
       message: 'QUOTA_REDIS_REST_URL/QUOTA_REDIS_REST_TOKEN not bound; per-key quotas and limits are per instance'
     });

@@ -294,9 +294,12 @@ test('server.js counts the cost-bearing limiters in the shared store', () => {
   }
 });
 
-test('server.js sizes provider budgets for every instance that can run', () => {
+test('server.js keeps the provider budget split opt-in until that budget is shared', () => {
+  // The quota store does not hold provider budgets, so binding it must not
+  // change them; 1/MAX_INSTANCES shares are opt-in via PROVIDER_QUOTA_SHARDS.
   const shards = topLevelInit('PROVIDER_QUOTA_SHARDS');
-  assert.equal(shards?.arguments?.[1]?.name, 'MAX_INSTANCES');
+  assert.equal(shards?.arguments?.[0]?.object?.object?.name, 'process');
+  assert.equal(shards?.arguments?.[1]?.value, 2);
   assert.equal(topLevelInit('MAX_INSTANCES')?.arguments?.[1]?.value, 10);
 });
 
