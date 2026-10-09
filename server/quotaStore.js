@@ -98,7 +98,14 @@ export function createProviderQuotaStore({ shards = 1 } = {}) {
   }
 
   function isExhausted(provider, now = Date.now()) {
-    return ['day', 'hour'].some(scope => (exhaustedUntil.get(`${provider}:${scope}`) || 0) > now);
+    return ['day', 'hour', 'pause'].some(scope => (exhaustedUntil.get(`${provider}:${scope}`) || 0) > now);
+  }
+
+  // Short back-off after a transient rate limit (issue #138): unlike
+  // markExhausted it never outlasts `ms`.
+  function pause(provider, ms, now = Date.now()) {
+    const until = now + Math.max(0, Number(ms) || 0);
+    if (until > (exhaustedUntil.get(`${provider}:pause`) || 0)) exhaustedUntil.set(`${provider}:pause`, until);
   }
 
   // Latch a provider off until the end of the current UTC hour or day.
@@ -172,7 +179,7 @@ export function createProviderQuotaStore({ shards = 1 } = {}) {
     }
   }
 
-  return { reserve, adjust, markExhausted, isExhausted, prune, shardCount };
+  return { reserve, adjust, markExhausted, pause, isExhausted, prune, shardCount };
 }
 
 /**
@@ -197,4 +204,48 @@ export function settleProviderTokenReservation(reservation, {
     outputDelta: actualOutput - reservation.reservedOutput,
     usageEstimated: !inputKnown || !outputKnown
   };
+}
+
+const RATE_LIMIT_PAUSE_DEFAULT_MS = 30 * 1000;
+const RATE_LIMIT_PAUSE_MAX_MS = 5 * 60 * 1000;
+
+/**
+ * Settles a provider reservation after a failed call (issue #138). Only a
+ * request the provider provably never processed (error.notProcessed) releases
+ * its reservation; one that may have run keeps it, moved to the reported usage
+ * when the error carries any, so failures cannot spend tokens uncounted.
+ */
+export function settleFailedProviderReservation(reservation, error) {
+  if (!reservation?.allowed) return null;
+  if (error?.notProcessed === true) {
+    return { inputDelta: -reservation.reservedInput, outputDelta: -reservation.reservedOutput, released: true };
+  }
+  const usage = error?.usageMetadata;
+  if (usage) {
+    const settled = settleProviderTokenReservation(reservation, {
+      inputTokens: usage.promptTokenCount,
+      outputTokens: usage.candidatesTokenCount
+    });
+    return { inputDelta: settled.inputDelta, outputDelta: settled.outputDelta, released: false };
+  }
+  return { inputDelta: 0, outputDelta: 0, released: false };
+}
+
+/**
+ * How long a provider failure takes its route out of rotation (issue #138):
+ * an explicit quota response latches it for the UTC hour or day, a transient
+ * rate limit pauses it for Retry-After (bounded), anything else not at all.
+ */
+export function providerBackoffFor(error) {
+  switch (error?.code) {
+    case 'AI_QUOTA_EXHAUSTED': return { latch: 'hour' };
+    case 'AI_DAILY_QUOTA_EXHAUSTED':
+    case 'AI_AUTH_FAILED': return { latch: 'day' };
+    case 'AI_RATE_LIMITED': {
+      const wanted = Number(error.retryAfterMs);
+      const ms = Number.isFinite(wanted) && wanted > 0 ? wanted : RATE_LIMIT_PAUSE_DEFAULT_MS;
+      return { pauseMs: Math.min(ms, RATE_LIMIT_PAUSE_MAX_MS) };
+    }
+    default: return null;
+  }
 }
