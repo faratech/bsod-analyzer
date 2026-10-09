@@ -14,6 +14,10 @@ steps:
           echo "_CACHE_ZSTD_WRITES_ENABLED must be exactly 'true' or 'false'."
           exit 1
         fi
+        if [[ "${_CSP_MODE}" != "report-only" && "${_CSP_MODE}" != "enforce" ]]; then
+          echo "_CSP_MODE must be exactly 'report-only' or 'enforce'."
+          exit 1
+        fi
 
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
@@ -66,7 +70,7 @@ steps:
           --memory 1Gi \
           --no-cpu-throttling \
           --cpu-boost \
-          --update-env-vars "NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${_WF_CRASH_SIGNAL_URL}" \
+          --update-env-vars "NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=/secrets/redis-zstd/dictionary,CACHE_ZSTD_WRITES_ENABLED=${_CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${_WF_CRASH_SIGNAL_URL},CSP_MODE=${_CSP_MODE}" \
           --update-secrets "$${AI_SECRET_BINDING}$${CRASH_SIGNAL_BINDING},TURNSTILE_SECRET_KEY=turnstile-secret-key:latest,SESSION_SECRET=session-secret:latest,BSOD_API_KEY=bsod-api-key:latest,WINDBG_API_KEY=windbg-api-key:latest,WF_SSO_SECRET=wf-sso-secret:latest,/secrets/redis-zstd/dictionary=redis-zstd-dictionary:${_CACHE_ZSTD_DICTIONARY_VERSION}"
 
   # Purge Cloudflare cache after deployment
@@ -107,6 +111,12 @@ substitutions:
   # WindowsForum crash-signal ingest base (fastapi-app /api/ideaengine); the key
   # is bound from wf-crash-signal-key when that secret has an enabled version.
   _WF_CRASH_SIGNAL_URL: 'https://search.windowsforum.com/api/ideaengine'
+  # Content-Security-Policy rollout (server/securityHeaders.js, issue #154).
+  # 'report-only' keeps the legacy policy enforcing and ships the hash-based
+  # policy as Report-Only, logging violations as csp.violation events;
+  # 'enforce' makes the hash-based policy the enforcing one. Set on every
+  # deploy so an out-of-band CSP_MODE never lingers on the service.
+  _CSP_MODE: 'report-only'
 
 availableSecrets:
   secretManager:
