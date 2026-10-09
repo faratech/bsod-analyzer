@@ -29,5 +29,18 @@ export function createConcurrencyLimiter(max, code, { onSettled = onRequestSettl
     next();
   };
   limiter.inFlight = () => active;
+  // A slot for work only some requests do (a status poll that has to generate
+  // a report): a release function, or null when the cap is reached.
+  limiter.tryAcquire = () => {
+    if (active >= max) return null;
+    active++;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        active = Math.max(0, active - 1);
+      }
+    };
+  };
   return limiter;
 }

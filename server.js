@@ -3210,8 +3210,37 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
 
 const externalJobCodec = createExternalJobCodec({
   secret: ACTUAL_SESSION_SECRET,
-  previousSecret: process.env.SESSION_SECRET_PREVIOUS
+  previousSecret: process.env.SESSION_SECRET_PREVIOUS,
+  // A uid answers polls for as long as its result is memoized, and never for
+  // less than the processing deadline (issue #136).
+  maxAgeMs: Math.max(EXTERNAL_JOB_TTL_MS, EXTERNAL_JOB_DEADLINE_SECONDS * 1000)
 });
+// Report generation reached from a status poll runs inside the poll, after
+// the client may have gone (server/concurrency.js), so it takes its own slot
+// like the submit route does; a busy instance answers "processing" and the
+// next poll retries (issue #136).
+const externalReportConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
+
+async function generateExternalReport(job, analysis) {
+  const release = externalReportConcurrency.tryAcquire();
+  if (!release) throw Object.assign(new Error('report generation busy'), { code: 'ANALYSIS_BUSY' });
+  try {
+    return await generateAIReportFromWinDBG(
+      job.fileName,
+      job.dumpType,
+      job.fileSize,
+      analysis.windbgOutput,
+      job.fileHash,
+      {
+        analysisSignalText: analysis.analysisSignalText,
+        structured: analysis.structured,
+        jobId: job.upstreamJobId
+      }
+    );
+  } finally {
+    release();
+  }
+}
 const externalJobResolver = createExternalJobResolver({
   // One GET returns status and, once completed, the full analysis.
   getUpstreamJob: jobId => getWinDbgJob({
@@ -3224,18 +3253,7 @@ const externalJobResolver = createExternalJobResolver({
   extractAnalysis: extractWinDbgAnalysisPackage,
   loadCachedAnalysis: fileHash => getCachedAnalysis(fileHash),
   cacheAnalysis: cacheExternalWinDbgAnalysis,
-  generateReport: (job, analysis) => generateAIReportFromWinDBG(
-    job.fileName,
-    job.dumpType,
-    job.fileSize,
-    analysis.windbgOutput,
-    job.fileHash,
-    {
-      analysisSignalText: analysis.analysisSignalText,
-      structured: analysis.structured,
-      jobId: job.upstreamJobId
-    }
-  ),
+  generateReport: generateExternalReport,
   recordStats: (job, analysis) => recordStats({
     source: 'windbg',
     fileHash: job.fileHash,
@@ -3457,7 +3475,9 @@ app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLarg
     if (cachedAnalysis?.windbgOutput) {
       log.info('analyze.windbg_cache.hit', { fileHash: fileHash.substring(0, 12) });
       const uid = externalJobCodec.issue({ fileHash, fileName, fileSize, dumpType, originalZip });
-      const result = await externalJobResolver.resolve(externalJobCodec.parse(uid));
+      // A busy report slot or transient trouble leaves it to the first poll.
+      const result = await externalJobResolver.resolve(externalJobCodec.parse(uid))
+        .catch(() => ({ status: 'processing' }));
       log.info('analyze.complete', {
         status: result.status,
         processingTime: (Date.now() - startTime) / 1000,
@@ -3544,7 +3564,7 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
   }
   const job = externalJobCodec.parse(uid);
   if (!job) {
-    return res.status(404).json({ success: false, error: 'Job not found' });
+    return res.status(404).json({ success: false, error: 'Job not found or expired' });
   }
 
   let result;

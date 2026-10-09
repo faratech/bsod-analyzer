@@ -39,8 +39,14 @@ export function createSigner({ secret, previousSecret, purpose }) {
       const dot = token.indexOf('.');
       if (dot < 1 || dot !== token.lastIndexOf('.')) return null;
       const payload = token.slice(0, dot);
-      const provided = Buffer.from(token.slice(dot + 1), 'base64url');
-      if (provided.length !== MAC_BYTES) return null;
+      const macText = token.slice(dot + 1);
+      const provided = Buffer.from(macText, 'base64url');
+      // Only the canonical encoding verifies. Node's decoder ignores trailing
+      // non-alphabet characters and the unused low bits of the last character,
+      // so many strings decode to the same MAC; callers that key state on the
+      // token text (the external job memo) must not see them as distinct
+      // tokens (issue #136).
+      if (provided.length !== MAC_BYTES || provided.toString('base64url') !== macText) return null;
       if (!keys.some(key => crypto.timingSafeEqual(provided, mac(key, payload)))) return null;
       try {
         const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));

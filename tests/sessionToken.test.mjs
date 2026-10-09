@@ -56,6 +56,22 @@ test('tampered payloads and signatures are rejected', () => {
   assert.equal(codec.verify(undefined, now).valid, false);
 });
 
+test('only the canonical MAC encoding verifies (issue #136)', () => {
+  const signer = createSigner({ secret: SECRET, purpose: 'canonical-test' });
+  const token = signer.sign({ a: 1 });
+  assert.deepEqual(signer.verify(token), { a: 1 });
+  const last = token.at(-1);
+  // Same 32 bytes for Node's decoder: trailing non-alphabet characters, and
+  // the two unused low bits of the 43rd character flipped.
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const sibling = alphabet[alphabet.indexOf(last) ^ 1];
+  assert.deepEqual(Buffer.from(token.slice(token.indexOf('.') + 1, -1) + sibling, 'base64url'),
+    Buffer.from(token.slice(token.indexOf('.') + 1), 'base64url'));
+  for (const variant of [`${token}=`, `${token}!`, `${token} `, token.slice(0, -1) + sibling]) {
+    assert.equal(signer.verify(variant), null, JSON.stringify(variant.slice(-3)));
+  }
+});
+
 test('a different secret cannot verify, but the previous secret can during rotation', () => {
   const now = Date.now();
   const oldToken = sessionCodec({ secret: 'old-secret' }).issue(SID, freshSession(now));
