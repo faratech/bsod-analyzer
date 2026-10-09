@@ -71,6 +71,8 @@ import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js'
 import { createCrashSignalRecorder } from './server/crashSignal.js';
 import { createConcurrencyLimiter } from './server/concurrency.js';
 import { classifyRequestPath } from './server/blockedPaths.js';
+import { createCorsOriginCheck } from './server/corsPolicy.js';
+import { ALL_SESSION_COOKIES, LEGACY_SESSION_COOKIES, presentedSessionCookies } from './server/sessionCookies.js';
 import {
   DEFAULT_FORUM_MCP_URL,
   createForumMcpClient,
@@ -995,58 +997,11 @@ async function generateAIContent(request) {
   }
 }
 
-// Configure CORS with Cloud Run best practices
+// Configure CORS with Cloud Run best practices. Credentialed CORS is limited to
+// this app's own origin(s): see server/corsPolicy.js for why the same-site forum
+// hosts are not listed (issue #139).
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Important: Allow requests with no origin (same-origin, server-side, curl, etc.)
-    // This is safe and necessary for Cloud Run
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    // Allow file:// only during local development.
-    if (process.env.NODE_ENV !== 'production' && origin.startsWith('file://')) {
-      return callback(null, true);
-    }
-    
-    // Build allowed origins based on environment
-    const allowedOrigins = [];
-    
-    if (process.env.NODE_ENV !== 'production') {
-      // Development origins
-      allowedOrigins.push(
-        'http://localhost:5173', // Vite dev server
-        'http://localhost:8080', // Local server
-        'http://localhost:3000'  // Common React dev port
-      );
-    }
-    
-    // Production origins from environment
-    if (process.env.PRODUCTION_URL) {
-      allowedOrigins.push(process.env.PRODUCTION_URL);
-    }
-    if (process.env.ALLOWED_ORIGINS) {
-      // Support comma-separated list
-      allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()));
-    }
-    
-    // Default production origins (+ forum hosts that embed the stats widget)
-    allowedOrigins.push(
-      'https://bsod.windowsforum.com',
-      'https://windowsforum.com',
-      'https://www.windowsforum.com'
-    );
-
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      // Deny by omitting CORS headers instead of throwing: an error here used
-      // to surface as 500 INTERNAL_ERROR, polluting error alerting for what is
-      // a routine cross-origin denial. Browsers still block the read.
-      console.warn(`CORS blocked origin: ${origin}`);
-      callback(null, false);
-    }
-  },
+  origin: createCorsOriginCheck(),
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
@@ -1375,8 +1330,6 @@ function createSession() {
   };
 }
 
-const LEGACY_SESSION_COOKIES = ['bsod_session_id', 'bsod_session_hash'];
-
 // (Re-)issue the signed session cookie, sliding the idle window.
 function setSessionCookies(res, sessionId, sessionData) {
   const cookieOptions = {
@@ -1391,17 +1344,20 @@ function setSessionCookies(res, sessionId, sessionData) {
   return cookieOptions;
 }
 
-function clearSessionCookies(res) {
+// Clears every session cookie by default, which is right once a presented
+// session cookie failed validation. When the request carried no session cookie,
+// pass presentedSessionCookies(req.cookies) so only what it sent is deleted (a
+// cross-site POST sends none; issue #141).
+function clearSessionCookies(res, cookies = ALL_SESSION_COOKIES) {
   const baseOptions = {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
   };
 
-  for (const name of ['bsod_session', ...LEGACY_SESSION_COOKIES]) {
-    res.clearCookie(name, { ...baseOptions, httpOnly: true });
+  for (const { name, httpOnly } of cookies) {
+    res.clearCookie(name, { ...baseOptions, httpOnly });
   }
-  res.clearCookie('bsod_turnstile_verified', { ...baseOptions, httpOnly: false });
 }
 
 // Validate the signed session cookie: { valid, reason?, sessionId, sessionData }.
@@ -1482,7 +1438,7 @@ const requireSession = async (req, res, next) => {
     }
 
     if (!sessionToken) {
-      clearSessionCookies(res);
+      clearSessionCookies(res, presentedSessionCookies(req.cookies));
       // Cookies from the pre-stateless scheme cannot be honored: ask for a
       // fresh Turnstile verification instead of a bare re-init.
       if (LEGACY_SESSION_COOKIES.some(name => req.cookies?.[name])) {
@@ -1824,7 +1780,7 @@ app.get('/api/auth/session', authLimiter, async (req, res) => {
     const clientIp = getClientIp(req);
 
     if (!sessionToken) {
-      clearSessionCookies(res);
+      clearSessionCookies(res, presentedSessionCookies(req.cookies));
       return res.status(401).json({ error: 'Turnstile verification required', code: 'TURNSTILE_REQUIRED' });
     }
 
