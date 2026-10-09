@@ -52,6 +52,17 @@ test('getClientIp still trusts req.ip when the chain length checks out', () => {
   assert.equal(resolver.getClientIp(r), '198.51.100.1');
 });
 
+test('a forged X-Forwarded-For entry on a request that skipped Cloudflare is ignored (issue #142)', () => {
+  // CLOUDFLARE_ONLY_INGRESS=false and a direct request: the client sends
+  // `X-Forwarded-For: <forged>` and Cloud Run appends the real peer. Fastify's
+  // trustProxy(2) then reports the forged entry as req.ip.
+  const r = req({ xff: `${ATTACKER}, ${CLIENT}`, ip: ATTACKER });
+  assert.equal(resolver.isFromCloudflare(r), false);
+  assert.equal(resolver.getClientIp(r), CLIENT);
+  // A forged CF-Connecting-IP does not help either.
+  assert.equal(resolver.getClientIp(req({ xff: `${ATTACKER}, ${CLIENT}`, ip: ATTACKER, cfIp: ATTACKER })), CLIENT);
+});
+
 test('the gate fails closed for non-CF peers even with long chains', () => {
   const r = req({ xff: `${ATTACKER}, ${CLIENT}` });
   assert.equal(resolver.isFromCloudflare(r), false);

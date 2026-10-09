@@ -88,12 +88,21 @@ export function createPeerIpResolver({
   // CF-Connecting-IP is set by Cloudflare and contains the original client IP.
   // Trust it only when the immediate peer is a Cloudflare edge AND the chain
   // length backs that up; otherwise fall back to Fastify's trusted-proxy IP
-  // (trusted chains) or the socket address (untrusted chains).
+  // (Cloudflare peers), the immediate peer (other trusted chains) or the
+  // socket address (untrusted chains).
   function getClientIp(req) {
     const cfIp = req.headers['cf-connecting-ip'];
-    if (typeof cfIp === 'string' && cfIp.length > 0 && isFromCloudflare(req)) return cfIp;
+    const fromCloudflare = isFromCloudflare(req);
+    if (typeof cfIp === 'string' && cfIp.length > 0 && fromCloudflare) return cfIp;
     if (!hasTrustedXffChain(req)) {
       return req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+    }
+    // A request that skipped Cloudflare (CLOUDFLARE_ONLY_INGRESS=false) has
+    // only the entry Cloud Run appended; req.ip would walk past it to whatever
+    // the client put in X-Forwarded-For, so every IP-keyed limit would be
+    // client-chosen (issue #142). The rightmost entry is the platform's.
+    if (!fromCloudflare) {
+      return getImmediatePeerIp(req) || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
     }
     return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
   }
