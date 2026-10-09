@@ -36,9 +36,11 @@ export function jsonRateLimitHandler(_req, res) {
   });
 }
 
-// Per-instance fixed-window counters. Limits are deliberately not shared
-// across Cloud Run instances: a shared store cost ~2 Upstash commands per
-// limiter per request, and session affinity keeps a client on one instance.
+// Per-instance fixed-window counters. Session affinity does not keep a client
+// on one Cloud Run instance (issue #134), so a limiter on this store admits up
+// to max-instances times its limit. The cost-bearing limiters pass a shared
+// store (server/sharedCounters.js) that falls back to this one; the cheap,
+// high-volume guards stay per instance.
 export function createMemoryRateLimitStore(windowMs, { sweepIntervalMs = 60 * 1000 } = {}) {
   const hits = new Map();
   let nextSweepAt = 0;
@@ -126,7 +128,8 @@ export function createRateLimiterFactory({
     keyGenerator = defaultKeyGenerator,
     handler = defaultHandler,
     skip,
-    name = 'generic'
+    name = 'generic',
+    store = createMemoryRateLimitStore(windowMs)
   }) {
     return createRateLimiter({
       windowMs,
@@ -135,7 +138,7 @@ export function createRateLimiterFactory({
       handler,
       skip,
       name,
-      store: createMemoryRateLimitStore(windowMs)
+      store
     });
   };
 }

@@ -193,7 +193,10 @@ test('generateContent refunds the quota on the invalid-report early return', () 
   });
 });
 
-test('generateContent refunds the admitting backend and waits for shared accounting', async () => {
+// Which backend admitted each scope (shared store or this instance) is the
+// ledger's job (tests/sharedCounters.test.mjs); the handler must hand it the
+// reservation it got back and wait for the refund before answering.
+test('generateContent refunds through the quota ledger and waits for shared accounting', async () => {
   const source = readFileSync(SERVER, 'utf8');
   const handler = findRouteHandler(acorn.parse(source, {
     ecmaVersion: 'latest', sourceType: 'module'
@@ -202,7 +205,7 @@ test('generateContent refunds the admitting backend and waits for shared account
     .flatMap(statement => statement.type === 'VariableDeclaration' ? statement.declarations : [])
     .find(node => node.id.name === 'refundReservation');
   assert.ok(declaration, 'the shared failure cleanup must be found');
-  const makeRefund = new Function('quotaReservation', 'sessionQuota', 'refundSessionQuota', `
+  const makeRefund = new Function('quotaReservation', 'quotaLedger', `
     const quotaKey = 'session-a';
     const estimatedInputTokens = 10;
     const quotaRefundCap = 3;
@@ -214,34 +217,27 @@ test('generateContent refunds the admitting backend and waits for shared account
     return (${source.slice(declaration.init.start, declaration.init.end)});
   `);
   const calls = [];
-  const localStore = { refund(key, args) {
-    calls.push(['local', key, args]);
-    return { refunded: true };
-  } };
-  let finishShared;
-  const sharedRefund = (key, args) => {
-    calls.push(['shared', key, args]);
-    return new Promise(resolve => { finishShared = resolve; });
+  let finishRefund;
+  const ledger = {
+    refund(reservation, args) {
+      calls.push([reservation, args]);
+      return new Promise(resolve => { finishRefund = resolve; });
+    }
   };
   const error = new Error('invalid upstream report');
+  const reservation = { allowed: true, entries: [{ key: 'session-a', shared: true }] };
   let completed = false;
-  const pending = makeRefund({ allowed: true, distributed: true }, localStore, sharedRefund)(error)
-    .then(() => { completed = true; });
+  const pending = makeRefund(reservation, ledger)(error).then(() => { completed = true; });
   await Promise.resolve();
   assert.equal(completed, false, 'shared refunds must finish before cleanup resolves');
-  assert.deepEqual(calls, [['shared', 'session-a', {
+  assert.deepEqual(calls, [[reservation, {
     requestCost: 1, tokenCost: 10, refundCap: 3, windowSeconds: 3600
   }]]);
-  finishShared({ refunded: true });
+  finishRefund({ refunded: true });
   await pending;
 
   calls.length = 0;
-  await makeRefund({ allowed: true }, localStore, sharedRefund)(error);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'local');
-
-  calls.length = 0;
-  await makeRefund(undefined, localStore, sharedRefund)(error);
-  await makeRefund({ allowed: false, distributed: true }, localStore, sharedRefund)(error);
+  await makeRefund(undefined, ledger)(error);
+  await makeRefund({ allowed: false }, ledger)(error);
   assert.deepEqual(calls, [], 'failures without an admitted reservation must not decrement quotas');
 });

@@ -89,6 +89,7 @@ import {
   createSessionQuotaStore,
   settleProviderTokenReservation
 } from './server/quotaStore.js';
+import { createQuotaLedger, createSharedCounterStoreFromEnv } from './server/sharedCounters.js';
 import { createArchiveDumpExtractor } from './server/archiveExtract.js';
 import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
@@ -126,10 +127,7 @@ import {
   isCacheEnabled,
   disableRedis,
   getRedisDisabledReason,
-  checkCacheConnection,
-  reserveSessionQuota,
-  commitSessionTokens,
-  refundSessionQuota
+  checkCacheConnection
 } from './services/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -242,10 +240,14 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAIL
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
-// Free-tier budgets are split into this many per-instance shares so several
-// Cloud Run instances cannot overshoot a provider's free tier by the instance
-// count; each provider's own quota errors still latch its route off.
-const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, 2);
+// Cloud Run --max-instances. cloudbuild.yaml and deploy-with-secret.sh pass the
+// value they deploy with, so per-instance budgets are sized for every
+// instance that can exist at once (issue #134).
+const MAX_INSTANCES = readPositiveInt(process.env.MAX_INSTANCES, 10);
+// Free-tier budgets are split into this many per-instance shares, one per
+// possible instance, so the instances together cannot overshoot a provider's
+// free tier; each provider's own quota errors still latch its route off.
+const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, MAX_INSTANCES);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
 // has ever sent, so a lower setting is opt-in and instantly revertible via env
@@ -421,8 +423,14 @@ const fileHandleCodec = createFileHandleCodec({
   ttlMs: SESSION_MAX_AGE_MS
 });
 
-// Per-session AI request/token quotas (server/quotaStore.js)
-const sessionQuota = createSessionQuotaStore();
+// Per-key counters that must hold across Cloud Run instances (issue #134): the
+// AI quota and the cost-bearing limiters. Shared through a dedicated Upstash
+// database when QUOTA_REDIS_REST_URL/TOKEN are bound (server/sharedCounters.js),
+// per instance otherwise or while that store is failing.
+const sharedCounters = createSharedCounterStoreFromEnv(process.env, {
+  onError: error => log.warn('quota.shared_store_error', { message: error.message?.slice(0, 160) })
+});
+const quotaLedger = createQuotaLedger({ shared: sharedCounters, local: createSessionQuotaStore() });
 const REQUEST_LIMIT_PER_SESSION = 50; // Legacy flat cap; superseded by TIER_LIMITS below.
 const TOKEN_LIMIT_PER_SESSION = 500000;
 
@@ -598,7 +606,7 @@ setInterval(() => {
   for (const [jti, expiresAt] of usedSsoNonces.entries()) {
     if (expiresAt <= now) usedSsoNonces.delete(jti);
   }
-  sessionQuota.prune(now);
+  quotaLedger.prune(now);
   providerQuota.prune(now);
   for (const [fileHash, entry] of recentExternalSubmissions.entries()) {
     if (entry.expiresAt <= now) recentExternalSubmissions.delete(fileHash);
@@ -1104,12 +1112,19 @@ const cacheLimiter = makeLimiter({
   max: readPositiveInt(process.env.CACHE_RATE_LIMIT_MAX, 300),
   name: 'cache'
 });
-const geminiLimiter = makeLimiter({
+// The cost-bearing limiters count in the shared store (issue #134), so a
+// client spread over several instances still gets one budget. Routes run them
+// after requireSession / requireApiKey, so only authenticated requests spend
+// shared-store commands; the per-instance apiLimiter shields /api/ first.
+function sharedLimiter(options) {
+  return makeLimiter({ ...options, store: sharedCounters.rateLimitStore(options.name, options.windowMs) });
+}
+const geminiLimiter = sharedLimiter({
   windowMs: 15 * 60 * 1000,
   max: readPositiveInt(process.env.GEMINI_RATE_LIMIT_MAX, 80),
   name: 'gemini'
 });
-const windbgUploadLimiter = makeLimiter({
+const windbgUploadLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: readPositiveInt(process.env.WINDBG_UPLOAD_RATE_LIMIT_MAX, 50),
   name: 'windbg-upload'
@@ -1119,12 +1134,28 @@ const windbgPollLimiter = makeLimiter({
   max: readPositiveInt(process.env.WINDBG_POLL_RATE_LIMIT_MAX, 600),
   name: 'windbg-poll'
 });
-const archiveLimiter = makeLimiter({
+const archiveLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: readPositiveInt(process.env.ARCHIVE_RATE_LIMIT_MAX, 30),
   name: 'archive'
 });
-const externalAnalyzeSubmitLimiter = makeLimiter({
+// Session-scoped twins of the upload/archive limits (issue #135). A session
+// cookie works from any IP, so per-IP limits alone let one Turnstile solve
+// spend a fresh budget from every address it is presented from.
+const sessionRateLimitKey = req => `sess:${req.sessionId}`;
+const windbgUploadSessionLimiter = sharedLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX, 50),
+  name: 'windbg-upload-session',
+  keyGenerator: sessionRateLimitKey
+});
+const archiveSessionLimiter = sharedLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt(process.env.ARCHIVE_SESSION_RATE_LIMIT_MAX, 30),
+  name: 'archive-session',
+  keyGenerator: sessionRateLimitKey
+});
+const externalAnalyzeSubmitLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
   max: 60,
   name: 'external-analyze-submit',
@@ -1575,6 +1606,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     redis: isCacheEnabled(),
+    quotaStore: sharedCounters.configured ? 'shared' : 'per-instance',
     timestamp: new Date().toISOString(),
     h2cEnabled: ENABLE_H2C,
     httpVersion: req.httpVersion || null,
@@ -2069,7 +2101,7 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
 });
 
 // Browser compatibility endpoint. Provider/model selection remains server-owned.
-app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requireSession, requireDataUseTerms, defaultJsonParser, async (req, res) => {
+app.post('/api/gemini/generateContent', requireSession, geminiLimiter, geminiConcurrency, requireDataUseTerms, defaultJsonParser, async (req, res) => {
   // Declared in the handler scope, not inside the try: the catch below reads them
   // to refund the quota reservation, and a catch block is a sibling of its try, not
   // a child of it. Declaring them inside the try made every failure path throw
@@ -2091,15 +2123,12 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
   const refundReservation = async (error) => {
     if (!quotaReservation?.allowed || !shouldRefund(error)) return;
     try {
-      const refundArgs = {
+      const refund = await quotaLedger.refund(quotaReservation, {
         requestCost: 1,
         tokenCost: estimatedInputTokens,
         refundCap: quotaRefundCap,
         windowSeconds: quotaWindowSeconds
-      };
-      const refund = quotaReservation.distributed
-        ? await refundSessionQuota(quotaKey, refundArgs)
-        : sessionQuota.refund(quotaKey, refundArgs);
+      });
       if (!refund.refunded) {
         log.warn('quota.refund_declined', {
           quotaKey: safeToken(quotaKey),
@@ -2149,6 +2178,13 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
       tier = 'anon';
       limits = { requests: REQUEST_LIMIT_PER_SESSION, tokens: TOKEN_LIMIT_PER_SESSION };
       quotaKey = sessionId;
+    }
+    const quotaScopes = [{ key: quotaKey, requestLimit: limits.requests, tokenLimit: limits.tokens }];
+    // The anonymous SSO-mode key is the client IP, but the session cookie
+    // works from any IP: charge the session too, so one session presented
+    // from N addresses still gets one allowance (issue #135).
+    if (WF_SSO_ENABLED && !req.wfUserId) {
+      quotaScopes.push({ key: `sess:${sessionId}`, requestLimit: limits.requests, tokenLimit: limits.tokens });
     }
     quotaRefundCap = refundCapFor(limits.requests);
 
@@ -2249,23 +2285,14 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     // both caps are checked before either counter moves, so concurrent
     // requests cannot all pass a read-then-write limit check. The reservation
     // happens after the cache-miss check, so cached answers still cost nothing.
-    const quotaArgs = {
+    // The ledger counts in the shared store when one is bound (issue #134).
+    const reserved = await quotaLedger.reserve(quotaScopes, {
       requestCost: 1,
       tokenCost: estimatedInputTokens,
-      requestLimit: limits.requests,
-      tokenLimit: limits.tokens,
       windowSeconds: quotaWindowSeconds
-    };
-    const reserved = await reserveSessionQuota(quotaKey, quotaArgs)
-      ?? sessionQuota.reserve(quotaKey, quotaArgs);
+    });
     quotaReservation = reserved;
     if (!reserved.allowed) {
-      if (reserved.reason === 'unavailable') {
-        return res.status(503).json({
-          error: 'Quota service temporarily unavailable. Please try again later.',
-          code: 'QUOTA_UNAVAILABLE'
-        });
-      }
       const tokenExhausted = reserved.reason === 'tokens';
       log.warn(tokenExhausted ? 'session.token_limit' : 'session.rate_limit', {
         sessionId: sessionId?.substring(0, 10) + '...',
@@ -2339,11 +2366,7 @@ app.post('/api/gemini/generateContent', geminiLimiter, geminiConcurrency, requir
     const actualInputTokens = response.usageMetadata?.promptTokenCount ?? estimatedInputTokens;
     const outputTokens = response.usageMetadata?.candidatesTokenCount ?? Math.ceil(responseText.length / 4);
     const tokenDelta = actualInputTokens + outputTokens - estimatedInputTokens;
-    if (reserved.distributed) {
-      await commitSessionTokens(quotaKey, { tokenDelta, windowSeconds: quotaWindowSeconds });
-    } else {
-      sessionQuota.commit(quotaKey, { tokenDelta });
-    }
+    await quotaLedger.commit(reserved, { tokenDelta });
 
     // Log finish reason to diagnose truncation issues
     const finishReason = response.candidates?.[0]?.finishReason || 'UNKNOWN';
@@ -2621,7 +2644,7 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-app.post('/api/windbg/upload', windbgUploadLimiter, rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), windbgUploadConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
+app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), requireSession, windbgUploadLimiter, windbgUploadSessionLimiter, windbgUploadConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
     // tiers (anonymous + logged-in members) fall back client-side to the local
@@ -2909,7 +2932,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
 // ============================================================
 // Archive Extraction Endpoint (7z/RAR)
 // ============================================================
-app.post('/api/extract-archive', archiveLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), archiveConcurrency, requireSession, requireDataUseTerms, upload.single('file'), async (req, res) => {
+app.post('/api/extract-archive', rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), requireSession, archiveLimiter, archiveSessionLimiter, archiveConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -3365,7 +3388,7 @@ const ARCHIVE_EXTRACT_ENGINE =
 
 // Main external API endpoint
 // Main external API endpoint
-app.post('/api/analyze', externalAnalyzeSubmitLimiter, requireApiKey, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
+app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), externalAnalyzeConcurrency, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -3775,6 +3798,15 @@ async function startServer() {
   }
   if (!isCacheEnabled()) {
     log.warn('redis.off', { reason: getRedisDisabledReason() || 'not configured' });
+  }
+  // Loud, not fatal: refusing to boot would turn a missing quota store into an
+  // outage (2026-09). Without it the AI quota and the upload/archive/AI
+  // limiters are per instance and admit up to MAX_INSTANCES times their limit.
+  if (!sharedCounters.configured && process.env.NODE_ENV === 'production') {
+    log.error('quota.shared_store_missing', {
+      maxInstances: MAX_INSTANCES,
+      message: 'QUOTA_REDIS_REST_URL/QUOTA_REDIS_REST_TOKEN not bound; per-key quotas and limits are per instance'
+    });
   }
   await initCacheCompression();
 
