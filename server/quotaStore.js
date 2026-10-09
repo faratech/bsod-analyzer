@@ -1,12 +1,15 @@
 // Per-instance quota accounting: per-session AI request/token quotas (issue #77)
 // and the AI providers' free-tier token budgets.
 //
-// Neither needs a shared store to be safe. Session affinity keeps a client on
-// one Cloud Run instance, so session quotas stay close to exact. Provider
-// budgets are split into `shards` shares so several instances cannot overshoot
-// a free tier by the instance count, and each provider's own quota errors
-// latch its route off (markExhausted). Counts reset when an instance restarts,
-// which hourly/daily windows tolerate.
+// Session affinity does NOT keep a client on one Cloud Run instance: it is
+// best effort, a client can drop the affinity cookie, and requests beyond
+// --concurrency spill to other instances (issue #134). Session quotas here are
+// therefore only the fallback for server/sharedCounters.js, which keeps them
+// shared when QUOTA_REDIS_REST_URL/TOKEN are bound. Provider budgets are split
+// into `shards` shares, one per possible instance (MAX_INSTANCES), so the
+// instances together can never overshoot a free tier; each provider's own
+// quota errors also latch its route off (markExhausted). Counts reset when an
+// instance restarts, which hourly/daily windows tolerate.
 
 export function createSessionQuotaStore() {
   const entries = new Map(); // quotaKey -> { requests, tokens, refunds, resetTime }
@@ -55,13 +58,22 @@ export function createSessionQuotaStore() {
     return { refunded: true, refundsUsed: entry.refunds, refundCap };
   }
 
+  // Undoes a reservation outright (no refund cap): used when another scope of
+  // the same request rejected it, so the request never ran.
+  function release(quotaKey, { requestCost = 1, tokenCost, now = Date.now() }) {
+    const entry = liveEntry(quotaKey, now);
+    if (!entry) return;
+    entry.requests = Math.max(0, entry.requests - requestCost);
+    entry.tokens = Math.max(0, entry.tokens - Math.max(0, Math.ceil(Number(tokenCost) || 0)));
+  }
+
   function prune(now = Date.now()) {
     for (const [key, entry] of entries) {
       if (now > entry.resetTime) entries.delete(key);
     }
   }
 
-  return { reserve, commit, refund, prune, size: () => entries.size };
+  return { reserve, commit, refund, release, prune, size: () => entries.size };
 }
 
 function utcWindows(now) {

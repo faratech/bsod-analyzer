@@ -17,6 +17,9 @@ CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED:-"true"}
 # stays off unless the wf-crash-signal-key secret is bound too; export it empty
 # to deploy with recording off.
 WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL-"https://search.windowsforum.com/api/ideaengine"}
+# Cloud Run --max-instances, also passed to the app as MAX_INSTANCES so its
+# per-instance budgets are sized for every instance that can run at once.
+MAX_INSTANCES=${MAX_INSTANCES:-"10"}
 
 echo "🚀 Deploying BSOD Analyzer to Google Cloud Run"
 echo "Project: ${PROJECT_ID}"
@@ -77,6 +80,23 @@ if gcloud secrets versions list wf-crash-signal-key \
   --format='value(name)' 2>/dev/null | grep -q .; then
   RUNTIME_SECRETS="WF_CRASH_SIGNAL_KEY=wf-crash-signal-key:latest,${RUNTIME_SECRETS}"
 fi
+# Optional: dedicated Upstash database for the cross-instance AI quota and
+# cost-bearing rate limits (server/sharedCounters.js). Without both secrets
+# those counters are per instance.
+if gcloud secrets versions list quota-redis-rest-url \
+  --project="${PROJECT_ID}" \
+  --filter='state=ENABLED' \
+  --limit=1 \
+  --format='value(name)' 2>/dev/null | grep -q . \
+  && gcloud secrets versions list quota-redis-rest-token \
+  --project="${PROJECT_ID}" \
+  --filter='state=ENABLED' \
+  --limit=1 \
+  --format='value(name)' 2>/dev/null | grep -q .; then
+  RUNTIME_SECRETS="QUOTA_REDIS_REST_URL=quota-redis-rest-url:latest,QUOTA_REDIS_REST_TOKEN=quota-redis-rest-token:latest,${RUNTIME_SECRETS}"
+else
+  echo "⚠️  quota-redis-rest-url/-token not bound: AI quota and upload limits stay per instance"
+fi
 
 if [[ "${SELECTED_AI_MODEL}" == "deepseek-v4-flash" ]]; then
   REQUIRED_AI_SECRET="deepseek-api-key"
@@ -109,14 +129,14 @@ gcloud run deploy ${SERVICE_NAME} \
   --port 8080 \
   --use-http2 \
   --concurrency 2 \
-  --max-instances 10 \
+  --max-instances ${MAX_INSTANCES} \
   --session-affinity \
   --min-instances 1 \
   --no-cpu-throttling \
   --cpu-boost \
   --memory 1Gi \
   --cpu 1 \
-  --update-env-vars NODE_ENV=production,ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
+  --update-env-vars NODE_ENV=production,MAX_INSTANCES=${MAX_INSTANCES},ENABLE_H2C=true,WINDBG_API_BASE_URL=https://windbg-api.stack-tech.net,CACHE_ZSTD_DICTIONARY_PATH=${CACHE_ZSTD_DICTIONARY_PATH},CACHE_ZSTD_WRITES_ENABLED=${CACHE_ZSTD_WRITES_ENABLED},WF_CRASH_SIGNAL_URL=${WF_CRASH_SIGNAL_URL} \
   --update-secrets "${RUNTIME_SECRETS},${CACHE_ZSTD_DICTIONARY_PATH}=${CACHE_ZSTD_DICTIONARY_SECRET}:${CACHE_ZSTD_DICTIONARY_VERSION}" \
   --project ${PROJECT_ID}
 

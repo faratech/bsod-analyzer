@@ -59,17 +59,21 @@ npm run optimize-css     # Apply CSS purging
   Express on the raw Node response, with h2c support and compression. The compat
   `res.set` accepts both a headers object and the `(name, value)` pair form.
   `server.js` has no unit tests; testable logic belongs in `server/*.js`
-  modules (`statsStore`, `stats`, `quotaPolicy`, `quotaStore`, `sessionToken`,
+  modules (`statsStore`, `stats`, `quotaPolicy`, `quotaStore`, `sharedCounters`, `sessionToken`,
   `rateLimit`, `archiveExtract`, `peerIp`, `turnstile`, `securityHeaders`,
   `bugcheckKnowledge`, `fastifyCompat`, `concurrency`, `blockedPaths`,
   `crashSignal`), which the monolith imports. Per-route concurrency slots are
   held until the handler chain settles (`onRequestSettled` in `fastifyCompat`),
   not released on client disconnect.
-- **`services/cache.js`** is the only Redis/Upstash boundary. Upstash is
+- **`services/cache.js`** is the analysis-cache Redis/Upstash boundary. Upstash is
   optional (`redis.cfg`/`REDIS_ENABLED`, plus a breaker that drops it on
-  quota/auth errors or repeated failures). Session and provider quotas live in
-  `server/quotaStore.js` (per-instance; provider budgets split by
-  `PROVIDER_QUOTA_SHARDS`). The external API (`/api/analyze`) is stateless:
+  quota/auth errors or repeated failures). The AI quota and the cost-bearing
+  limiters (AI, WinDBG upload, archive, API submit, plus their per-session
+  twins) count in `server/sharedCounters.js`: a dedicated Upstash database
+  (`QUOTA_REDIS_REST_URL`/`TOKEN`, not switched by `redis.cfg`), falling back
+  per call to the per-instance stores in `server/quotaStore.js` /
+  `server/rateLimit.js`. Provider free-tier budgets are per instance, split by
+  `PROVIDER_QUOTA_SHARDS` (defaults to `2`; the quota store does not hold them). The external API (`/api/analyze`) is stateless:
   `server/externalJobs.js` issues signed job ids carrying the upstream WinDBG
   job id, and any instance resolves a status poll by asking WinDBG directly.
 - **Dump parsers** (`utils/`): `dumpParser.ts` orchestrates format dispatch and
@@ -185,7 +189,10 @@ prerendered markup — never another route's — or hydration mismatches.
 | `CACHE_ZSTD_DICTIONARY_PATH` | Binary cache dictionary path (`/secrets/redis-zstd/dictionary` in Cloud Run) | Production |
 | `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
 | `REDIS_ENABLED` | Overrides the committed `redis.cfg` switch without a build | No |
-| `PROVIDER_QUOTA_SHARDS` | Per-instance share divisor for AI free-tier budgets | Defaults `2` |
+| `MAX_INSTANCES` | Cloud Run `--max-instances`; `cloudbuild.yaml` (`_MAX_INSTANCES`) and `deploy-with-secret.sh` pass the value they deploy with (the GitHub trigger's inline build does not) | Defaults `10` |
+| `PROVIDER_QUOTA_SHARDS` | Per-instance share divisor for AI free-tier budgets. Set it to `MAX_INSTANCES` for a hard bound (instances together never overshoot, at 1/10 of the free tier per instance); the provider's own quota errors latch the route either way | Defaults `2` |
+| `QUOTA_REDIS_REST_URL` / `QUOTA_REDIS_REST_TOKEN` | Dedicated Upstash database for the cross-instance AI quota and cost-bearing rate limits (`server/sharedCounters.js`); bound from secrets `quota-redis-rest-url` / `quota-redis-rest-token` when both have an enabled version | No (per-instance counters without it; production logs `quota.shared_store_missing`) |
+| `WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX` / `ARCHIVE_SESSION_RATE_LIMIT_MAX` | Per-session hourly WinDBG upload / archive extraction caps, next to the per-IP ones | Defaults `50` / `30` |
 | `CLOUDFLARE_ONLY_INGRESS` | Reject non-Cloudflare-edge requests with 403 | Defaults `true` in production, `false` otherwise |
 | `TRUST_PROXY_HOPS` | Fastify trust-proxy hops (Cloud Run + Cloudflare = 2) | Defaults `2` |
 | `STATS_ENABLED` | Crash-statistics recording + `/api/stats` (set `false` to disable) | Defaults on |
@@ -274,7 +281,7 @@ it; remove it with `--remove-env-vars MAINTENANCE_MODE` to uninstall.
 - **CSP hashes**: Run `node scripts/hash-inline-scripts.js`
 - **SRI hashes**: Auto-generated during `npm run build`
 - **Rate limits**: Update in `serverConfig.js` and `server.js` constants
-- **Runtime state**: Correctness must never depend on Upstash (2026-09 outage: the free-tier quota ran out and Redis-required startup took the site down). Anything a follow-up request must trust travels with the client, signed: the session cookie, and the WinDBG file handle (`data.handle` from upload, carrying file ownership + the upstream job id; the client sends it back as `h`/`handles`/`fileHandle`). Rate limits, Turnstile replay and SSO nonces are per-instance memory — Cloud Run session affinity keeps a browser on one instance, and Cloudflare siteverify rejects redeemed Turnstile tokens across instances. Upstash is permanently off (its database was deleted 2026-09-26; `redis.cfg` = `disabled` and no Upstash secrets are bound, so the cache stays off even if the switch is flipped). It held only the optional analysis cache (`analysis:*` + `cachemeta:zstd:dictionary:*`); every read fails open, a breaker drops it on quota/auth errors or repeated failures and re-probes later, and its on/off switch is `redis.cfg` (`REDIS_ENABLED` overrides). Crash statistics are logged `stats.analysis` events aggregated in BigQuery (`server/statsBigQuery.js`), not Redis
+- **Runtime state**: Correctness must never depend on Upstash (2026-09 outage: the free-tier quota ran out and Redis-required startup took the site down). Anything a follow-up request must trust travels with the client, signed: the session cookie, and the WinDBG file handle (`data.handle` from upload, carrying file ownership + the upstream job id; the client sends it back as `h`/`handles`/`fileHandle`). Cloud Run session affinity is best effort and does not keep a client on one instance (a client can drop the affinity cookie, and requests beyond `--concurrency 2` spill over), so per-instance counters admit up to `MAX_INSTANCES` times their limit (issue #134). The AI quota and the cost-bearing limiters therefore count in the dedicated quota store (`server/sharedCounters.js`) when it is bound and fall back to per-instance counters when it is not, or while it fails (never failing the request); the cheap limiters, Turnstile replay and SSO nonces stay per-instance memory (Cloudflare siteverify rejects redeemed Turnstile tokens across instances). Provider free-tier budgets stay per instance, split by `PROVIDER_QUOTA_SHARDS` (default `2`) until they count in the shared store. The analysis-cache Upstash database is permanently off (deleted 2026-09-26; `redis.cfg` = `disabled` and no `UPSTASH_REDIS_REST_*` secrets are bound, so the cache stays off even if the switch is flipped). It held only the optional analysis cache (`analysis:*` + `cachemeta:zstd:dictionary:*`); every read fails open, a breaker drops it on quota/auth errors or repeated failures and re-probes later, and its on/off switch is `redis.cfg` (`REDIS_ENABLED` overrides). Crash statistics are logged `stats.analysis` events aggregated in BigQuery (`server/statsBigQuery.js`), not Redis
 - **Data-use terms**: the analyzer requires the visitor to keep "Use my crash analysis to improve BSOD AI" checked (`components/DataUseAgreement.tsx`, default checked; unchecked disables adding/analyzing files). Browser requests that submit dump data (`/api/windbg/upload`, `/api/gemini/generateContent`, `/api/extract-archive`) must send `X-Data-Use-Terms: <version>` (`shared/dataUseTerms.js`) or get 428 `DATA_USE_TERMS_REQUIRED` (`server/dataUseTerms.js`); corpus and AI-report rows record `data_use_terms`. `/privacy` (`pages/Privacy.tsx`) is the user-facing notice: keep it factual when data handling changes, and bump `DATA_USE_TERMS_VERSION` when the terms change
 - **Stats & insights pipeline (free-tier)**: Cloud Run never queries BigQuery. Two BigQuery scheduled queries (us-east1, service account `bsod-stats-scheduler`) do all the work and `EXPORT DATA` JSON to `gs://project-bigfoot-bsod-stats`: `bsod-live-stats-hourly` runs `bigquery/live_stats.sql` (generated from `eventsQuery` by `scripts/build-live-stats-sql.mjs`; regenerate and update the schedule when that SQL changes), and `bsod-crash-insights-daily` runs `bigquery/crash_insights.sql` (incremental `MERGE` into `bsod_corpus.job_facts` from the last two days of partitions, ~200 MB billed per run, then `corpus_insights`, `crash_priors`, baseline). Routines live in `bigquery/routines.sql`; `bigquery/job_facts_full.sql` is the one-off full rebuild. `server/gcsJson.js` reads the files with a generation check at most every 10 minutes; `server/statsGcsSource.js` feeds `/api/stats` (plus `insights` for the /stats corpus charts)
 - **Stats history**: live stats start at the BigQuery cutover (2026-09-26T03:39Z). Earlier history is one row in `bsod_stats.baseline`, folded into every snapshot (newest row wins): `scripts/export-stats-baseline.mjs` exports the old Upstash `stats:*` counters exactly (needs Upstash readable); `scripts/windbg-extract-jobs.py --before 2026-09-26T03:39` (run on ST-WDBGAPI-01) + `scripts/import-windbg-history.mjs` rebuilds WinDBG-only history from the WinDBG job DB. Load either with `bq insert <project>:bsod_stats.baseline <file>`
