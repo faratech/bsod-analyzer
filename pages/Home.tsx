@@ -80,10 +80,12 @@ const Home: React.FC = () => {
                 backgroundType="animated"
                 actions={
                     <>
-                        <Link to="/analyzer" className="btn btn-primary btn-large glow-button">
-                            <span>Start Analysis</span>
-                            <span className="btn-sparkle">✨</span>
-                        </Link>
+                        <span className="glow-wrap">
+                            <Link to="/analyzer" className="btn btn-primary btn-large glow-button">
+                                <span>Start Analysis</span>
+                                <span className="btn-sparkle">✨</span>
+                            </Link>
+                        </span>
                         <Link to="/documentation" className="btn btn-secondary btn-large">
                             Learn More
                         </Link>

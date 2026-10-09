@@ -969,8 +969,20 @@ body.mobile-menu-open {
 
 /* Composited glow pulse: animate the opacity of a glow layer (runs on the GPU
    compositor) instead of animating box-shadow on the button itself, which forces
-   a main-thread repaint every frame and shows up as long tasks / TBT. */
-.glow-button::after {
+   a main-thread repaint every frame and shows up as long tasks / TBT.
+   The layer lives on a wrapper around the button: .btn clips its own children
+   (overflow: hidden), so a shadow drawn by a pseudo-element inside the button is
+   cut off entirely and the pulse never showed (issue #155). */
+.glow-wrap {
+  position: relative;
+  /* A one-cell grid stretches the button over the whole wrapper, so it keeps
+     the size it had as a direct .hero-actions flex item at every breakpoint. */
+  display: inline-grid;
+  border-radius: 0.5rem;
+  isolation: isolate;
+}
+
+.glow-wrap::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -980,6 +992,12 @@ body.mobile-menu-open {
   animation: glowPulse 2s ease-in-out infinite;
   pointer-events: none;
   z-index: -1;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Follow the button's hover lift (.btn-primary:hover). */
+.glow-wrap:hover::after {
+  transform: translateY(-3px) scale(1.02);
 }
 
 .btn-sparkle {

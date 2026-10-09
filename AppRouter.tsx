@@ -51,7 +51,7 @@ const AppContent: React.FC = () => {
             )}
             {!isEmbed && <Navigation />}
             <ChunkErrorBoundary>
-                <Suspense fallback={<Loader />}>
+                <Suspense fallback={<Loader fullPage />}>
                     <Routes>
                         <Route path="/" element={<Home />} />
                         <Route path="/analyzer" element={<Analyzer />} />

@@ -5,6 +5,26 @@ import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, Downl
 import { generateForumReport, generateMarkdownReport, getReportFacts } from '../utils/reportFacts';
 import RelatedDiscussions from './RelatedDiscussions';
 
+// Disclosure toggle for the Call Stack / Raw WinDBG Output headings (issue
+// #156): a real <button> inside the <h3>, so it is focusable and opens with
+// Enter/Space while the heading stays navigable. Styled to look like the
+// heading text it sits in.
+const SECTION_TOGGLE_STYLE: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.35rem',
+    width: '100%',
+    padding: 0,
+    margin: 0,
+    border: 'none',
+    background: 'none',
+    font: 'inherit',
+    color: 'inherit',
+    textAlign: 'left',
+    cursor: 'pointer',
+    userSelect: 'none',
+};
+
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
     onRetry?: () => void;
@@ -673,17 +693,20 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                         {/* Call Stack from WinDBG */}
                         {callStack && callStack.length > 0 && (
                             <div style={{marginTop: '1.5rem'}}>
-                                <h3
-                                    onClick={() => setShowCallStack(!showCallStack)}
-                                    style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem', userSelect: 'none'}}
-                                    role="button"
-                                    aria-expanded={showCallStack}
-                                >
-                                    <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
-                                    Call Stack ({callStack.length} frames)
+                                <h3>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowCallStack(!showCallStack)}
+                                        style={SECTION_TOGGLE_STYLE}
+                                        aria-expanded={showCallStack}
+                                        aria-controls={`call-stack-${dumpFile.id}`}
+                                    >
+                                        <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showCallStack ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
+                                        Call Stack ({callStack.length} frames)
+                                    </button>
                                 </h3>
                                 {showCallStack && (
-                                    <div style={{
+                                    <div id={`call-stack-${dumpFile.id}`} style={{
                                         marginTop: '0.75rem',
                                         backgroundColor: 'var(--bg-secondary)',
                                         padding: '0.75rem',
@@ -728,17 +751,20 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                         {/* Raw WinDBG Output */}
                         {rawWinDbgOutput && (
                             <div style={{marginTop: '1.5rem'}}>
-                                <h3
-                                    onClick={() => setShowRawOutput(!showRawOutput)}
-                                    style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem', userSelect: 'none'}}
-                                    role="button"
-                                    aria-expanded={showRawOutput}
-                                >
-                                    <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
-                                    Raw WinDBG Output (!analyze -v)
+                                <h3>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowRawOutput(!showRawOutput)}
+                                        style={SECTION_TOGGLE_STYLE}
+                                        aria-expanded={showRawOutput}
+                                        aria-controls={`raw-windbg-${dumpFile.id}`}
+                                    >
+                                        <span style={{display: 'inline-flex', fontSize: '0.7em', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: showRawOutput ? 'rotate(90deg)' : 'rotate(0deg)'}}>&#9654;</span>
+                                        Raw WinDBG Output (!analyze -v)
+                                    </button>
                                 </h3>
                                 {showRawOutput && (
-                                    <div style={{
+                                    <div id={`raw-windbg-${dumpFile.id}`} style={{
                                         marginTop: '0.75rem',
                                         backgroundColor: 'var(--bg-primary)',
                                         border: '1px solid var(--border-primary)',
