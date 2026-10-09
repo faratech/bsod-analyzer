@@ -7,18 +7,9 @@
  * All requests go through our backend to keep the API key secure.
  */
 
-import xxhash from 'xxhash-wasm';
 import { dataUseHeaders } from '../utils/dataUse';
 import { initializeSession, handleSessionError } from '../utils/sessionManager';
-import { formatHash64 } from '../shared/hash.js';
-
-// Initialize xxhash
-let hasher: Awaited<ReturnType<typeof xxhash>> | null = null;
-const hasherReady = xxhash().then(h => {
-    hasher = h;
-    console.log('[WinDBG] XXHash initialized');
-    return h;
-});
+import { sha256Hex } from '../shared/hash.js';
 
 // Polling configuration - increased intervals to reduce server load.
 // The upstream API allows MAX_JOB_DURATION=360s per job on top of unbounded
@@ -85,7 +76,7 @@ export interface WinDBGAnalysisResult {
     structured?: Record<string, unknown>;
     processingTime?: number;
     error?: string;
-    fileHash?: string; // The xxhash64 of the file, used for cache key consistency
+    fileHash?: string; // SHA-256 of the file (the server's file identity)
     cached?: boolean; // True if WinDBG result was served from cache
     errorCode?: string;
     errorCategory?: string; // Upstream failure category (cdb|timeout|upload|watchdog|...)
@@ -127,24 +118,13 @@ function isBusyError(error: unknown): boolean {
 }
 
 /**
- * Generate UID from file content hash
- * Using xxhash64 for speed with large dump files
+ * Generate UID from file content hash: SHA-256, the same value the server
+ * computes for the upload (shared/hash.js, issue #146). WebCrypto hashes the
+ * whole file at once; uploads are capped at 100 MB, and callers hash one file
+ * at a time to bound memory.
  */
 export async function generateFileHash(file: File): Promise<string> {
-    const activeHasher = hasher ?? await hasherReady;
-    const streamingHasher = activeHasher.create64();
-    const chunkSize = 2 * 1024 * 1024; // 2MB chunk size
-    let offset = 0;
-
-    while (offset < file.size) {
-        const slice = file.slice(offset, offset + chunkSize);
-        const buffer = await slice.arrayBuffer();
-        streamingHasher.update(new Uint8Array(buffer));
-        offset += chunkSize;
-    }
-
-    const hashVal = streamingHasher.digest();
-    return formatHash64(hashVal);
+    return sha256Hex(await file.arrayBuffer());
 }
 
 /**
@@ -160,12 +140,10 @@ export async function checkCacheStatus(files: File[]): Promise<Map<File, { hash:
 
     let fileHashes: Array<{ file: File; hash: string }> = [];
     try {
-        // Generate hashes for all files in parallel
-        const hashPromises = files.map(async (file) => ({
-            file,
-            hash: await generateFileHash(file)
-        }));
-        fileHashes = await Promise.all(hashPromises);
+        // One file at a time: each SHA-256 holds its whole file in memory
+        for (const file of files) {
+            fileHashes.push({ file, hash: await generateFileHash(file) });
+        }
 
         // Create a map of hash -> filename for lookup
         const hashes: string[] = [];
