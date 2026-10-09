@@ -101,7 +101,7 @@ image_maker AS (
   SELECT driver AS key, manufacturer FROM (
     SELECT d.driver, d.manufacturer, COUNT(*) AS c
     FROM t, UNNEST(t.ai_culprit_drivers) d
-    WHERE d.manufacturer != 'Unknown' AND d.driver IS NOT NULL
+    WHERE d.manufacturer NOT IN ('Unknown', 'Other') AND d.driver IS NOT NULL
     GROUP BY 1, 2)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY driver ORDER BY c DESC) = 1
 ),
