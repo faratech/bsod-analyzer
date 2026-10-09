@@ -25,9 +25,19 @@ function isTransientUpstreamStatus(status) {
     || status === 520 || status === 522 || status === 524 || status === 525;
 }
 
+// The submit API has no idempotency key, so a submit is retried only when the
+// failure guarantees no job was created (issue #140): a 429, a 503 that says
+// when to come back, or a connection that was never established. A 502, 504 or
+// Cloudflare 52x can arrive after the origin already accepted the upload, and
+// retrying those queued a second WinDBG job for the same dump.
+const PRE_SEND_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+
 function isRetryableSubmitError(error) {
-  return error?.code === 'WINDBG_UPSTREAM_ERROR'
-    && isTransientUpstreamStatus(Number(error.upstreamStatus));
+  if (error?.code === 'WINDBG_UPSTREAM_ERROR') {
+    const status = Number(error.upstreamStatus);
+    return status === 429 || (status === 503 && Boolean(error.retryAfter));
+  }
+  return error?.name !== 'AbortError' && PRE_SEND_NETWORK_CODES.has(error?.cause?.code ?? error?.code);
 }
 
 function escapeMultipartValue(value) {
@@ -92,6 +102,7 @@ async function readJsonResponse(response, context) {
     const err = new Error(`${context} failed with status ${response.status}: ${message}`);
     err.code = 'WINDBG_UPSTREAM_ERROR';
     err.upstreamStatus = response.status;
+    err.retryAfter = response.headers?.get?.('retry-after') || null;
     throw err;
   }
 

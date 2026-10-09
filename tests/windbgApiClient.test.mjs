@@ -58,35 +58,62 @@ test('WinDBG submit posts multipart upload to /api/v1/jobs with server-side key 
   assert.ok(Number(calls[0].options.headers['Content-Length']) > Buffer.byteLength('MDMP'));
 });
 
-test('WinDBG submit retries transient Cloudflare upstream failures', async () => {
+function submitWith(responses) {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
-    if (calls.length === 1) {
-      return new Response('<html>SSL handshake failed</html>', {
-        status: 525,
-        headers: { 'Content-Type': 'text/html' }
-      });
-    }
-    return new Response(JSON.stringify({ job_id: 'WF-retry-123', status: 'queued' }), {
-      status: 202,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    const next = responses[Math.min(calls.length, responses.length) - 1];
+    if (next instanceof Error) throw next;
+    return next();
   };
-
-  const result = await submitWinDbgJob({
+  const run = () => submitWinDbgJob({
     baseUrl: 'https://windbg-api.stack-tech.net/',
     apiKey: 'test-token',
     fileBuffer: Buffer.from('MDMP'),
     fileName: 'mini.dmp',
     fetchImpl
   });
+  return { calls, run };
+}
 
-  assert.equal(result.job_id, 'WF-retry-123');
-  assert.equal(calls.length, 2);
-  assert.ok(calls[0].options.body instanceof Blob);
-  assert.ok(calls[1].options.body instanceof Blob);
-  assert.notEqual(calls[0].options.headers['Content-Type'], calls[1].options.headers['Content-Type']);
+const accepted = () => new Response(JSON.stringify({ job_id: 'WF-retry-123', status: 'queued' }), {
+  status: 202,
+  headers: { 'Content-Type': 'application/json' }
+});
+const failing = (status, headers = {}) => () => new Response('<html>upstream</html>', {
+  status,
+  headers: { 'Content-Type': 'text/html', ...headers }
+});
+const connectionRefused = () => Object.assign(new TypeError('fetch failed'), {
+  cause: Object.assign(new Error('connect ECONNREFUSED 203.0.113.7:443'), { code: 'ECONNREFUSED' })
+});
+
+test('WinDBG submit retries only failures that guarantee no job was created', async () => {
+  for (const first of [failing(429), failing(503, { 'Retry-After': '1' }), connectionRefused()]) {
+    const { calls, run } = submitWith([first, accepted]);
+    const result = await run();
+    assert.equal(result.job_id, 'WF-retry-123');
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].options.body instanceof Blob);
+    assert.ok(calls[1].options.body instanceof Blob);
+    assert.notEqual(calls[0].options.headers['Content-Type'], calls[1].options.headers['Content-Type']);
+  }
+});
+
+test('WinDBG submit does not retry ambiguous gateway failures (issue #140)', async () => {
+  // These can arrive after the origin accepted the upload; with no
+  // idempotency key a retry would queue a second job for the same dump.
+  for (const status of [502, 503, 504, 520, 522, 524, 525]) {
+    const { calls, run } = submitWith([failing(status), accepted]);
+    await assert.rejects(run(), error => error?.code === 'WINDBG_UPSTREAM_ERROR' && error?.upstreamStatus === status);
+    assert.equal(calls.length, 1, `status ${status} must not be retried`);
+  }
+  const reset = Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+  });
+  const { calls, run } = submitWith([reset, accepted]);
+  await assert.rejects(run());
+  assert.equal(calls.length, 1, 'a reset mid-request is ambiguous too');
 });
 
 test('WinDBG submit can disable retries for a non-idempotent durable handoff', async () => {
