@@ -117,7 +117,6 @@ import {
 import {
   initCache,
   initCacheCompression,
-  initHashing,
   hashContent,
   getPromptCacheKey,
   getCachedAnalysis,
@@ -199,7 +198,8 @@ const MAX_UPLOAD_REQUEST_SIZE = SECURITY_CONFIG.api.maxUploadRequestSize;
 const MAX_EXTRACTED_ARCHIVE_SIZE = SECURITY_CONFIG.api.maxExtractedArchiveSize;
 const MAX_ARCHIVE_FILE_COUNT = FILE_LIMITS.maxArchiveFileCount;
 const MAX_ARCHIVE_COMPRESSION_RATIO = FILE_LIMITS.maxCompressionRatio;
-const HASH_RE = /^[a-f0-9]{8,16}$/i;
+// SHA-256 file identity (shared/hash.js, issue #146).
+const HASH_RE = /^[a-f0-9]{64}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
 const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
 // Output budget for an analysis response. On a reasoning model the reasoning trace
@@ -3742,7 +3742,7 @@ app.use((req, res) => {
   res.send(html);
 });
 
-// Cache index.html in memory and ensure xxhash is ready before accepting requests
+// Cache index.html in memory before accepting requests
 let cachedIndexHtml;
 // Prerendered homepage HTML served for the "/" route (falls back to index.html)
 let cachedHomeHtml;
@@ -3764,9 +3764,6 @@ async function startServer() {
   if (process.env.NODE_ENV === 'production' && process.env.WF_DEV_TIER) {
     throw new Error('WF_DEV_TIER is a development-only escape hatch and must not be set in production');
   }
-
-  // Content hashing (analysis cache keys) must be ready before accepting requests
-  await initHashing();
 
   // Never crash-loop over Redis (2026-09 outage: an exhausted Upstash quota
   // failed this probe on every cold start). Serve from in-memory state instead.

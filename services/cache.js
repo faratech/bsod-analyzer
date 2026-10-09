@@ -10,11 +10,10 @@
  * and no runtime state lives here — correctness never depends on Redis.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Redis } from '@upstash/redis';
-import xxhash from 'xxhash-wasm';
-import { hashBytes, hashString } from '../shared/hash.js';
 import {
   createAnalysisCacheCodec,
   createDictionaryManager,
@@ -25,17 +24,6 @@ import { createUpstashBinaryClient } from './upstashBinary.js';
 
 // Cache TTL: 7 days maximum
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 604800 seconds
-
-// Initialize xxhash
-let hasher = null;
-const hasherReady = xxhash().then(xxhashModule => {
-  hasher = xxhashModule;
-  console.log('[Cache] XXHash initialized for cache key generation');
-});
-
-export async function initHashing() {
-  await hasherReady;
-}
 
 // Cache key prefixes
 const CACHE_PREFIX = {
@@ -438,7 +426,8 @@ export async function checkCacheConnection() {
 }
 
 /**
- * Generate an xxhash64 hash of content for cache keys.
+ * SHA-256 (lowercase hex) of file bytes or text: file identity and cache keys
+ * (shared/hash.js, issue #146). Strings hash as UTF-8.
  */
 function quotaCounterKeys(quotaKey) {
   return {
@@ -510,17 +499,8 @@ export async function refundSessionQuota(quotaKey, {
 }
 
 export function hashContent(content) {
-  if (!hasher) {
-    throw new Error('XXHash not initialized');
-  }
-
-  if (typeof content === 'string') {
-    return hashString(hasher, content);
-  }
-  if (Buffer.isBuffer(content)) {
-    return hashBytes(hasher, content);
-  }
-  return hashString(hasher, JSON.stringify(content));
+  const data = typeof content === 'string' || Buffer.isBuffer(content) ? content : JSON.stringify(content);
+  return crypto.createHash('sha256').update(data).digest('hex');
 }
 
 // ============================================================
