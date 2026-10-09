@@ -134,8 +134,16 @@ substitutions:
   # Content-Security-Policy rollout (server/securityHeaders.js, issue #154).
   # 'report-only' keeps the legacy policy enforcing and ships the hash-based
   # policy as Report-Only, logging violations as csp.violation events;
-  # 'enforce' makes the hash-based policy the enforcing one. Set on every
-  # deploy so an out-of-band CSP_MODE never lingers on the service.
+  # 'enforce' makes the hash-based policy the enforcing one. Applied by builds
+  # that run this file and by deploy-with-secret.sh, so an out-of-band CSP_MODE
+  # does not linger there. NOTE: the Cloud Build trigger on main runs its own
+  # inline steps (docker build/push, `gcloud run services update --image`,
+  # Cloudflare purge) and does not read this file, so editing _CSP_MODE does not
+  # change the live service. Change the live mode with
+  #   gcloud run services update bsod-analyzer --region us-east1 \
+  #     --update-env-vars CSP_MODE=<report-only|enforce>
+  # and purge the Cloudflare cache for bsod.windowsforum.com (HTML is cached
+  # with the old header until then). Later image-only deploys keep the value.
   _CSP_MODE: 'report-only'
 
 availableSecrets:
