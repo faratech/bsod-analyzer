@@ -94,9 +94,12 @@ npm run optimize-css     # Apply CSS purging
    2026-10-08; `DEFAULT_EXPERIENTIAL_MODEL` — any other `EXPLABS_MODEL`
    disables the leg) when `EXPLABS_API_KEY` is bound. `server/quotaStore.js` reserves estimated input
    and output tokens against this instance's share of the provider's
-   daily/hourly free-tier limits, then settles to reported usage. Quota/auth
-   failures latch for the current window and fall through to the existing
-   OpenAI Luna route.
+   daily/hourly free-tier limits, then settles to reported usage. A failed
+   call releases its reservation only when the provider never ran it
+   (`settleFailedProviderReservation`). Explicit quota/auth responses (402, or
+   a 429 saying quota/credit) latch for the current window; other 429s pause
+   the leg for `Retry-After` (at most 5 min). Either way the request falls
+   through to the existing OpenAI Luna route.
 3. The existing **OpenAI free tier** (`gpt-6-luna`; `gpt-5.6-luna` stopped receiving the data-sharing incentive in 2026-09) remains the next leg,
    gated by the org-wide OpenAI Usage API (a per-instance tally when it is
    unavailable); billed-tier responses latch that gate off for the day.

@@ -9,12 +9,25 @@ const TRANSIENT_DEEPSEEK_STATUSES = new Set([429, 500, 503]);
 const DEEPSEEK_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 
 export class AIProviderError extends Error {
-  constructor(message, { code = 'AI_PROVIDER_ERROR', status = 502, retryable = false } = {}) {
+  constructor(message, {
+    code = 'AI_PROVIDER_ERROR',
+    status = 502,
+    retryable = false,
+    notProcessed = false,
+    retryAfterMs,
+    usageMetadata
+  } = {}) {
     super(message);
     this.name = 'AIProviderError';
     this.code = code;
     this.status = status;
     this.retryable = retryable;
+    // True only when the provider provably never ran the request (refused
+    // connection, rejected before processing): a token reservation for it may
+    // be released. Anything else may have consumed upstream tokens (#138).
+    this.notProcessed = notProcessed;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+    if (usageMetadata !== undefined) this.usageMetadata = usageMetadata;
   }
 }
 
@@ -621,6 +634,18 @@ export async function generateOpenAIContent(request, {
 // Experiential Labs is an OpenAI-compatible Chat Completions gateway. Keep
 // this adapter separate from the OpenAI adapter so provider identity remains
 // explicit in logs, quota accounting, and fallback decisions.
+//
+// Only an explicit quota or credit signal latches the route off (issue #138):
+// a 402, or a 429 whose error code or message says so. Any other 429 is a
+// short rate limit, retried after Retry-After and then reported as
+// AI_RATE_LIMITED for a brief back-off.
+const EXPERIENTIAL_QUOTA_SIGNAL = /quota|credit|insufficient|billing|exhaust|daily|hourly|per\s*(?:day|hour)|free[\s-]*tier/i;
+const PRE_CONNECT_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+
+function retryAfterMsOf(response) {
+  const seconds = Number.parseFloat(response.headers?.get?.('retry-after') || '');
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+}
 export async function generateExperientialContent(request, {
   apiKey,
   baseUrl = DEFAULT_EXPERIENTIAL_BASE_URL,
@@ -686,12 +711,27 @@ export async function generateExperientialContent(request, {
       let errorPayload = null;
       try { errorPayload = await response.clone().json(); } catch { /* bounded text below */ }
       const message = errorPayload?.error?.message || errorPayload?.message || `Experiential request failed with HTTP ${response.status}`;
+      const signal = `${errorPayload?.error?.code || ''} ${errorPayload?.error?.type || ''} ${message}`;
+      if (response.status === 429 && !EXPERIENTIAL_QUOTA_SIGNAL.test(signal)) {
+        if (attempt < maxRetries) {
+          await sleepImpl(retryDelayMs(response, attempt));
+          continue;
+        }
+        throw new AIProviderError(String(message).slice(0, 500), {
+          code: 'AI_RATE_LIMITED',
+          status: 429,
+          retryable: true,
+          notProcessed: true,
+          retryAfterMs: retryAfterMsOf(response)
+        });
+      }
       const quota = response.status === 402 || response.status === 429 || /quota|credit|limit|exhaust/i.test(String(message));
       const dailyQuota = /daily|per\s*day|day(?:ly)?\s*(?:quota|limit|cap)/i.test(String(message));
       throw new AIProviderError(String(message).slice(0, 500), {
         code: quota ? (dailyQuota ? 'AI_DAILY_QUOTA_EXHAUSTED' : 'AI_QUOTA_EXHAUSTED') : 'AI_AUTH_FAILED',
         status: response.status,
-        retryable: false
+        retryable: false,
+        notProcessed: true
       });
     }
     if (![500, 502, 503, 504].includes(response.status) || attempt >= maxRetries) {
@@ -699,7 +739,9 @@ export async function generateExperientialContent(request, {
       throw new AIProviderError(message, {
         code: 'AI_UPSTREAM_ERROR',
         status: response.status,
-        retryable: false
+        retryable: false,
+        // A 4xx is a rejection before processing; a 5xx may come after it.
+        notProcessed: response.status >= 400 && response.status < 500
       });
     }
     await sleepImpl(retryDelayMs(response, attempt));
@@ -710,7 +752,10 @@ export async function generateExperientialContent(request, {
     throw new AIProviderError(timedOut ? 'Experiential request timed out' : 'Experiential request failed', {
       code: timedOut ? 'AI_TIMEOUT' : 'AI_UPSTREAM_ERROR',
       status: timedOut ? 504 : 502,
-      retryable: true
+      retryable: true,
+      // A timeout leaves the provider generating; only a connection that was
+      // never established provably cost nothing.
+      notProcessed: !timedOut && PRE_CONNECT_NETWORK_CODES.has(lastNetworkError?.cause?.code ?? lastNetworkError?.code)
     });
   }
 
@@ -730,27 +775,31 @@ export async function generateExperientialContent(request, {
     });
   }
 
+  const usage = data.usage || {};
+  const usageMetadata = {
+    promptTokenCount: safeInteger(usage.prompt_tokens),
+    candidatesTokenCount: safeInteger(usage.completion_tokens),
+    totalTokenCount: safeInteger(usage.total_tokens),
+    cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
+    thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
+  };
   const choice = data?.choices?.[0];
   const text = typeof choice?.message?.content === 'string' ? choice.message.content.trim() : '';
   if (!text) {
+    // The model ran (e.g. reasoning used up the output budget): carry the
+    // usage so the caller settles the reservation instead of releasing it.
     throw new AIProviderError('Experiential returned an empty response', {
       code: 'INVALID_AI_RESPONSE',
-      status: 502
+      status: 502,
+      usageMetadata
     });
   }
 
-  const usage = data.usage || {};
   const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
   return {
     text,
     modelVersion: typeof data.model === 'string' ? data.model : model,
-    usageMetadata: {
-      promptTokenCount: safeInteger(usage.prompt_tokens),
-      candidatesTokenCount: safeInteger(usage.completion_tokens),
-      totalTokenCount: safeInteger(usage.total_tokens),
-      cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
-      thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
-    },
+    usageMetadata,
     candidates: [{ content: { parts: [{ text }] }, finishReason }]
   };
 }

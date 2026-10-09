@@ -87,6 +87,8 @@ import { createFileHandleCodec, createSessionCodec } from './server/sessionToken
 import {
   createProviderQuotaStore,
   createSessionQuotaStore,
+  providerBackoffFor,
+  settleFailedProviderReservation,
   settleProviderTokenReservation
 } from './server/quotaStore.js';
 import { createArchiveDumpExtractor } from './server/archiveExtract.js';
@@ -855,16 +857,18 @@ async function generateAIContent(request) {
         });
         return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
       } catch (error) {
-        providerQuota.adjust(experientialReservation, {
-          inputDelta: -experientialReservation.reservedInput,
-          outputDelta: -experientialReservation.reservedOutput
-        });
-        const exhausted = error instanceof AIProviderError
-          && ['AI_QUOTA_EXHAUSTED', 'AI_DAILY_QUOTA_EXHAUSTED', 'AI_AUTH_FAILED'].includes(error.code);
-        if (exhausted) {
-          markExperientialExhausted(error.code === 'AI_QUOTA_EXHAUSTED' ? 'hour' : 'day');
-        }
-        log.warn(exhausted ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
+        // Release the reservation only when the provider never ran the
+        // request; otherwise keep it (or settle it to reported usage) so
+        // failed calls cannot consume the free tier uncounted (issue #138).
+        const settlement = settleFailedProviderReservation(experientialReservation, error);
+        providerQuota.adjust(experientialReservation, settlement);
+        const backoff = error instanceof AIProviderError ? providerBackoffFor(error) : null;
+        if (backoff?.latch) markExperientialExhausted(backoff.latch);
+        if (backoff?.pauseMs) providerQuota.pause('experiential-luna', backoff.pauseMs);
+        log.warn(backoff?.latch ? 'ai.experiential.exhausted' : 'ai.experiential.error', {
+          code: error.code,
+          released: settlement.released,
+          pauseMs: backoff?.pauseMs,
           message: error.message?.slice(0, 140)
         });
         // Fall through to the OpenAI Luna route.
