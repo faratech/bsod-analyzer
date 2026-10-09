@@ -20,7 +20,11 @@ export function isPermanentUpstreamError(error) {
   return Number.isInteger(status) && status >= 400 && status < 500 && !RETRYABLE_UPSTREAM_STATUS.has(status);
 }
 
-export function createExternalJobCodec({ secret, previousSecret }) {
+const CLOCK_SKEW_MS = 60 * 1000;
+
+// maxAgeMs bounds how long a uid answers status polls (issue #136): without it
+// a uid for a completed job stayed usable until SESSION_SECRET rotated.
+export function createExternalJobCodec({ secret, previousSecret, maxAgeMs = Infinity }) {
   const signer = createSigner({ secret, previousSecret, purpose: 'external-job-v1' });
   return {
     // job: { fileHash, upstreamJobId, fileName, fileSize, dumpType, originalZip }
@@ -38,11 +42,13 @@ export function createExternalJobCodec({ secret, previousSecret }) {
       return UID_PREFIX + signer.sign(claims);
     },
 
-    // Returns the job, or null for anything not issued by this service.
-    parse(uid) {
+    // Returns the job, or null for anything not issued by this service or
+    // older than maxAgeMs.
+    parse(uid, now = Date.now()) {
       if (typeof uid !== 'string' || !uid.startsWith(UID_PREFIX)) return null;
       const claims = signer.verify(uid.slice(UID_PREFIX.length));
       if (!claims || claims.v !== 1 || typeof claims.fh !== 'string' || !Number.isFinite(claims.iat)) return null;
+      if (claims.iat > now + CLOCK_SKEW_MS || now - claims.iat > maxAgeMs) return null;
       return {
         uid,
         fileHash: claims.fh,
@@ -78,8 +84,11 @@ export function createExternalJobResolver({
   now = () => Date.now(),
   logger = console
 }) {
-  const results = new Map(); // uid -> { result, expiresAt }
-  const inFlight = new Map(); // uid -> Promise<result>
+  // Keyed by what the job is (file hash + upstream job), never by the uid
+  // text, so equivalent uids share one resolution (issue #136).
+  const results = new Map(); // jobKey -> { result, expiresAt }
+  const inFlight = new Map(); // jobKey -> Promise<result>
+  const jobKey = job => `${job.fileHash}\u0000${job.upstreamJobId || ''}`;
 
   function completed(job, report, relatedThreads = []) {
     return { status: 'completed', report, relatedThreads, processingTime: Math.max(0, (now() - job.acceptedAt) / 1000) };
@@ -144,26 +153,27 @@ export function createExternalJobResolver({
   // | { status: 'completed', report, relatedThreads, processingTime }. Terminal results are
   // memoized; concurrent polls for one uid share a single resolution.
   async function resolve(job) {
-    const memo = results.get(job.uid);
+    const key = jobKey(job);
+    const memo = results.get(key);
     if (memo && memo.expiresAt > now()) return memo.result;
-    let pending = inFlight.get(job.uid);
+    let pending = inFlight.get(key);
     if (!pending) {
       pending = advance(job)
         .then(result => {
           if (result.status !== 'processing') {
-            results.set(job.uid, { result, expiresAt: now() + resultTtlMs });
+            results.set(key, { result, expiresAt: now() + resultTtlMs });
           }
           return result;
         })
-        .finally(() => inFlight.delete(job.uid));
-      inFlight.set(job.uid, pending);
+        .finally(() => inFlight.delete(key));
+      inFlight.set(key, pending);
     }
     return pending;
   }
 
   function prune(at = now()) {
-    for (const [uid, memo] of results) {
-      if (memo.expiresAt <= at) results.delete(uid);
+    for (const [key, memo] of results) {
+      if (memo.expiresAt <= at) results.delete(key);
     }
   }
 

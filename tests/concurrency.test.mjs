@@ -37,6 +37,19 @@ test('a client disconnect does not free the slot while the handler still runs', 
   assert.equal(limiter.inFlight(), 0);
 });
 
+test('tryAcquire hands out slots up to the cap and releases once', () => {
+  const limiter = createConcurrencyLimiter(2, 'ANALYSIS_BUSY', { onSettled: () => {} });
+  const first = limiter.tryAcquire();
+  const second = limiter.tryAcquire();
+  assert.equal(typeof first, 'function');
+  assert.equal(limiter.tryAcquire(), null);
+  first();
+  first();
+  assert.equal(limiter.inFlight(), 1);
+  assert.equal(typeof limiter.tryAcquire(), 'function');
+  second();
+});
+
 test('a finished response frees the slot', () => {
   const limiter = createConcurrencyLimiter(1, 'BUSY', { onSettled: () => {} });
   const res = fakeRes();

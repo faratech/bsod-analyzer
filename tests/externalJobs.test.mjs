@@ -61,6 +61,31 @@ test('job uids round-trip their metadata and reject tampering', () => {
   assert.equal(codec.parse(long).fileName.length, 120);
 });
 
+test('job uids expire after maxAgeMs and reject future issue times (issue #136)', () => {
+  const codec = createExternalJobCodec({ secret: SECRET, maxAgeMs: 60_000 });
+  const issuedAt = Date.parse('2026-10-09T12:00:00Z');
+  const uid = codec.issue(JOB, issuedAt);
+  assert.equal(codec.parse(uid, issuedAt + 59_000)?.fileHash, JOB.fileHash);
+  assert.equal(codec.parse(uid, issuedAt + 61_000), null);
+  assert.equal(codec.parse(codec.issue(JOB, issuedAt + 10 * 60_000), issuedAt), null);
+  // A trailing character no longer yields a second, distinct-looking uid.
+  assert.equal(codec.parse(`${uid}=`, issuedAt), null);
+});
+
+test('equivalent uids for one job share one resolution and one report (issue #136)', async () => {
+  const codec = createExternalJobCodec({ secret: SECRET });
+  const { resolver, calls } = harness({ upstream: async () => ({ status: 'done', result: 'kd> !analyze -v' }) });
+  const first = codec.parse(codec.issue(JOB, Date.now() - 1000));
+  const second = codec.parse(codec.issue(JOB, Date.now()));
+  assert.notEqual(first.uid, second.uid);
+  const [a, b] = await Promise.all([resolver.resolve(first), resolver.resolve(second)]);
+  assert.equal(a.status, 'completed');
+  assert.equal(b, a);
+  assert.equal((await resolver.resolve(second)).status, 'completed');
+  assert.equal(calls.reports, 1, 'one AI report per job, however many uid strings poll it');
+  assert.equal(calls.stats, 1);
+});
+
 test('a cached WinDBG analysis completes without touching the upstream', async () => {
   const codec = createExternalJobCodec({ secret: SECRET });
   const job = codec.parse(codec.issue(JOB));
