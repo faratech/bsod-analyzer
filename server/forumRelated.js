@@ -167,9 +167,19 @@ function threadIdOf(result) {
   return null;
 }
 
+// Forum result fields are capped before cleaning: results are only checked for
+// the crash's keys and shown truncated to MAX_TITLE_CHARS / MAX_SNIPPET_CHARS,
+// and nothing else bounds a field below the 1M-char response limit. The tag
+// pattern excludes '<' so a scan from one '<' stops at the next one; /<[^>]*>/
+// rescanned to the end of the string from every unclosed '<', which is
+// quadratic and blocked the event loop for seconds on one long '<' run
+// (issue #152).
+const MAX_FIELD_CHARS = 2000;
+
 function cleanText(value) {
   return String(value || '')
-    .replace(/<[^>]*>/g, ' ')
+    .slice(0, MAX_FIELD_CHARS)
+    .replace(/<[^<>]*>/g, ' ')
     .replace(/\[\*\]/g, ' ')
     .replace(/\*{3,}|-{3,}|={3,}/g, ' ')
     .replace(/\s+/g, ' ')

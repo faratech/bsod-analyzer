@@ -1257,6 +1257,9 @@ function extractNearbyString(buffer: ArrayBuffer, offset: number, range: number)
     return best || null;
 }
 
+// Upper bound on the printable-string text extractModuleList scans (#153).
+const MODULE_SCAN_MAX_CHARS = 256 * 1024;
+
 export function extractModuleList(buffer: ArrayBuffer, strings: string): ModuleInfo[] {
     const modules: ModuleInfo[] = [];
     const seen = new Set<string>();
@@ -1290,23 +1293,34 @@ export function extractModuleList(buffer: ArrayBuffer, strings: string): ModuleI
         }
     }
     
-    // Enhanced patterns for better module detection
+    // Enhanced patterns for better module detection. These run on the main
+    // thread over strings extracted from an untrusted dump, so every quantifier
+    // is bounded and a bare name may only start at an identifier boundary,
+    // which keeps each scan linear. The unbounded forms ([...]+\.(sys|dll|exe),
+    // (\w+\s+\w+)?\s*-, [^...]+\\) backtracked quadratically over long
+    // identifier, whitespace or path runs and could hang the tab (issue #153).
+    // The 60-character stem cap matches isLegitimateModuleName's 64-character
+    // limit on the full name.
     const modulePatterns = [
         // Standard module names
-        new RegExp('([a-zA-Z0-9_\\-]+\\.(sys|dll|exe))', 'gi'),
+        new RegExp('(?<![a-zA-Z0-9_\\-])([a-zA-Z0-9_\\-]{1,60}\\.(sys|dll|exe))', 'gi'),
         // Module with version info
-        new RegExp('([a-zA-Z0-9_\\-]+\\.(sys|dll|exe))\\s+\\d+\\.\\d+\\.\\d+\\.\\d+', 'gi'),
+        new RegExp('(?<![a-zA-Z0-9_\\-])([a-zA-Z0-9_\\-]{1,60}\\.(sys|dll|exe))\\s{1,16}\\d{1,10}\\.\\d{1,10}\\.\\d{1,10}\\.\\d{1,10}', 'gi'),
         // Module with company name
-        new RegExp('(\\w+\\s+\\w+)?\\s*-\\s*([a-zA-Z0-9_\\-]+\\.(sys|dll|exe))', 'gi'),
-        // Full path modules
-        new RegExp('[A-Z]:\\\\[^"<>|?*\\n\\r]+\\\\([a-zA-Z0-9_\\-]+\\.(sys|dll|exe))', 'gi'),
+        new RegExp('(?<!\\w)(\\w{1,64}\\s{1,8}\\w{1,64})?\\s{0,8}-\\s{0,8}([a-zA-Z0-9_][a-zA-Z0-9_\\-]{0,59}\\.(sys|dll|exe))', 'gi'),
+        // Full path modules: backslash-separated segments, so the split between
+        // directory and file name is never ambiguous
+        new RegExp('[A-Z]:\\\\(?:[^"<>|?*\\n\\r\\\\]{1,255}\\\\){0,32}([a-zA-Z0-9_\\-]{1,60}\\.(sys|dll|exe))', 'gi'),
         // System32 modules
-        new RegExp('system32\\\\([a-zA-Z0-9_\\-]+\\.(sys|dll|exe))', 'gi')
+        new RegExp('system32\\\\([a-zA-Z0-9_\\-]{1,60}\\.(sys|dll|exe))', 'gi')
     ];
+    // The prompt carries only the first MAX_STRINGS_LENGTH (64 KB) of these
+    // strings; scanning four times that bounds the work on a 5 MB dump.
+    const scanned = strings.length > MODULE_SCAN_MAX_CHARS ? strings.slice(0, MODULE_SCAN_MAX_CHARS) : strings;
     
     // First pass: Extract all module names
     for (const pattern of modulePatterns) {
-        const matches = strings.matchAll(pattern);
+        const matches = scanned.matchAll(pattern);
         for (const match of matches) {
             // Extract just the filename
             let name = match[match.length - 1] || match[1];

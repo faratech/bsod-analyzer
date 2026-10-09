@@ -327,3 +327,16 @@ test('GET /api/forum/related validates keys and returns campaign-tagged forum li
     await server.close();
   }
 });
+
+test('cleaning forum results stays linear on a long unclosed "<" run (issue #152)', () => {
+  const run = '<'.repeat(1_000_000);
+  const started = performance.now();
+  const threads = rankRelatedResults([
+    { id: 'thread-1', title: `Stop 0x133 ${run}`, text: `<b>0x133</b> in nvlddmkm ${run}`, url: 'https://windowsforum.com/x.1/' }
+  ], KEYS);
+  assert.ok(performance.now() - started < 500, 'an unclosed "<" run must not backtrack quadratically');
+  assert.equal(threads.length, 1);
+  // Tags are still stripped; the "<" run is cut to the field cap, then truncated for display.
+  assert.ok(threads[0].snippet.startsWith('0x133 in nvlddmkm <<<'));
+  assert.ok(threads[0].snippet.length <= 181);
+});
