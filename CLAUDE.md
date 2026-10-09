@@ -231,8 +231,9 @@ CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
 CACHE_ZSTD_DICTIONARY_VERSION=NUMERIC_VERSION \
   CACHE_ZSTD_WRITES_ENABLED=true ./deploy-with-secret.sh
 
-# Update secrets
-./setup-all-secrets.sh
+# Update secrets (pass the account the Cloud Build trigger runs as; the
+# default Compute Engine SA is never granted)
+CLOUDBUILD_SERVICE_ACCOUNT=<trigger-sa-email> ./setup-all-secrets.sh
 ```
 
 ### Maintenance mode
