@@ -6,7 +6,9 @@
 
 // Aggregates mirror the previous Upstash counters: one counted event per
 // (file hash, UTC day) — the first one — for every breakdown; the activity
-// gauges count every run. Only real analysis sources count.
+// gauges count every run. Only real analysis sources count, and an ai-fallback
+// event counts only with a server-verified file hash: a hashless one cannot be
+// deduplicated, so any session could add fabricated analyses (issue #149).
 export function eventsQuery(table) {
   return `
 WITH events AS (
@@ -23,6 +25,7 @@ WITH events AS (
   FROM \`${table}\`
   WHERE jsonPayload.event = 'stats.analysis'
     AND jsonPayload.source IN ('windbg', 'ai-fallback')
+    AND (jsonPayload.source = 'windbg' OR NULLIF(jsonPayload.file_hash, '') IS NOT NULL)
 ),
 counted AS (
   SELECT * EXCEPT (rn) FROM (

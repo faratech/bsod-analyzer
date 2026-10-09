@@ -187,6 +187,7 @@ async function runJob(route, job, built) {
       origin: 'regenerated',
       source: 'windbg',
       promptType: 'windbg',
+      promptVerified: true,
       jobId: job.job_id,
       provider: route.name.startsWith('openai') ? 'openai' : 'experiential',
       model: route.model,
