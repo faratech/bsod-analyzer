@@ -48,7 +48,7 @@
     "autoprefixer": "^10.6.1",
     "concurrently": "^10.0.6",
     "jsdom": "^30.1.2",
-    "postcss": "^8.5.29",
+    "postcss": "^8.5.30",
     "purgecss": "^8.0.0",
     "tailwindcss": "^4.3.3",
     "terser": "^5.51.2",
