@@ -1482,6 +1482,12 @@ const requireSession = async (req, res, next) => {
     if (process.env.NODE_ENV === 'development') {
       req.tier = process.env.WF_DEV_TIER || 'premium';
       req.wfUserId = req.wfUserId || 'dev';
+      // Downstream handlers key ownership, quota session scope and file
+      // handles off req.sessionId; without it they silently no-op or share
+      // the "undefined" tag across dev users (issue #175).
+      req.sessionId = req.sessionId || 'dev-session';
+      req.sessionData = req.sessionData || { turnstileVerified: true };
+      req.clientIp = clientIp;
       return next();
     }
 

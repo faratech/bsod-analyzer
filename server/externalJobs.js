@@ -117,8 +117,11 @@ export function createExternalJobResolver({
 
     if (!job.upstreamJobId) {
       // Accepted from a cache hit whose entry has since expired or become
-      // unreachable; there is no upstream job to fall back on.
-      return failed(job, 'cached_result_unavailable');
+      // unreachable; there is no upstream job to fall back on. A transient
+      // cache miss must not terminally fail the job (issue #174): keep
+      // polling until the deadline, then fail.
+      if (now() - job.acceptedAt >= deadlineMs) return failed(job, 'cached_result_unavailable');
+      return { status: 'processing' };
     }
 
     let upstream;

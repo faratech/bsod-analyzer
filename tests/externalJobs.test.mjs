@@ -145,12 +145,36 @@ test('upstream failures: failed jobs and permanent errors fail, transient errors
   assert.equal(isPermanentUpstreamError(new Error('network')), false);
 });
 
-test('a cache-hit job whose cache entry is gone fails instead of polling forever', async () => {
+test('a cache-hit job whose cache entry is gone polls until the deadline, then fails (issue #174)', async () => {
+  let clock = Date.now();
   const codec = createExternalJobCodec({ secret: SECRET });
-  const job = codec.parse(codec.issue({ ...JOB, upstreamJobId: undefined }));
-  const { resolver, calls } = harness();
+  const job = codec.parse(codec.issue({ ...JOB, upstreamJobId: undefined }, clock));
+  const { resolver, calls } = harness({ now: () => clock });
+  // A transient cache miss is not terminal and is not memoized as failed.
+  assert.deepEqual(await resolver.resolve(job), { status: 'processing' });
+  assert.equal(calls.upstream, 0);
+  clock += 16 * 60 * 1000;
   assert.equal((await resolver.resolve(job)).status, 'failed');
   assert.equal(calls.upstream, 0);
+});
+
+test('a cache-hit job recovers when the cache repopulates before the deadline (issue #174)', async () => {
+  const codec = createExternalJobCodec({ secret: SECRET });
+  const job = codec.parse(codec.issue({ ...JOB, upstreamJobId: undefined }));
+  let cached = null;
+  const resolver = createExternalJobResolver({
+    getUpstreamJob: async () => { throw new Error('no upstream for cache-hit jobs'); },
+    mapUpstreamStatus: MAP,
+    extractAnalysis: x => x,
+    loadCachedAnalysis: async () => cached,
+    cacheAnalysis: async () => {},
+    generateReport: async () => ({ summary: 'recovered' }),
+    deadlineMs: 15 * 60 * 1000,
+    logger: { warn() {} }
+  });
+  assert.equal((await resolver.resolve(job)).status, 'processing');
+  cached = { windbgOutput: 'BUGCHECK_CODE: 7e' };
+  assert.equal((await resolver.resolve(job)).status, 'completed');
 });
 
 test('completed jobs carry related forum threads, memoized with the result', async () => {

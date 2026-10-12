@@ -252,6 +252,29 @@ test('commit and refund settle on the backend that admitted each scope', async (
   assert.equal(local.reserve('s', { requestLimit: 5, tokenLimit: 1000, tokenCost: 0, windowSeconds: 3600 }).tokens, 125);
 });
 
+test('a shared-admitted reservation never settles on the local store when shared fails (issue #173)', async () => {
+  const local = createSessionQuotaStore();
+  // An unrelated local reservation for the same key (admitted while shared was down earlier).
+  local.reserve('k', { requestCost: 1, tokenCost: 100, requestLimit: 10, tokenLimit: 1000, windowSeconds: 3600 });
+  const failingShared = {
+    configured: true,
+    async reserveQuota(key, args) {
+      return { allowed: true, requests: 1, tokens: args.tokenCost, resetTime: new Date(Date.now() + 3600e3) };
+    },
+    async adjustQuota() { return false; },
+    async refundQuota() { return null; },
+    rateLimitStore() { throw new Error('n/a'); }
+  };
+  const ledger = createQuotaLedger({ shared: failingShared, local });
+  const reservation = await ledger.reserve([{ key: 'k', requestLimit: 10, tokenLimit: 1000 }], { requestCost: 1, tokenCost: 100, windowSeconds: 3600 });
+  assert.equal(reservation.allowed, true);
+  await ledger.commit(reservation, { tokenDelta: -80 });
+  assert.equal((await ledger.refund(reservation, { requestCost: 1, tokenCost: 100, refundCap: 3, windowSeconds: 3600 })).refunded, false);
+  const snap = local.reserve('k', { requestCost: 0, tokenCost: 0, requestLimit: 10, tokenLimit: 1000, windowSeconds: 3600 });
+  assert.equal(snap.tokens, 100, 'local tokens untouched by shared-scope settlement');
+  assert.equal(snap.requests, 1, 'local requests untouched by shared-scope refund');
+});
+
 test('the store is configured only by the dedicated quota variables', () => {
   assert.equal(createSharedCounterStoreFromEnv({}).configured, false);
   assert.equal(createSharedCounterStoreFromEnv({

@@ -193,9 +193,14 @@ export function createSharedCounterStoreFromEnv(env = process.env, options = {})
 export function createQuotaLedger({ shared = null, local = createSessionQuotaStore() } = {}) {
   async function releaseEntries(entries, { requestCost, tokenCost }) {
     for (const entry of entries) {
-      const done = entry.shared
-        && await shared.adjustQuota(entry.key, { requestDelta: -requestCost, tokenDelta: -tokenCost });
-      if (!done) local.release(entry.key, { requestCost, tokenCost });
+      // Settle only on the backend that admitted the scope (issue #173): a
+      // transient shared-store failure must not reroute the release onto the
+      // local counters, where the same key may hold unrelated reservations.
+      if (entry.shared) {
+        await shared.adjustQuota(entry.key, { requestDelta: -requestCost, tokenDelta: -tokenCost });
+      } else {
+        local.release(entry.key, { requestCost, tokenCost });
+      }
     }
   }
 
@@ -226,8 +231,11 @@ export function createQuotaLedger({ shared = null, local = createSessionQuotaSto
   // Moves the reserved token estimate toward the provider-reported actuals.
   async function commit(reservation, { tokenDelta }) {
     for (const entry of reservation?.entries ?? []) {
-      const done = entry.shared && await shared.adjustQuota(entry.key, { tokenDelta });
-      if (!done) local.commit(entry.key, { tokenDelta });
+      if (entry.shared) {
+        await shared.adjustQuota(entry.key, { tokenDelta });
+      } else {
+        local.commit(entry.key, { tokenDelta });
+      }
     }
   }
 
@@ -235,8 +243,12 @@ export function createQuotaLedger({ shared = null, local = createSessionQuotaSto
     const outcome = { refunded: true, refundsUsed: 0, refundCap };
     for (const entry of reservation?.entries ?? []) {
       const args = { requestCost, tokenCost, refundCap, windowSeconds };
-      const result = (entry.shared ? await shared.refundQuota(entry.key, args) : null)
-        ?? local.refund(entry.key, args);
+      // Same admitting-backend rule as commit (issue #173): an unreachable
+      // shared store means this scope is not refunded, never that the local
+      // counters absorb the refund.
+      const result = entry.shared
+        ? (await shared.refundQuota(entry.key, args)) ?? { refunded: false, refundsUsed: 0, refundCap }
+        : local.refund(entry.key, args);
       outcome.refunded = outcome.refunded && result.refunded;
       outcome.refundsUsed = Math.max(outcome.refundsUsed, result.refundsUsed);
     }
