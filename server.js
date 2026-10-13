@@ -68,6 +68,7 @@ import { extractStatsFacts } from './server/stats.js';
 import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
+import { windbgFailureLogFields } from './server/windbgFailureLog.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
 import { createCrashSignalRecorder } from './server/crashSignal.js';
 import { createConcurrencyLimiter } from './server/concurrency.js';
@@ -2824,7 +2825,7 @@ app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), require
       }
     });
   } catch (error) {
-    log.error('windbg.upload.fail', { message: error.message });
+    log.error('windbg.upload.fail', windbgFailureLogFields(error));
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to upload file to the debugging server. Please try again later.'
@@ -2881,7 +2882,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
   } catch (error) {
     // Upstream error text can carry the WinDBG service's raw response body:
     // log it (bounded), return a generic message.
-    log.error('windbg.status.fail', { message: String(error?.message || '').slice(0, 500), code: error?.code });
+    log.error('windbg.status.fail', windbgFailureLogFields(error));
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to check WinDBG status. Please try again later.',
@@ -2971,7 +2972,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       structured
     });
   } catch (error) {
-    log.error('windbg.download.fail', { message: String(error?.message || '').slice(0, 500), code: error?.code });
+    log.error('windbg.download.fail', windbgFailureLogFields(error));
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to download the WinDBG analysis. Please try again later.',
