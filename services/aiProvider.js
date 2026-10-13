@@ -464,6 +464,12 @@ export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-6-luna';
 export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
 export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-6-luna';
+// Gemini 4 Argon on Experiential (2026-10-13): the `:free` id first while the
+// gateway serves it at $0, then the paid id within EXPLABS_ARGON_PAID_* budgets.
+// Probed: JSON mode honoured, reasoning params ignored, max 32,768 output tokens,
+// both ids echo `gemini-4-argon` (so the route string, not the echo, says which).
+export const ARGON_FREE_MODEL = 'google/gemini-4-argon:free';
+export const ARGON_PAID_MODEL = 'google/gemini-4-argon';
 
 // OpenAI-compatible tokenizers start from UTF-8 bytes and merge them, so the
 // byte length plus a fixed Chat Completions envelope is a conservative upper

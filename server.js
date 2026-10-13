@@ -124,6 +124,8 @@ import {
   DEFAULT_OPENROUTER_FREE_MODEL,
   DEFAULT_OPENAI_FREE_MODEL,
   DEFAULT_EXPERIENTIAL_MODEL,
+  ARGON_FREE_MODEL,
+  ARGON_PAID_MODEL,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel
@@ -254,6 +256,31 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAIL
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
+// Gemini 4 Argon legs (operator rule 2026-10-13: the go-to model for medium/
+// complex work while free on Experiential, then paid from its credits). Off
+// unless EXPLABS_ARGON_ENABLED; the paid leg is capped per UTC day in tokens
+// (defaults ~= $3 input + $2 output at $2/$10 per 1M) and is tried only when
+// the free leg refused a request it never processed.
+const EXPERIENTIAL_ARGON_ENABLED = /^(1|true|yes|on)$/i.test(process.env.EXPLABS_ARGON_ENABLED || '');
+const EXPERIENTIAL_ARGON_TIMEOUT_MS = readPositiveInt(process.env.EXPLABS_ARGON_TIMEOUT_MS, 90_000);
+const ARGON_LEGS = Object.freeze([
+  Object.freeze({
+    key: 'experiential-argon-free',
+    model: ARGON_FREE_MODEL,
+    dailyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_DAILY_INPUT_LIMIT, 15_000_000),
+    dailyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_DAILY_OUTPUT_LIMIT, 3_000_000),
+    hourlyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_HOURLY_INPUT_LIMIT, 3_000_000),
+    hourlyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_HOURLY_OUTPUT_LIMIT, 750_000)
+  }),
+  Object.freeze({
+    key: 'experiential-argon-paid',
+    model: ARGON_PAID_MODEL,
+    dailyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT, 1_500_000),
+    dailyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_OUTPUT_LIMIT, 200_000),
+    hourlyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT, 1_500_000),
+    hourlyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_OUTPUT_LIMIT, 200_000)
+  })
+]);
 // Cloud Run --max-instances. deploy-with-secret.sh and cloudbuild.yaml pass the
 // value they deploy with (the GitHub trigger's inline build does not, so the
 // default must match the service's --max-instances).
@@ -835,6 +862,67 @@ function requestTokenEstimate(request) {
   };
 }
 
+// Gemini 4 Argon first (free, then paid within its budget). Returns the
+// normalized response, or null to continue with the existing chain. A free
+// refusal the provider never processed (quota, rate limit, model) moves on to
+// the paid leg; any other failure (timeout, 5xx, empty or invalid answer)
+// falls straight through to the existing chain so a request is never billed
+// twice on Argon.
+async function generateArgonContent(request, estimate) {
+  if (!EXPERIENTIAL_ARGON_ENABLED || !EXPERIENTIAL_API_KEY) return null;
+  for (const leg of ARGON_LEGS) {
+    const reservation = providerQuota.reserve(leg.key, {
+      inputCost: estimate.experientialInputReservation,
+      outputCost: estimate.outputTokens,
+      dailyInputLimit: leg.dailyInputLimit,
+      dailyOutputLimit: leg.dailyOutputLimit,
+      hourlyInputLimit: leg.hourlyInputLimit,
+      hourlyOutputLimit: leg.hourlyOutputLimit
+    });
+    if (!reservation?.allowed) continue;
+    try {
+      const response = await withTimeout(
+        () => generateExperientialContent(request, {
+          apiKey: EXPERIENTIAL_API_KEY,
+          baseUrl: EXPERIENTIAL_BASE_URL,
+          model: leg.model,
+          signal: timeoutSignal(EXPERIENTIAL_ARGON_TIMEOUT_MS)
+        }),
+        EXPERIENTIAL_ARGON_TIMEOUT_MS,
+        'Experiential Argon request timed out'
+      );
+      const settlement = settleProviderTokenReservation(reservation, {
+        inputTokens: response.usageMetadata?.promptTokenCount,
+        outputTokens: response.usageMetadata?.candidatesTokenCount
+      });
+      providerQuota.adjust(reservation, { inputDelta: settlement.inputDelta, outputDelta: settlement.outputDelta });
+      log.info('ai.experiential.argon', {
+        leg: leg.key,
+        model: leg.model,
+        inputTokens: settlement.actualInput,
+        outputTokens: settlement.actualOutput,
+        usageEstimated: settlement.usageEstimated
+      });
+      return normalizeAIResponse(response, `experiential:${leg.model}`);
+    } catch (error) {
+      const settlement = settleFailedProviderReservation(reservation, error);
+      providerQuota.adjust(reservation, settlement);
+      const backoff = error instanceof AIProviderError ? providerBackoffFor(error) : null;
+      if (backoff?.latch) providerQuota.markExhausted(leg.key, backoff.latch);
+      if (backoff?.pauseMs) providerQuota.pause(leg.key, backoff.pauseMs);
+      log.warn(backoff?.latch ? 'ai.experiential.argon.exhausted' : 'ai.experiential.argon.error', {
+        leg: leg.key,
+        code: error.code,
+        released: settlement?.released,
+        pauseMs: backoff?.pauseMs,
+        message: error.message?.slice(0, 140)
+      });
+      if (!(error instanceof AIProviderError && error.notProcessed === true)) return null;
+    }
+  }
+  return null;
+}
+
 async function generateAIContent(request) {
   const provider = getAIProviderForModel(request.model);
   if (!provider) {
@@ -849,6 +937,8 @@ async function generateAIContent(request) {
     // the existing OpenAI data-sharing incentive route. Both routes preserve
     // the same model contract; only the provider endpoint changes.
     const estimate = requestTokenEstimate(request);
+    const argon = await generateArgonContent(request, estimate);
+    if (argon) return argon;
     const experientialReservation = reserveExperientialQuota(
       estimate.experientialInputReservation,
       estimate.outputTokens

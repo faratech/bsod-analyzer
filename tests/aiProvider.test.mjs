@@ -8,6 +8,8 @@ import {
   generateOpenRouterContent,
   generateOpenAIContent,
   generateExperientialContent,
+  ARGON_FREE_MODEL,
+  ARGON_PAID_MODEL,
   conservativeChatInputTokenReservation,
   isOpenAIFreeTier,
   getAIProviderForModel,
@@ -559,4 +561,44 @@ test('DeepSeek max_tokens carries the configured output budget', async () => {
   // The budget must cover reasoning + answer; too small truncates the JSON
   // mid-object and surfaces as finish_reason "LENGTH".
   assert.equal(body.max_tokens, 16384);
+});
+
+
+test('Argon legs reuse the Experiential adapter: free id, JSON mode, and a free-tier refusal marked not processed', async () => {
+  let body;
+  const ok = await generateExperientialContent({
+    contents: 'Analyze this crash evidence.',
+    config: { systemInstruction: 'Return JSON only.', maxOutputTokens: 16384 }
+  }, {
+    apiKey: 'test-key',
+    baseUrl: 'https://example.test/v1',
+    maxRetries: 0,
+    model: ARGON_FREE_MODEL,
+    fetchImpl: async (url, options) => {
+      body = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        model: 'gemini-4-argon',
+        choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8, cost: 0 }
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  assert.equal(body.model, 'google/gemini-4-argon:free');
+  assert.deepEqual(body.response_format, { type: 'json_object' });
+  assert.equal(body.max_completion_tokens, 16384);
+  assert.equal(ok.text, '{"ok":true}');
+  assert.equal(ARGON_PAID_MODEL, 'google/gemini-4-argon');
+
+  // The server tries the paid leg only after a refusal the gateway never processed.
+  await assert.rejects(
+    () => generateExperientialContent({ contents: 'x', config: {} }, {
+      apiKey: 'test-key',
+      baseUrl: 'https://example.test/v1',
+      maxRetries: 0,
+      model: ARGON_FREE_MODEL,
+      fetchImpl: async () => new Response(JSON.stringify({ error: { message: 'free tier daily quota exhausted' } }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } })
+    }),
+    error => error instanceof AIProviderError && error.notProcessed === true && error.code === 'AI_DAILY_QUOTA_EXHAUSTED'
+  );
 });
