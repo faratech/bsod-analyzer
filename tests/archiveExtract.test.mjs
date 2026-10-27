@@ -151,3 +151,27 @@ test('rar listings without parseable sizes are rejected rather than trusted', as
     /unable to determine uncompressed size/i
   );
 });
+
+test('a missing extractor binary keeps its spawn code so callers report a 5xx', async () => {
+  const run = async () => {
+    throw Object.assign(new Error('spawn 7z ENOENT'), { code: 'ENOENT' });
+  };
+  const extractor = makeExtractor({ run });
+
+  await assert.rejects(
+    () => extractor.extractDumps(Buffer.alloc(1024), 'upload.7z', '7z'),
+    error => error.code === 'ENOENT' && /Failed to read archive/.test(error.message)
+  );
+});
+
+test('a bad archive (non-zero tool exit) carries no infrastructure code', async () => {
+  const run = async () => {
+    throw Object.assign(new Error('Command failed: 7z l'), { code: 2, stderr: 'Can not open the file as archive' });
+  };
+  const extractor = makeExtractor({ run });
+
+  await assert.rejects(
+    () => extractor.extractDumps(Buffer.alloc(1024), 'upload.7z', '7z'),
+    error => error.code === undefined && /Failed to read archive/.test(error.message)
+  );
+});

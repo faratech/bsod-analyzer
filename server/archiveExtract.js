@@ -22,6 +22,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// Wraps a 7z/bsdtar failure in a user-facing message while keeping a spawn
+// error's string code (ENOENT for a missing binary, EACCES, ...): callers
+// tell infrastructure faults (5xx) from bad archives (4xx) by that code, and
+// a bare `new Error(...)` reported a missing binary as the client's fault.
+// A non-zero exit carries a numeric code, which stays dropped.
+function toolError(message, err) {
+  const wrapped = new Error(message);
+  if (typeof err?.code === 'string') wrapped.code = err.code;
+  return wrapped;
+}
+
 export function createArchiveDumpExtractor({
   maxRawFileSize,
   maxExtractedSize,
@@ -40,7 +51,7 @@ export function createArchiveDumpExtractor({
       if (err?.stderr && err.stderr.includes('Wrong password')) {
         throw new Error('Password-protected archives are not supported');
       }
-      throw new Error(`Failed to read archive: ${err?.message || err}`);
+      throw toolError(`Failed to read archive: ${err?.message || err}`, err);
     }
     return listOutput.stdout;
   }
@@ -52,7 +63,7 @@ export function createArchiveDumpExtractor({
       if (err?.stderr && err.stderr.includes('Wrong password')) {
         throw new Error('Password-protected archives are not supported');
       }
-      throw new Error(`Failed to extract archive: ${err?.message || err}`);
+      throw toolError(`Failed to extract archive: ${err?.message || err}`, err);
     }
   }
 
@@ -103,14 +114,14 @@ export function createArchiveDumpExtractor({
       if (err?.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
         throw new Error('Password-protected archives are not supported');
       }
-      throw new Error(`Failed to read RAR archive: ${err?.stderr || err?.message || err}`);
+      throw toolError(`Failed to read RAR archive: ${err?.stderr || err?.message || err}`, err);
     }
 
     let pathOutput;
     try {
       pathOutput = await run('bsdtar', ['tf', archivePath], { timeout: 15000 });
     } catch (err) {
-      throw new Error(`Failed to read RAR archive paths: ${err?.stderr || err?.message || err}`);
+      throw toolError(`Failed to read RAR archive paths: ${err?.stderr || err?.message || err}`, err);
     }
     const listedPaths = pathOutput.stdout.trim().split('\n').filter(Boolean);
     for (const entryPath of listedPaths) {
@@ -142,7 +153,7 @@ export function createArchiveDumpExtractor({
       if (err?.stderr && (err.stderr.includes('password') || err.stderr.includes('encrypted'))) {
         throw new Error('Password-protected archives are not supported');
       }
-      throw new Error(`Failed to extract RAR archive: ${err?.stderr || err?.message || err}`);
+      throw toolError(`Failed to extract RAR archive: ${err?.stderr || err?.message || err}`, err);
     }
   }
 

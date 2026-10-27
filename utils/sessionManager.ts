@@ -140,9 +140,16 @@ async function refreshSession(): Promise<boolean> {
       return true;
     }
 
-    // Session invalid - mark for re-initialization
-    clearSessionState();
-    return false;
+    // Only a 401 means the session is gone. A 429 from the shared auth
+    // limiter or a transient 5xx says nothing about the session, and
+    // invalidating on it aborted the in-flight analysis and sent the user
+    // back to the security check.
+    if (response.status === 401) {
+      clearSessionState();
+      return false;
+    }
+    console.warn('[Session] Refresh skipped after transient failure:', response.status);
+    return true;
   } catch {
     // Network error - don't invalidate session, just skip refresh
     return true;
