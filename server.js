@@ -3074,6 +3074,10 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
 // ============================================================
 // Archive Extraction Endpoint (7z/RAR)
 // ============================================================
+// Error codes that mean archive extraction failed on our side (tmp disk, missing
+// 7z/bsdtar binary), not because of the uploaded archive.
+const ARCHIVE_INFRASTRUCTURE_ERROR_CODES = ['ENOSPC', 'EIO', 'ENOENT', 'EACCES', 'EMFILE'];
+
 app.post('/api/extract-archive', rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024), requireSession, archiveLimiter, archiveSessionLimiter, archiveConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -3141,7 +3145,7 @@ app.post('/api/extract-archive', rejectLargeBody(MAX_RAW_FILE_SIZE + 1024 * 1024
     console.error('[Archive] Extraction error:', error);
     // Infrastructure failures (ENOSPC/EIO on tmp, missing 7z/bsdtar binary) are
     // server faults, not client mistakes - report 5xx so alerting sees them.
-    const infraCode = ['ENOSPC', 'EIO', 'ENOENT', 'EACCES', 'EMFILE'].includes(error?.code);
+    const infraCode = ARCHIVE_INFRASTRUCTURE_ERROR_CODES.includes(error?.code);
     if (infraCode) {
       res.status(500).json({
         success: false,
@@ -3586,12 +3590,25 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
       console.log(`[API/Analyze] Detected ${archiveType} archive, extracting dumps (engine: ${ARCHIVE_EXTRACT_ENGINE})...`);
 
       let extractedDumps;
-      if (archiveType === 'zip' && ARCHIVE_EXTRACT_ENGINE === 'jszip') {
-        // Kill switch for one release (issue #76): the in-memory JSZip path
-        // predates the bounded on-disk extractor and is retired by default.
-        extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
-      } else {
-        extractedDumps = await extractDumpsFromArchive(fileBuffer, fileName, archiveType);
+      try {
+        if (archiveType === 'zip' && ARCHIVE_EXTRACT_ENGINE === 'jszip') {
+          // Kill switch for one release (issue #76): the in-memory JSZip path
+          // predates the bounded on-disk extractor and is retired by default.
+          extractedDumps = await extractDumpsFromZip(fileBuffer, fileName);
+        } else {
+          extractedDumps = await extractDumpsFromArchive(fileBuffer, fileName, archiveType);
+        }
+      } catch (error) {
+        // Same split as /api/extract-archive: a corrupt, encrypted, oversized
+        // or unsafe archive is the caller's problem (400, do not retry); only
+        // infrastructure failures are a 500 the forum worker should retry.
+        if (ARCHIVE_INFRASTRUCTURE_ERROR_CODES.includes(error?.code)) throw error;
+        log.warn('analyze.archive_rejected', { archiveType, message: String(error?.message || '').slice(0, 160) });
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to extract archive. Please ensure it is a valid format and is not password-protected.',
+          code: 'INVALID_ARCHIVE'
+        });
       }
 
       if (extractedDumps.length === 0) {

@@ -19,6 +19,13 @@ const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to r
 const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s = 600s), then fallback to local analysis
 const UPLOAD_TIMEOUT_MS = 240000; // 4 minute upload timeout for slow proxy/origin submits
 const WINDBG_TOTAL_TIMEOUT_MS = 660000; // 11 minute hard timeout: upload window + poll budget + margin
+// The backend answers transient upstream trouble with 502/503/504 and the poll
+// limiter with 429. Those are retried on the next poll (and a few times for the
+// download) instead of abandoning a WinDBG job that is still running upstream.
+const TRANSIENT_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+const MAX_CONSECUTIVE_POLL_FAILURES = 3;
+const DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 3000;
 
 export interface WinDBGUploadResponse {
     success: boolean;
@@ -354,16 +361,33 @@ export async function uploadToWinDBG(
 /**
  * Download the analysis result from the WinDBG server via our backend
  */
-export async function downloadAnalysis(uid: string): Promise<{
+export async function downloadAnalysis(uid: string, signal?: AbortSignal): Promise<{
     analysisText: string;
     analysisSignalText?: string;
     structured?: Record<string, unknown>;
 }> {
     console.log(`[WinDBG] Downloading analysis for UID: ${uid}`);
 
-    let response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
-        credentials: 'include'
-    });
+    const fetchDownload = async (): Promise<Response> => {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                const response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
+                    credentials: 'include'
+                });
+                if (!TRANSIENT_HTTP_STATUSES.has(response.status) || attempt >= DOWNLOAD_ATTEMPTS) {
+                    return response;
+                }
+                console.warn(`[WinDBG] Download attempt ${attempt} got HTTP ${response.status}, retrying...`);
+            } catch (error) {
+                if (attempt >= DOWNLOAD_ATTEMPTS) throw error;
+                console.warn(`[WinDBG] Download attempt ${attempt} failed, retrying...`, error);
+            }
+            await sleep(DOWNLOAD_RETRY_DELAY_MS);
+            if (signal?.aborted) throw createCancelledError();
+        }
+    };
+
+    let response = await fetchDownload();
 
     // Handle session expiry during download
     if (response.status === 401) {
@@ -373,9 +397,7 @@ export async function downloadAnalysis(uid: string): Promise<{
             console.log('[WinDBG] Session expired during download, re-initializing...');
             const refreshed = await initializeSession(true);
             if (refreshed) {
-                response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
-                    credentials: 'include'
-                });
+                response = await fetchDownload();
             }
         }
     }
@@ -479,6 +501,7 @@ export async function analyzeWithWinDBG(
         let attempts = 0;
         let authRefreshes = 0;
         const MAX_AUTH_REFRESHES = 2; // hard cap that never replenishes
+        let consecutiveFailures = 0;
 
         while (attempts < MAX_POLL_ATTEMPTS) {
             attempts++;
@@ -495,12 +518,27 @@ export async function analyzeWithWinDBG(
 
             // Add cache-busting timestamp to prevent browser/CDN caching
             const cacheBuster = Date.now();
-            const response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}${handleQuery(uid)}&_t=${cacheBuster}`, {
-                credentials: 'include',
-                cache: 'no-store'
-            });
+            let response: Response;
+            try {
+                response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}${handleQuery(uid)}&_t=${cacheBuster}`, {
+                    credentials: 'include',
+                    cache: 'no-store'
+                });
+            } catch (error) {
+                // Network blip: the upstream job keeps running, so poll again.
+                if (++consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw error;
+                console.warn(`[WinDBG] Poll network error (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES}), retrying...`, error);
+                await sleep(POLL_INTERVAL_MS);
+                continue;
+            }
 
             console.log(`[WinDBG] Poll response status: ${response.status}`);
+
+            if (TRANSIENT_HTTP_STATUSES.has(response.status) && ++consecutiveFailures <= MAX_CONSECUTIVE_POLL_FAILURES) {
+                console.warn(`[WinDBG] Poll got HTTP ${response.status} (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES}), retrying...`);
+                await sleep(POLL_INTERVAL_MS);
+                continue;
+            }
 
             if (!response.ok) {
                 if (response.status === 401 && authRefreshes < MAX_AUTH_REFRESHES) {
@@ -518,6 +556,7 @@ export async function analyzeWithWinDBG(
                 throw new Error(`Status check failed with HTTP ${response.status}`);
             }
 
+            consecutiveFailures = 0;
             const result: WinDBGStatusResponse = await response.json();
             console.log(`[WinDBG] Poll result:`, result.data?.status);
 
@@ -563,7 +602,7 @@ export async function analyzeWithWinDBG(
         }
 
         if (!statusResult) {
-            throw new Error('WinDBG analysis timed out after 5 minutes - falling back to local analysis');
+            throw new Error(`WinDBG analysis timed out after ${Math.round(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS / 60000)} minutes - falling back to local analysis`);
         }
 
         // Stage 3: Download the analysis
@@ -574,7 +613,7 @@ export async function analyzeWithWinDBG(
             throw createCancelledError();
         }
         onProgress?.('downloading', 'Downloading WinDBG analysis...');
-        const downloadedAnalysis = await downloadAnalysis(uid);
+        const downloadedAnalysis = await downloadAnalysis(uid, signal);
 
         onProgress?.('complete', 'WinDBG analysis complete');
 
