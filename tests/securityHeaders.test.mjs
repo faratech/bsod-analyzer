@@ -5,7 +5,8 @@ import {
   CSP_HEADER,
   CSP_EMBED_HEADER,
   computeInlineScriptSources,
-  createSecurityHeadersMiddleware
+  createSecurityHeadersMiddleware,
+  resolveCspMode
 } from '../server/securityHeaders.js';
 import { createFastifyCompatApp } from '../server/fastifyCompat.js';
 
@@ -314,4 +315,26 @@ test('index.html: every inline script is hashed and nothing needs an inline even
   const handlers = [...document.querySelectorAll('*')]
     .flatMap(el => [...el.attributes].filter(a => /^on/i.test(a.name)).map(a => `<${el.tagName.toLowerCase()} ${a.name}>`));
   assert.deepEqual(handlers, [], 'inline event handlers cannot be allowed by a hash-based CSP');
+});
+
+test('resolveCspMode: unset or empty CSP_MODE keeps the documented default', () => {
+  const warnings = [];
+  assert.equal(resolveCspMode(undefined, m => warnings.push(m)), 'report-only');
+  assert.equal(resolveCspMode('', m => warnings.push(m)), 'report-only');
+  assert.deepEqual(warnings, []);
+});
+
+test('resolveCspMode: known modes pass through without a warning', () => {
+  const warnings = [];
+  assert.equal(resolveCspMode('report-only', m => warnings.push(m)), 'report-only');
+  assert.equal(resolveCspMode('enforce', m => warnings.push(m)), 'enforce');
+  assert.deepEqual(warnings, []);
+});
+
+test('resolveCspMode: a typo warns instead of silently downgrading (issue #185)', () => {
+  const warnings = [];
+  assert.equal(resolveCspMode('enforc', m => warnings.push(m)), 'report-only');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /csp\.mode\.invalid/);
+  assert.match(warnings[0], /enforc/);
 });
