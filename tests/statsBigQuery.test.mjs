@@ -69,3 +69,16 @@ test('bigquery/live_stats.sql is the generated eventsQuery', async () => {
   assert.ok(committed.includes(events.trim().split('\n').slice(0, 20).join('\n')),
     'regenerate with: node scripts/build-live-stats-sql.mjs > bigquery/live_stats.sql');
 });
+
+test('last_hour counts a rolling 60 minutes, and the scheduled SQL is regenerated from eventsQuery (issue #248)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const lastHour = /\(SELECT COUNT\(\*\) FROM events WHERE ([^)]*\)[^)]*\)?[^)]*)\) AS last_hour/;
+  const query = eventsQuery('p.d.t');
+  // The export runs at HH:31: a calendar-hour bucket would cover ~31 minutes.
+  assert.match(query.match(lastHour)?.[1] ?? '', /^ts >= TIMESTAMP_SUB\(CURRENT_TIMESTAMP\(\), INTERVAL 1 HOUR\)$/);
+  assert.doesNotMatch(query, /TIMESTAMP_TRUNC\(CURRENT_TIMESTAMP\(\), HOUR\)/);
+
+  const scheduled = readFileSync(new URL('../bigquery/live_stats.sql', import.meta.url), 'utf8');
+  const select = eventsQuery('project-bigfoot.bsod_stats.run_googleapis_com_stdout').replace(/@window_days/g, '90').trim();
+  assert.ok(scheduled.includes(select), 'bigquery/live_stats.sql must be regenerated with scripts/build-live-stats-sql.mjs');
+});

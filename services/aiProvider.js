@@ -128,6 +128,36 @@ function retryDelayMs(response, attempt) {
   return Math.min(250 * (2 ** attempt), 2_000);
 }
 
+// Sum of two normalized usage blocks (issue #260): a retried call reports the
+// tokens of every attempt the provider metered, not only the last one.
+export function addUsageMetadata(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const sum = key => {
+    const x = a[key];
+    const y = b[key];
+    if (x === undefined && y === undefined) return undefined;
+    return (x || 0) + (y || 0);
+  };
+  return {
+    promptTokenCount: sum('promptTokenCount'),
+    candidatesTokenCount: sum('candidatesTokenCount'),
+    totalTokenCount: sum('totalTokenCount'),
+    cachedContentTokenCount: sum('cachedContentTokenCount') || 0,
+    thoughtsTokenCount: sum('thoughtsTokenCount') || 0
+  };
+}
+
+function chatUsageMetadata(usage = {}) {
+  return {
+    promptTokenCount: safeInteger(usage.prompt_tokens),
+    candidatesTokenCount: safeInteger(usage.completion_tokens),
+    totalTokenCount: safeInteger(usage.total_tokens),
+    cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
+    thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
+  };
+}
+
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -140,7 +170,9 @@ export async function generateDeepSeekContent(request, {
   reasoningEffort = 'high',
   thinkingEnabled = true,
   signal,
-  sleepImpl = wait
+  sleepImpl = wait,
+  // Usage already consumed by an earlier attempt of this call (internal).
+  priorUsage
 } = {}) {
   if (request?.model !== DEEPSEEK_V4_FLASH_MODEL) {
     throw new AIProviderError('Unsupported DeepSeek model', {
@@ -253,6 +285,16 @@ export async function generateDeepSeekContent(request, {
   const text = typeof choice?.message?.content === 'string'
     ? choice.message.content.trim()
     : '';
+  const usage = data?.usage || {};
+  const attemptUsage = {
+    promptTokenCount: safeInteger(usage.prompt_tokens),
+    candidatesTokenCount: safeInteger(usage.completion_tokens),
+    totalTokenCount: safeInteger(usage.total_tokens),
+    cachedContentTokenCount: safeInteger(usage.prompt_cache_hit_tokens) || 0,
+    thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
+  };
+  // The empty attempt still ran and was billed (issue #260).
+  const usageMetadata = addUsageMetadata(priorUsage, attemptUsage);
   if (!text) {
     // DeepSeek documents rare empty JSON-mode responses and recommends retrying.
     // Reuse at most one of the bounded retry attempts for that condition.
@@ -265,24 +307,18 @@ export async function generateDeepSeekContent(request, {
         reasoningEffort,
         thinkingEnabled,
         signal,
-        sleepImpl
+        sleepImpl,
+        priorUsage: usageMetadata
       });
     }
     throw new AIProviderError('DeepSeek returned an empty response', {
       code: 'INVALID_AI_RESPONSE',
-      status: 502
+      status: 502,
+      usageMetadata
     });
   }
 
-  const usage = data.usage || {};
   const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
-  const usageMetadata = {
-    promptTokenCount: safeInteger(usage.prompt_tokens),
-    candidatesTokenCount: safeInteger(usage.completion_tokens),
-    totalTokenCount: safeInteger(usage.total_tokens),
-    cachedContentTokenCount: safeInteger(usage.prompt_cache_hit_tokens) || 0,
-    thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
-  };
 
   return {
     text,
@@ -464,12 +500,6 @@ export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-6-luna';
 export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
 export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-6-luna';
-// Gemini 4 Argon on Experiential (2026-10-13): the `:free` id first while the
-// gateway serves it at $0, then the paid id within EXPLABS_ARGON_PAID_* budgets.
-// Probed: JSON mode honoured, reasoning params ignored, max 32,768 output tokens,
-// both ids echo `gemini-4-argon` (so the route string, not the echo, says which).
-export const ARGON_FREE_MODEL = 'google/gemini-4-argon:free';
-export const ARGON_PAID_MODEL = 'google/gemini-4-argon';
 
 // OpenAI-compatible tokenizers start from UTF-8 bytes and merge them, so the
 // byte length plus a fixed Chat Completions envelope is a conservative upper
@@ -613,26 +643,27 @@ export async function generateOpenAIContent(request, {
   const text = typeof choice?.message?.content === 'string'
     ? choice.message.content.trim()
     : '';
+  const serviceTier = typeof data?.service_tier === 'string' ? data.service_tier : null;
+  const usageMetadata = chatUsageMetadata(data?.usage || {});
   if (!text) {
-    throw new AIProviderError('OpenAI returned an empty response', {
+    // The completion ran and was billed (e.g. reasoning used the whole output
+    // budget): carry the tier and usage so the free-tier latch and tally see
+    // it (issue #258).
+    const error = new AIProviderError('OpenAI returned an empty response', {
       code: 'INVALID_AI_RESPONSE',
-      status: 502
+      status: 502,
+      usageMetadata
     });
+    error.serviceTier = serviceTier;
+    throw error;
   }
 
-  const usage = data.usage || {};
   const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
   return {
     text,
     modelVersion: typeof data.model === 'string' ? data.model : model,
-    serviceTier: typeof data.service_tier === 'string' ? data.service_tier : null,
-    usageMetadata: {
-      promptTokenCount: safeInteger(usage.prompt_tokens),
-      candidatesTokenCount: safeInteger(usage.completion_tokens),
-      totalTokenCount: safeInteger(usage.total_tokens),
-      cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
-      thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
-    },
+    serviceTier,
+    usageMetadata,
     candidates: [{ content: { parts: [{ text }] }, finishReason }]
   };
 }
@@ -693,6 +724,34 @@ export async function generateExperientialContent(request, {
 
   let response;
   let lastNetworkError;
+  // A retried 5xx may have run on the provider (issue #260): its reported
+  // usage is added to the result, and one without usage is counted so the
+  // caller keeps that attempt's reservation estimate.
+  let retriedUsage;
+  let unmeteredAttempts = 0;
+  // Every error goes through here (issue #273): it carries the usage of the
+  // attempts that may have run, and is `notProcessed` only when no attempt
+  // reached the provider. `finalRan` marks a failing attempt that may itself
+  // have run without reporting usage.
+  const fail = (message, { notProcessed = false, usageMetadata = retriedUsage, finalRan = false, ...options }) => {
+    const priorRan = retriedUsage !== undefined || unmeteredAttempts > 0;
+    const error = new AIProviderError(message, {
+      ...options,
+      notProcessed: notProcessed && !priorRan,
+      usageMetadata
+    });
+    const unmetered = unmeteredAttempts + (finalRan ? 1 : 0);
+    if (unmetered > 0) error.unmeteredAttempts = unmetered;
+    return error;
+  };
+  const readFailedUsage = async failed => {
+    try {
+      const usage = (await failed.json())?.usage;
+      return usage && typeof usage === 'object' ? chatUsageMetadata(usage) : null;
+    } catch {
+      return null;
+    }
+  };
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       response = await fetchImpl(`${String(baseUrl || DEFAULT_EXPERIENTIAL_BASE_URL).replace(/\/+$/, '')}/chat/completions`, {
@@ -723,7 +782,7 @@ export async function generateExperientialContent(request, {
           await sleepImpl(retryDelayMs(response, attempt));
           continue;
         }
-        throw new AIProviderError(String(message).slice(0, 500), {
+        throw fail(String(message).slice(0, 500), {
           code: 'AI_RATE_LIMITED',
           status: 429,
           retryable: true,
@@ -733,21 +792,32 @@ export async function generateExperientialContent(request, {
       }
       const quota = response.status === 402 || response.status === 429 || /quota|credit|limit|exhaust/i.test(String(message));
       const dailyQuota = /daily|per\s*day|day(?:ly)?\s*(?:quota|limit|cap)/i.test(String(message));
-      throw new AIProviderError(String(message).slice(0, 500), {
+      throw fail(String(message).slice(0, 500), {
         code: quota ? (dailyQuota ? 'AI_DAILY_QUOTA_EXHAUSTED' : 'AI_QUOTA_EXHAUSTED') : 'AI_AUTH_FAILED',
         status: response.status,
         retryable: false,
         notProcessed: true
       });
     }
-    if (![500, 502, 503, 504].includes(response.status) || attempt >= maxRetries) {
-      const message = await readDeepSeekError(response);
-      throw new AIProviderError(message, {
+    const serverError = [500, 502, 503, 504].includes(response.status);
+    if (!serverError) {
+      // A 4xx is a rejection before processing.
+      throw fail(await readDeepSeekError(response), {
         code: 'AI_UPSTREAM_ERROR',
         status: response.status,
         retryable: false,
-        // A 4xx is a rejection before processing; a 5xx may come after it.
         notProcessed: response.status >= 400 && response.status < 500
+      });
+    }
+    // A 5xx may come after processing: count its usage, or the attempt.
+    const failedUsage = await readFailedUsage(attempt >= maxRetries ? response.clone() : response);
+    if (failedUsage) retriedUsage = addUsageMetadata(retriedUsage, failedUsage);
+    else unmeteredAttempts += 1;
+    if (attempt >= maxRetries) {
+      throw fail(await readDeepSeekError(response), {
+        code: 'AI_UPSTREAM_ERROR',
+        status: response.status,
+        retryable: false
       });
     }
     await sleepImpl(retryDelayMs(response, attempt));
@@ -755,13 +825,15 @@ export async function generateExperientialContent(request, {
 
   if (lastNetworkError) {
     const timedOut = lastNetworkError?.name === 'AbortError' || lastNetworkError?.name === 'TimeoutError';
-    throw new AIProviderError(timedOut ? 'Experiential request timed out' : 'Experiential request failed', {
+    // A timeout leaves the provider generating; only a connection that was
+    // never established provably cost nothing.
+    const preConnect = !timedOut && PRE_CONNECT_NETWORK_CODES.has(lastNetworkError?.cause?.code ?? lastNetworkError?.code);
+    throw fail(timedOut ? 'Experiential request timed out' : 'Experiential request failed', {
       code: timedOut ? 'AI_TIMEOUT' : 'AI_UPSTREAM_ERROR',
       status: timedOut ? 504 : 502,
       retryable: true,
-      // A timeout leaves the provider generating; only a connection that was
-      // never established provably cost nothing.
-      notProcessed: !timedOut && PRE_CONNECT_NETWORK_CODES.has(lastNetworkError?.cause?.code ?? lastNetworkError?.code)
+      notProcessed: preConnect,
+      finalRan: !preConnect
     });
   }
 
@@ -769,32 +841,27 @@ export async function generateExperientialContent(request, {
   try {
     data = await response.json();
   } catch {
-    throw new AIProviderError('Experiential returned an invalid response', {
+    throw fail('Experiential returned an invalid response', {
       code: 'INVALID_AI_RESPONSE',
-      status: 502
+      status: 502,
+      finalRan: true
     });
   }
   if (data?.error) {
-    throw new AIProviderError(data.error.message || 'Experiential request failed', {
+    throw fail(data.error.message || 'Experiential request failed', {
       code: 'AI_UPSTREAM_ERROR',
-      status: 502
+      status: 502,
+      finalRan: true
     });
   }
 
-  const usage = data.usage || {};
-  const usageMetadata = {
-    promptTokenCount: safeInteger(usage.prompt_tokens),
-    candidatesTokenCount: safeInteger(usage.completion_tokens),
-    totalTokenCount: safeInteger(usage.total_tokens),
-    cachedContentTokenCount: safeInteger(usage.prompt_tokens_details?.cached_tokens) || 0,
-    thoughtsTokenCount: safeInteger(usage.completion_tokens_details?.reasoning_tokens) || 0
-  };
+  const usageMetadata = addUsageMetadata(retriedUsage, chatUsageMetadata(data.usage || {}));
   const choice = data?.choices?.[0];
   const text = typeof choice?.message?.content === 'string' ? choice.message.content.trim() : '';
   if (!text) {
     // The model ran (e.g. reasoning used up the output budget): carry the
     // usage so the caller settles the reservation instead of releasing it.
-    throw new AIProviderError('Experiential returned an empty response', {
+    throw fail('Experiential returned an empty response', {
       code: 'INVALID_AI_RESPONSE',
       status: 502,
       usageMetadata
@@ -802,10 +869,12 @@ export async function generateExperientialContent(request, {
   }
 
   const finishReason = String(choice.finish_reason || 'UNKNOWN').toUpperCase();
-  return {
+  const result = {
     text,
     modelVersion: typeof data.model === 'string' ? data.model : model,
     usageMetadata,
     candidates: [{ content: { parts: [{ text }] }, finishReason }]
   };
+  if (unmeteredAttempts > 0) result.unmeteredAttempts = unmeteredAttempts;
+  return result;
 }

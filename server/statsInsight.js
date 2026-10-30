@@ -6,6 +6,15 @@
 import { generateOpenRouterContent, DEFAULT_OPENROUTER_BASE_URL } from '../services/aiProvider.js';
 
 const DEFAULT_TTL_SECONDS = 6 * 60 * 60;   // fresh for 6h
+// After a failed round (every model refused or timed out) the next attempt
+// waits out a cool-down, longer when the key itself is out of quota or credit,
+// so a public route cannot drive a provider walk per request (issue #290).
+const DEFAULT_FAILURE_COOLDOWN_MS = 20 * 60 * 1000;
+const DEFAULT_QUOTA_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
+const DEFAULT_CALL_TIMEOUT_MS = 20 * 1000;
+const DEFAULT_ROUND_TIMEOUT_MS = 60 * 1000;
+// Key-level failures: every remaining model would fail the same way.
+const KEY_LEVEL_STATUSES = new Set([401, 402, 403]);
 
 // Free-tier slugs rotate on OpenRouter (deepseek-chat-v3.1:free was retired
 // mid-2026), so the insight tries an ordered list instead of one model.
@@ -78,11 +87,16 @@ export function createStatsInsightService({
   apiKey = process.env.OPENROUTER_API_KEY,
   baseUrl = process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL,
   models = resolveModels(process.env.OPENROUTER_STATS_MODEL || process.env.OPENROUTER_FREE_MODEL),
-  ttlSeconds = DEFAULT_TTL_SECONDS
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+  failureCooldownMs = DEFAULT_FAILURE_COOLDOWN_MS,
+  quotaFailureCooldownMs = DEFAULT_QUOTA_FAILURE_COOLDOWN_MS,
+  callTimeoutMs = DEFAULT_CALL_TIMEOUT_MS,
+  roundTimeoutMs = DEFAULT_ROUND_TIMEOUT_MS
 } = {}) {
   const active = () => isEnabled() && Boolean(apiKey);
   let cached = null; // { text, model, generatedAt }
   let inFlight = null;
+  let retryAfter = 0; // now() before which no new round starts after a failure
 
   async function generateInsight(snapshot) {
     const prompt = `Aggregate Windows crash statistics (anonymous counts):\n` +
@@ -103,9 +117,12 @@ export function createStatsInsightService({
 
     // Free slugs retire periodically; walk the fallback list until one answers.
     let lastError;
+    const roundSignal = AbortSignal.timeout(roundTimeoutMs);
     for (const candidate of models) {
+      if (roundSignal.aborted) break;
       try {
-        const result = await provider({ contents: prompt, config }, { apiKey, baseUrl, model: candidate });
+        const signal = AbortSignal.any([roundSignal, AbortSignal.timeout(callTimeoutMs)]);
+        const result = await provider({ contents: prompt, config }, { apiKey, baseUrl, model: candidate, signal });
         // Providers return either a plain string or a Gemini-shaped
         // {text, modelVersion, ...} envelope — accept both.
         const raw = typeof result === 'string'
@@ -125,6 +142,7 @@ export function createStatsInsightService({
       } catch (error) {
         lastError = error;
         console.warn(`[Stats] insight model ${candidate} failed:`, error?.message || error);
+        if (KEY_LEVEL_STATUSES.has(error?.status)) break;
       }
     }
     throw lastError ?? new Error('no insight models configured');
@@ -142,6 +160,9 @@ export function createStatsInsightService({
       if (cached) return { ...cached, available: true, cached: true, stale: true };
       return { available: false, generating: true };
     }
+    if (now() < retryAfter) {
+      return cached ? { ...cached, available: true, cached: true, stale: true } : { available: false };
+    }
     inFlight = (async () => {
       try {
         const snapshot = await getSnapshot();
@@ -150,6 +171,8 @@ export function createStatsInsightService({
         return { ...cached, available: true, cached: false };
       } catch (error) {
         console.error('[Stats] insight failed:', error?.message || error);
+        const quota = error?.status === 402 || error?.status === 429 || KEY_LEVEL_STATUSES.has(error?.status);
+        retryAfter = now() + (quota ? quotaFailureCooldownMs : failureCooldownMs);
         return cached ? { ...cached, available: true, cached: true, stale: true } : { available: false };
       } finally {
         inFlight = null;

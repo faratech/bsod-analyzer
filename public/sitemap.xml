@@ -48,4 +48,12 @@
     <priority>0.6</priority>
   </url>
 
+  <!-- Privacy & data use -->
+  <url>
+    <loc>https://bsod.windowsforum.com/privacy</loc>
+    <lastmod>2026-10-30</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+
 </urlset>

@@ -8,6 +8,7 @@ import { FILE_SIZE_THRESHOLDS } from '../constants';
 import { checkCacheStatus } from '../services/windbgService';
 import { extractArchiveServerSide } from '../services/archiveService';
 import { detectArchiveType, isArchiveFileName, isDumpFileName } from '../shared/ingestPolicy.js';
+import { countBatchFiles, TOO_MANY_FILES_MESSAGE } from '../utils/fileValidation';
 
 const DUMP_TYPE_THRESHOLD = FILE_SIZE_THRESHOLDS.MINIDUMP;
 
@@ -37,7 +38,7 @@ export const useFileProcessor = () => {
         for (const file of acceptedFiles) {
             const processFile = async (f: File) => {
                 if (currentFileCount + newDumpFiles.length >= SECURITY_CONFIG.file.maxFileCount) {
-                    setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                    setError(TOO_MANY_FILES_MESSAGE);
                     return;
                 }
                 // Read file to validate format
@@ -91,7 +92,7 @@ export const useFileProcessor = () => {
                     // Check if extracting these files would exceed our limits
                     const totalFiles = currentFileCount + newDumpFiles.length + extractedFiles.length;
                     if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
-                        setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                        setError(TOO_MANY_FILES_MESSAGE);
                         continue;
                     }
 
@@ -113,7 +114,7 @@ export const useFileProcessor = () => {
 
                     const totalFiles = currentFileCount + newDumpFiles.length + extractedFiles.length;
                     if (totalFiles > SECURITY_CONFIG.file.maxFileCount) {
-                        setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+                        setError(TOO_MANY_FILES_MESSAGE);
                         continue;
                     }
 
@@ -167,15 +168,16 @@ export const useFileProcessor = () => {
             existingSignatures.add(signature);
             return true;
         });
-        // Authoritative session cap, enforced against the fresh list: overlapping
+        // Authoritative batch cap, enforced against the fresh list: overlapping
         // add batches (two quick drops, or a drop while an archive is still
         // extracting) each checked a render-time count in processFile and could
         // both pass it, so the cap has to hold here where existingFiles is
         // current. processFile keeps its early check for immediate UX feedback.
-        const room = Math.max(0, SECURITY_CONFIG.file.maxFileCount - existingFiles.length);
+        // Only pending/analyzing files count: finished results do not (#370).
+        const room = Math.max(0, SECURITY_CONFIG.file.maxFileCount - countBatchFiles(existingFiles));
         if (uniqueNewFiles.length > room) {
             uniqueNewFiles.length = room;
-            setError(`Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`);
+            setError(TOO_MANY_FILES_MESSAGE);
         }
         return [...existingFiles, ...uniqueNewFiles];
     }, [setError]);

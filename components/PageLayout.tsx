@@ -20,7 +20,8 @@ const PageLayout: React.FC<PageLayoutProps> = ({
     children,
     className = ''
 }) => {
-    const pageTitle = `${title} - BSOD AI Analyzer`;
+    // PageLayout renders the page's only SEO block; brand the title once.
+    const pageTitle = title.includes('BSOD AI Analyzer') ? title : `${title} - BSOD AI Analyzer`;
     const canonicalUrl = canonicalPath ? `https://bsod.windowsforum.com${canonicalPath}` : undefined;
 
     return (

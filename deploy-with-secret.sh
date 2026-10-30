@@ -70,6 +70,18 @@ fi
 if gcloud secrets describe openrouter-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
   RUNTIME_SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,${RUNTIME_SECRETS}"
 fi
+# Optional: OpenAI free-tier leg of the AI chain and its org-wide usage gate,
+# bound like cloudbuild.yaml's _AI_SECRET_BINDING, each only when its secret
+# has an enabled version.
+for OPENAI_SECRET in "OPENAI_API_KEY=openai-api-key" "OPENAI_ADMIN_KEY=openai-admin-key"; do
+  if gcloud secrets versions list "${OPENAI_SECRET#*=}" \
+    --project="${PROJECT_ID}" \
+    --filter='state=ENABLED' \
+    --limit=1 \
+    --format='value(name)' 2>/dev/null | grep -q .; then
+    RUNTIME_SECRETS="${OPENAI_SECRET}:latest,${RUNTIME_SECRETS}"
+  fi
+done
 # Optional OpenAI-compatible Experiential route for gpt-6-luna. Keep the
 # existing OpenAI binding as the per-request fallback when this is absent or
 # its quota is exhausted.

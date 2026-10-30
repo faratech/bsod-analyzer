@@ -74,14 +74,46 @@ test('the API path keeps the caller-supplied file name out of the prompt (issue 
   assert.equal(text(property(evidence.arguments[0], 'fileName')), 'SERVER_PROMPT_FILE_NAME');
 });
 
+// The exact guard shape: `validation.promptType === 'local' && ownedFileHash`.
+// A substring match accepted `!ownedFileHash`, `... || ownedFileHash` and any
+// other condition mentioning the name (issue #262).
+function assertOwnedLocalGuard(node, where) {
+  assert.equal(node?.type, 'LogicalExpression', `${where}: guard must be a logical expression, got ${node && text(node)}`);
+  assert.equal(node.operator, '&&', `${where}: guard must AND the conditions, got ${text(node)}`);
+  const operands = [node.left, node.right];
+  const owned = operands.filter(operand => operand.type === 'Identifier' && operand.name === 'ownedFileHash');
+  assert.equal(owned.length, 1, `${where}: guard must test the bare ownedFileHash (no negation): ${text(node)}`);
+  const local = operands.find(operand => operand !== owned[0]);
+  assert.equal(local.type, 'BinaryExpression', `${where}: ${text(node)}`);
+  assert.equal(local.operator, '===', `${where}: ${text(node)}`);
+  assert.equal(text(local.left), 'validation.promptType', `${where}: ${text(node)}`);
+  assert.equal(local.right.value, 'local', `${where}: ${text(node)}`);
+}
+
 test('ai-fallback stats are recorded only for a dump the session uploaded (issue #149)', () => {
   const statsCalls = calls(handler, 'recordStats');
   assert.equal(statsCalls.length, 2, 'cache-hit and fresh paths');
   for (const call of statsCalls) {
-    const guard = find(handler, node => node.type === 'IfStatement'
+    const guards = find(handler, node => node.type === 'IfStatement'
       && node.consequent.start <= call.start && call.end <= node.consequent.end)
-      .map(({ node }) => text(node.test));
-    assert.ok(guard.some(test => /ownedFileHash/.test(test)), `recordStats must be guarded by ownedFileHash: ${guard}`);
+      .map(({ node }) => node)
+      .sort((a, b) => b.start - a.start);
+    assert.ok(guards.length > 0, 'recordStats must sit inside an if');
+    // The innermost if around the call is the ownership guard.
+    assertOwnedLocalGuard(guards[0].test, `recordStats at ${call.start}`);
     assert.equal(text(property(call.arguments[0], 'fileHash')), 'fileHash');
+    assert.equal(text(property(call.arguments[0], 'source')), "'ai-fallback'");
   }
+});
+
+test('ownedFileHash is true only after sessionOwnsHash proves the upload (issues #40, #149)', () => {
+  const declarators = find(handler, node => node.type === 'VariableDeclarator' && node.id.name === 'ownedFileHash');
+  assert.equal(declarators.length, 1);
+  assert.equal(declarators[0].node.init?.value, false, 'ownedFileHash must default to false');
+  const assignments = find(handler, node => node.type === 'AssignmentExpression' && node.left.name === 'ownedFileHash')
+    .map(({ node }) => node);
+  assert.equal(assignments.length, 1, 'ownedFileHash is assigned in exactly one place');
+  assert.equal(assignments[0].right.type, 'CallExpression');
+  assert.equal(assignments[0].right.callee.name, 'sessionOwnsHash');
+  assert.deepEqual(assignments[0].right.arguments.map(text), ['req.sessionId', 'fileHash', 'fileHandle']);
 });

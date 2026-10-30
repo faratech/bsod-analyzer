@@ -1,6 +1,9 @@
 // Comprehensive minidump stream parsing for better accuracy
 // Based on Windows SDK minidumpapiset.h
 
+// Leaf table module: importing it creates no cycle (never import dumpParser.ts here).
+import { BUG_CHECK_CODES } from './bugCheckCodes.js';
+
 export enum MinidumpStreamType {
     UnusedStream = 0,
     ReservedStream0 = 1,
@@ -302,11 +305,13 @@ export class MinidumpParser {
         return null;
     }
 
-    // Bug check codes are small (KeBugCheck codes, 0x1..0x1FF) or
-    // parameterized 0xC........ codes; anything else in the exception payload
-    // is not crash evidence.
+    // A documented bug check (any code in the shared Microsoft-sourced
+    // table, e.g. 0x1000007E, 0x4000008A, 0x20001, 0x21C8, 0xDEADDEAD), a
+    // small KeBugCheck code (0x1..0x1FF) or a parameterized 0xC........ code;
+    // anything else in the exception payload is not crash evidence.
     private isPlausibleBugCheckCode(code: number): boolean {
-        return (code > 0 && code <= 0x1FF) ||
+        return Object.prototype.hasOwnProperty.call(BUG_CHECK_CODES, code) ||
+               (code > 0 && code <= 0x1FF) ||
                (code >= 0xC0000000 && code <= 0xC0FFFFFF);
     }
     

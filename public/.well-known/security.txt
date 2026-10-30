@@ -1,0 +1,6 @@
+# Security contact for bsod.windowsforum.com (RFC 9116).
+# Renew Expires before it lapses (keep it less than a year ahead).
+Contact: mailto:security@windowsforum.com
+Expires: 2027-10-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://bsod.windowsforum.com/.well-known/security.txt

@@ -84,6 +84,58 @@ export async function validateZipFile(file: File): Promise<ZipValidationResult> 
   }
 }
 
+// JSZip's streaming API (StreamHelper); its typings omit internalStream.
+interface ZipEntryStream {
+  on(event: 'data', fn: (chunk: Uint8Array) => void): ZipEntryStream;
+  on(event: 'error', fn: (err: Error) => void): ZipEntryStream;
+  on(event: 'end', fn: () => void): ZipEntryStream;
+  pause(): ZipEntryStream;
+  resume(): ZipEntryStream;
+}
+
+/**
+ * Inflate one entry as a stream, counting the real output bytes, and abort as
+ * soon as it passes `maxBytes`. The central-directory size is attacker
+ * controlled and JSZip only checks it after inflating the whole entry, so the
+ * size checks in validateZipFile cannot bound memory on their own (issue #233).
+ */
+export class ZipEntryLimitError extends Error {}
+
+export function readZipEntryBounded(zipEntry: JSZip.JSZipObject, maxBytes: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let settled = false;
+    const stream = (zipEntry as unknown as { internalStream(type: 'uint8array'): ZipEntryStream })
+      .internalStream('uint8array');
+    stream
+      .on('data', chunk => {
+        if (settled) return;
+        total += chunk.length;
+        if (total > maxBytes) {
+          settled = true;
+          chunks.length = 0;
+          stream.pause();
+          reject(new ZipEntryLimitError(`entry exceeds its declared size (more than ${formatBytes(maxBytes)} when inflated)`));
+          return;
+        }
+        chunks.push(chunk);
+      })
+      .on('error', err => {
+        if (settled) return;
+        settled = true;
+        chunks.length = 0;
+        reject(err);
+      })
+      .on('end', () => {
+        if (settled) return;
+        settled = true;
+        resolve(new Blob(chunks as BlobPart[]));
+      })
+      .resume();
+  });
+}
+
 export async function extractZipSafely(file: File): Promise<{ files: File[], errors: string[] }> {
   const files: File[] = [];
   const errors: string[] = [];
@@ -99,32 +151,48 @@ export async function extractZipSafely(file: File): Promise<{ files: File[], err
     const zip = new JSZip();
     await zip.loadAsync(file);
 
-    const extractPromises: Promise<void>[] = [];
-
+    const entries: Array<[string, JSZip.JSZipObject]> = [];
     zip.forEach((relativePath, zipEntry) => {
       if (zipEntry.dir) return;
-
       const fileName = relativePath.split('/').pop() || '';
       if (!isDumpFileName(fileName)) return;
-
-      extractPromises.push(
-        zipEntry.async('blob').then(blob => {
-          const extractedFile = new File([blob], fileName, {
-            type: 'application/octet-stream',
-            lastModified: zipEntry.date.getTime()
-          }) as File & { sourcePath?: string };
-          Object.defineProperty(extractedFile, 'sourcePath', {
-            value: relativePath,
-            enumerable: false
-          });
-          files.push(extractedFile);
-        }).catch(err => {
-          errors.push(`Failed to extract ${fileName}: ${err.message}`);
-        })
-      );
+      entries.push([relativePath, zipEntry]);
     });
 
-    await Promise.all(extractPromises);
+    // One entry at a time, each capped at its declared size and at what is
+    // left of the archive budget, so the real output can never exceed what
+    // validateZipFile accepted. A failed entry only drops itself (issue
+    // #279); the whole archive is discarded only when an entry overruns the
+    // shared budget, since then the archive as a whole is lying.
+    let remaining = SECURITY_CONFIG.zip.maxExtractedSize;
+    for (const [relativePath, zipEntry] of entries) {
+      const fileName = relativePath.split('/').pop() || '';
+      const declared = (zipEntry as any)._data?.uncompressedSize;
+      const declaredLimit = typeof declared === 'number' ? declared : 0;
+      const budgetBound = declaredLimit >= remaining;
+      const limit = Math.min(declaredLimit, remaining);
+      let blob: Blob;
+      try {
+        blob = await readZipEntryBounded(zipEntry, limit);
+      } catch (err) {
+        if (budgetBound && err instanceof ZipEntryLimitError) {
+          errors.push(`ZIP extraction size exceeds limit of ${formatBytes(SECURITY_CONFIG.zip.maxExtractedSize)}.`);
+          return { files: [], errors };
+        }
+        errors.push(`Failed to extract ${fileName}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      remaining -= blob.size;
+      const extractedFile = new File([blob], fileName, {
+        type: 'application/octet-stream',
+        lastModified: zipEntry.date.getTime()
+      }) as File & { sourcePath?: string };
+      Object.defineProperty(extractedFile, 'sourcePath', {
+        value: relativePath,
+        enumerable: false
+      });
+      files.push(extractedFile);
+    }
 
     return { files, errors };
   } catch (error) {

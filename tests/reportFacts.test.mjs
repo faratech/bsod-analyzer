@@ -4,8 +4,10 @@ import {
   generateForumReport,
   generateMarkdownReport,
   getReportFacts,
+  neutralizeBBCodeLinks,
   redactPublicReportText
 } from '../shared/reportFacts.js';
+import { assertScalesLinearly } from './helpers/linearTime.mjs';
 
 function dumpFile(report, overrides = {}) {
   return {
@@ -156,4 +158,110 @@ test('the forum report also neutralizes links after redaction', () => {
 
   assert.ok(!/\]\(https?:\/\//.test(report));
   assert.match(report, /this \(https:\/\/evil\.example\/x\)/);
+});
+
+test('the forum report neutralizes BBCode link and media tags (issue #259)', () => {
+  const report = generateForumReport(dumpFile({
+    summary: 'Crash.',
+    probableCause: 'nt',
+    recommendations: [
+      '[URL=https://evil.example/fix.exe]Download the official fixed driver[/URL]',
+      '[IMG]https://evil.example/t.png[/IMG]',
+      '[url="https://evil.example/q"]quoted[/Url] and [URL]https://evil.example/bare[/URL]',
+      '[MEDIA=youtube]dQw4w9WgXcQ[/MEDIA] or [email=a@evil.example]mail me[/EMAIL] [Email]b@evil.example[/email]',
+      '[[URL]combo[/URL]](https://evil.example/m) Nested [URL=https://evil.example/n][IMG]https://evil.example/n.png[/IMG][/URL] and [UR[/URL]L=https://evil.example/s]split[/URL]'
+    ]
+  }));
+
+  assert.doesNotMatch(report, /\[\/?(?:url|img|media|email)\b/i, report);
+  assert.match(report, /Download the official fixed driver \(https:\/\/evil\.example\/fix\.exe\)/);
+  assert.match(report, /^2\. https:\/\/evil\.example\/t\.png$/m);
+  assert.match(report, /quoted \(https:\/\/evil\.example\/q\) and https:\/\/evil\.example\/bare/);
+  assert.match(report, /dQw4w9WgXcQ \(youtube\) or mail me \(a@evil\.example\) b@evil\.example/);
+  // Unwrapping BBCode must not assemble a Markdown link either.
+  assert.ok(!/\]\(https?:\/\//.test(report), report);
+  assert.match(report, /combo \(https:\/\/evil\.example\/m\) Nested/);
+  assert.match(report, /Nested https:\/\/evil\.example\/n\.png \(https:\/\/evil\.example\/n\)/);
+  // A split tag cannot reassemble; its target survives only as plain text.
+  assert.match(report, /\(https:\/\/evil\.example\/s\) split/);
+});
+
+test('the BBCode neutralizer stays linear on long or unterminated tag tails (issue #310)', () => {
+  // Each builder gives the full-size input (at least 100 KB) at scale 8 and
+  // an eighth of it at scale 1; the check compares the two timings instead of
+  // a wall-clock budget, so a busy machine cannot fail it.
+  const inputs = {
+    'option of spaces then letters, paired': k => '[URL=x' + ' '.repeat(6_250 * k) + 'a'.repeat(6_250 * k) + ']t[/URL]',
+    'option of spaces then letters, stray': k => '[URL=x' + ' '.repeat(6_250 * k) + 'a'.repeat(6_250 * k) + ']',
+    'many unterminated attribute openers': k => '[URL '.repeat(2_500 * k),
+    'many unterminated option openers': k => '[URL='.repeat(2_500 * k),
+    'unterminated option': k => '[URL=' + 'a'.repeat(12_500 * k),
+    'many short options with whitespace runs': k => ('[URL=x' + ' '.repeat(500) + 'a]t[/URL]').repeat(25 * k),
+  };
+  for (const [name, input] of Object.entries(inputs)) {
+    assert.ok(input(8).length >= 100_000, name);
+    assertScalesLinearly(name, neutralizeBBCodeLinks, input);
+  }
+
+  const payload = inputs['option of spaces then letters, paired'];
+  assertScalesLinearly(
+    'Copy for forum',
+    text => generateForumReport(dumpFile({ summary: text, probableCause: text, recommendations: [text] })),
+    payload
+  );
+});
+
+test('a BBCode tag with an overlong tail is still neutralized (issue #310)', () => {
+  for (const input of [
+    '[URL=https://evil.example/' + 'a'.repeat(600) + ']click[/URL]',
+    '[URL unfurl="true"' + ' '.repeat(600) + ']https://evil.example/x[/URL]',
+    '[URL]a [URL ' + 'b'.repeat(600) + '] c[/URL]',
+    '[IMG alt="' + 'x'.repeat(600) + '"]https://evil.example/p.png',
+  ]) {
+    const out = neutralizeBBCodeLinks(input);
+    assert.doesNotMatch(out, /\[\/?(?:url|img|media|email)(?=[=\s\]])/i, out.slice(0, 80));
+  }
+  // Long options on ordinary tags are parsed as before.
+  const spaced = '[URL=https://evil.example/s' + ' '.repeat(300) + 'unfurl="true"]text[/URL]';
+  assert.equal(neutralizeBBCodeLinks(spaced), 'text (https://evil.example/s)');
+});
+
+test('the BBCode neutralizer also rewrites attribute-form tags (issue #281)', () => {
+  const cases = [
+    ['[URL unfurl="true"]https://evil.example/x[/URL]', 'https://evil.example/x'],
+    ['[IMG alt="a"]https://evil.example/p.png[/IMG]', 'https://evil.example/p.png'],
+    ['[IMG width="1px"]https://evil.example/p.png[/IMG]', 'https://evil.example/p.png'],
+    ['[img Width="1px" ALT="x y"]https://evil.example/p.png[/Img]', 'https://evil.example/p.png'],
+    ["[URL='https://evil.example' unfurl=\"true\"]click[/URL]", 'click (https://evil.example)'],
+    ['[url="https://evil.example/q" unfurl="true"]quoted[/url]', 'quoted (https://evil.example/q)'],
+    ['[Url=https://evil.example/u unfurl="true"]bare[/uRl]', 'bare (https://evil.example/u)'],
+    ['[MEDIA=youtube width="1"]abc[/MEDIA]', 'abc (youtube)'],
+    ['[EMAIL subject="hi"]a@evil.example[/EMAIL]', 'a@evil.example'],
+    // Nested attribute forms unwrap innermost first.
+    ['[URL unfurl="true"][IMG alt="a"]https://evil.example/n.png[/IMG][/URL]', 'https://evil.example/n.png'],
+    // Unmatched attribute-form tags are dropped, keeping any target.
+    ['[URL unfurl="true"]dangling', 'dangling'],
+    ['[IMG alt="a"]x [/URL]', 'x'],
+    ['[URL=https://evil.example/o unfurl="true"]open', '(https://evil.example/o) open']
+  ];
+  for (const [input, expected] of cases) {
+    const out = neutralizeBBCodeLinks(input);
+    assert.doesNotMatch(out, /\[\/?(?:url|img|media|email)\b/i, `${input} => ${out}`);
+    assert.equal(out.trim(), expected, input);
+  }
+
+  // A split attribute-form tag cannot reassemble into a working tag.
+  const split = neutralizeBBCodeLinks('[UR[/URL]L unfurl="true"]https://evil.example/s[/URL] [IM[IMG alt="a"][/IMG]G alt="b"]x[/IMG]');
+  assert.doesNotMatch(split, /\[\/?(?:url|img|media|email)\b/i, split);
+
+  // Names that merely start with a tag name are left alone.
+  assert.equal(neutralizeBBCodeLinks('[URLS] [IMAGE alt="a"]'), '[URLS] [IMAGE alt="a"]');
+
+  const report = generateForumReport(dumpFile({
+    summary: 'Crash.',
+    probableCause: 'nt',
+    recommendations: ['[URL unfurl="true"]https://evil.example/x[/URL] then [IMG alt="a"]https://evil.example/p.png[/IMG]']
+  }));
+  assert.doesNotMatch(report, /\[\/?(?:url|img|media|email)\b/i, report);
+  assert.match(report, /https:\/\/evil\.example\/x then https:\/\/evil\.example\/p\.png/);
 });

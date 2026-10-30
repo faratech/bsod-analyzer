@@ -45,27 +45,36 @@ else
     echo "✅ Secret created successfully"
 fi
 
-# Grant Cloud Run service account access to the secret
-echo "🔓 Granting Cloud Run access to the secret..."
-SERVICE_ACCOUNT=$(gcloud iam service-accounts list \
-    --filter="displayName:Compute Engine default service account" \
-    --format="value(email)" \
-    --project=${PROJECT_ID})
+# Grant the Cloud Run runtime service account access to the secret. This is the
+# dedicated identity the service runs as (same default as setup-all-secrets.sh).
+# The default Compute Engine SA is never granted: it is the identity of every VM,
+# Cloud Run service and function in the project that names no account of its own
+# (issues #143, #266).
+echo "🔓 Granting Cloud Run runtime access to the secret..."
+RUNTIME_SERVICE_ACCOUNT_NAME=${RUNTIME_SERVICE_ACCOUNT_NAME:-"bsod-analyzer-runtime"}
+SERVICE_ACCOUNT=${RUNTIME_SERVICE_ACCOUNT:-"${RUNTIME_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"}
 
-if [ -z "$SERVICE_ACCOUNT" ]; then
-    # Try to get the default compute service account
-    PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)")
-    SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-fi
+case "${SERVICE_ACCOUNT}" in
+    *-compute@developer.gserviceaccount.com)
+        echo "❌ Refusing to grant the default Compute Engine service account (${SERVICE_ACCOUNT})."
+        echo "   Use the dedicated runtime service account (bsod-analyzer-runtime)."
+        exit 1
+        ;;
+esac
 
 echo "Using service account: ${SERVICE_ACCOUNT}"
 
-gcloud secrets add-iam-policy-binding ${SECRET_NAME} \
+# Errors are deliberately not hidden: a failed grant must fail the script.
+if ! gcloud secrets add-iam-policy-binding ${SECRET_NAME} \
     --member="serviceAccount:${SERVICE_ACCOUNT}" \
     --role="roles/secretmanager.secretAccessor" \
-    --project=${PROJECT_ID} >/dev/null 2>&1
+    --project=${PROJECT_ID} >/dev/null; then
+    echo "❌ Failed to grant ${SERVICE_ACCOUNT} access to ${SECRET_NAME}"
+    echo "   Create the runtime service account first (./setup-all-secrets.sh) if it does not exist."
+    exit 1
+fi
 
-echo "✅ Access granted to Cloud Run service account"
+echo "✅ Access granted to Cloud Run runtime service account"
 
 # Display usage instructions
 echo ""

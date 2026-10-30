@@ -1,17 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { transform } from 'rolldown/experimental';
+import path from 'node:path';
+import { rolldown } from 'rolldown';
 
 // TypeScript 7 removed transpileModule from its JS API, so tests load .ts
-// sources through rolldown's oxc transform (already a vite dependency).
+// sources through rolldown (already a vite dependency). minidumpStreams.ts
+// imports the leaf bugCheckCodes.ts, so it is bundled, with its `.js`
+// specifiers resolved back to `.ts` sources.
 async function loadMinidumpParser() {
-  const source = await fs.readFile(new URL('../utils/minidumpStreams.ts', import.meta.url), 'utf8');
-  const result = await transform('minidumpStreams.ts', source);
-  if (result.errors?.length) {
-    throw new Error(`Failed to transform minidumpStreams.ts: ${result.errors[0]}`);
-  }
-  const encoded = Buffer.from(result.code, 'utf8').toString('base64');
+  const root = path.dirname(path.dirname(new URL(import.meta.url).pathname));
+  const bundle = await rolldown({
+    input: path.join(root, 'utils', 'minidumpStreams.ts'),
+    plugins: [{
+      name: 'resolve-ts-from-js-specifier',
+      async resolveId(source, importer) {
+        if (source.startsWith('.') && source.endsWith('.js') && importer) {
+          const candidate = path.resolve(path.dirname(importer), source.slice(0, -3) + '.ts');
+          try {
+            await fs.access(candidate);
+            return candidate;
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      }
+    }]
+  });
+  const { output } = await bundle.generate({ format: 'esm' });
+  const encoded = Buffer.from(output[0].code, 'utf8').toString('base64');
   return import(`data:text/javascript;base64,${encoded}`);
 }
 

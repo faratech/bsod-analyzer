@@ -5,8 +5,7 @@
 import { handleSessionError } from '../utils/sessionManager';
 import { dataUseHeaders } from '../utils/dataUse';
 import { ARCHIVE_EXTENSIONS } from '../shared/ingestPolicy.js';
-import { validateZipFile } from '../utils/zipSecurity';
-import JSZip from 'jszip';
+import { extractZipSafely } from '../utils/zipSecurity';
 
 const SERVER_ARCHIVE_EXTENSIONS = ARCHIVE_EXTENSIONS.filter(ext => ext !== '.zip');
 
@@ -46,30 +45,11 @@ export async function extractArchiveServerSide(file: File): Promise<File[]> {
   // this tab: validate entry sizes/count before materializing anything, the
   // same way user-supplied ZIPs are handled (issue #81).
   const returnedZip = new File([payload], 'extracted-dumps.zip', { type: 'application/zip' });
-  const validation = await validateZipFile(returnedZip);
-  if (!validation.valid) {
-    throw new Error(validation.error || 'Server returned an invalid archive');
+  // extractZipSafely validates the entries, then inflates them one at a time
+  // with a running byte counter bounded by each declared size (issue #233).
+  const { files, errors } = await extractZipSafely(returnedZip);
+  if (errors.length > 0) {
+    throw new Error(errors[0] || 'Server returned an invalid archive');
   }
-
-  const zip = await JSZip.loadAsync(payload);
-  const files: File[] = [];
-  const entries = Object.entries(zip.files).filter(([, entry]) => !entry.dir);
-
-  // Extract sequentially: materializing every entry simultaneously can hold
-  // the whole archive's uncompressed size (up to ~100 MB) in memory at once.
-  for (const [sourcePath, entry] of entries) {
-    const blob = await entry.async('blob');
-    const fileName = sourcePath.split('/').pop() || 'dump.dmp';
-    const file = new File([blob], fileName, {
-      type: 'application/octet-stream',
-      lastModified: entry.date?.getTime?.() || Date.now()
-    }) as File & { sourcePath?: string };
-    Object.defineProperty(file, 'sourcePath', {
-      value: sourcePath,
-      enumerable: false
-    });
-    files.push(file);
-  }
-
   return files;
 }

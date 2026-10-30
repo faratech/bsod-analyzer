@@ -40,7 +40,13 @@ export async function renderAsync(url: string): Promise<string> {
         <AppShell />
       </StaticRouter>
     </React.StrictMode>,
-    { onError(err) { renderError = err; } }
+    {
+      // Never outline a Suspense boundary: past the default chunk size (~12.8K)
+      // React emits the Loader fallback plus the real content in a hidden
+      // <div id="S:n">, so crawlers and no-JS visitors would see a spinner.
+      progressiveChunkSize: Infinity,
+      onError(err) { renderError = err; },
+    }
   );
   let html = '';
   for await (const chunk of prelude) html += Buffer.from(chunk).toString('utf-8');

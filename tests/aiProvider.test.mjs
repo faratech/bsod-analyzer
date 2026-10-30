@@ -8,8 +8,6 @@ import {
   generateOpenRouterContent,
   generateOpenAIContent,
   generateExperientialContent,
-  ARGON_FREE_MODEL,
-  ARGON_PAID_MODEL,
   conservativeChatInputTokenReservation,
   isOpenAIFreeTier,
   getAIProviderForModel,
@@ -564,41 +562,71 @@ test('DeepSeek max_tokens carries the configured output budget', async () => {
 });
 
 
-test('Argon legs reuse the Experiential adapter: free id, JSON mode, and a free-tier refusal marked not processed', async () => {
-  let body;
-  const ok = await generateExperientialContent({
-    contents: 'Analyze this crash evidence.',
-    config: { systemInstruction: 'Return JSON only.', maxOutputTokens: 16384 }
+// Issue #260: usage from every attempt a provider ran reaches the caller.
+test('DeepSeek empty-response retry adds the first attempt\'s usage to the result', async () => {
+  let calls = 0;
+  const result = await generateDeepSeekContent({
+    model: DEEPSEEK_V4_FLASH_MODEL,
+    contents: 'Return JSON.',
+    config: { responseMimeType: 'application/json' }
   }, {
     apiKey: 'test-key',
-    baseUrl: 'https://example.test/v1',
-    maxRetries: 0,
-    model: ARGON_FREE_MODEL,
-    fetchImpl: async (url, options) => {
-      body = JSON.parse(options.body);
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      calls++;
+      const first = calls === 1;
       return new Response(JSON.stringify({
-        model: 'gemini-4-argon',
-        choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8, cost: 0 }
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        choices: [{ finish_reason: first ? 'length' : 'stop', message: { content: first ? '' : '{"ok":true}' } }],
+        usage: first
+          ? { prompt_tokens: 9000, completion_tokens: 16000, total_tokens: 25000, completion_tokens_details: { reasoning_tokens: 16000 } }
+          : { prompt_tokens: 9000, completion_tokens: 500, total_tokens: 9500, completion_tokens_details: { reasoning_tokens: 300 } }
+      }), { status: 200 });
     }
   });
-  assert.equal(body.model, 'google/gemini-4-argon:free');
-  assert.deepEqual(body.response_format, { type: 'json_object' });
-  assert.equal(body.max_completion_tokens, 16384);
-  assert.equal(ok.text, '{"ok":true}');
-  assert.equal(ARGON_PAID_MODEL, 'google/gemini-4-argon');
 
-  // The server tries the paid leg only after a refusal the gateway never processed.
+  assert.equal(calls, 2);
+  assert.equal(result.usageMetadata.promptTokenCount, 18000);
+  assert.equal(result.usageMetadata.candidatesTokenCount, 16500);
+  assert.equal(result.usageMetadata.totalTokenCount, 34500);
+  assert.equal(result.usageMetadata.thoughtsTokenCount, 16300);
+});
+
+test('DeepSeek empty responses on every attempt carry the summed usage on the error', async () => {
   await assert.rejects(
-    () => generateExperientialContent({ contents: 'x', config: {} }, {
+    () => generateDeepSeekContent({ model: DEEPSEEK_V4_FLASH_MODEL, contents: 'x', config: {} }, {
       apiKey: 'test-key',
-      baseUrl: 'https://example.test/v1',
-      maxRetries: 0,
-      model: ARGON_FREE_MODEL,
-      fetchImpl: async () => new Response(JSON.stringify({ error: { message: 'free tier daily quota exhausted' } }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } })
+      sleepImpl: async () => {},
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{ finish_reason: 'length', message: { content: '' } }],
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }
+      }), { status: 200 })
     }),
-    error => error instanceof AIProviderError && error.notProcessed === true && error.code === 'AI_DAILY_QUOTA_EXHAUSTED'
+    error => error.code === 'INVALID_AI_RESPONSE'
+      && error.usageMetadata?.promptTokenCount === 200
+      && error.usageMetadata?.candidatesTokenCount === 100
   );
+});
+
+test('Experiential 5xx retry counts the failed attempt alongside the final usage', async () => {
+  let calls = 0;
+  const ok = () => new Response(JSON.stringify({
+    choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }
+  }), { status: 200 });
+
+  // A 5xx with no usage block: the attempt is reported as unmetered.
+  const unmetered = await experiential(async () => (++calls === 1 ? new Response('upstream', { status: 502 }) : ok()), { maxRetries: 1 });
+  assert.equal(calls, 2);
+  assert.equal(unmetered.usageMetadata.promptTokenCount, 100);
+  assert.equal(unmetered.unmeteredAttempts, 1);
+
+  // A 5xx that does report usage is added to the result.
+  calls = 0;
+  const metered = await experiential(async () => (++calls === 1
+    ? new Response(JSON.stringify({ error: { message: 'boom' }, usage: { prompt_tokens: 80, completion_tokens: 10, total_tokens: 90 } }), { status: 500 })
+    : ok()), { maxRetries: 1 });
+  assert.equal(metered.usageMetadata.promptTokenCount, 180);
+  assert.equal(metered.usageMetadata.candidatesTokenCount, 60);
+  assert.equal(metered.usageMetadata.totalTokenCount, 240);
+  assert.equal(metered.unmeteredAttempts ?? 0, 0);
 });

@@ -96,7 +96,7 @@ This script will:
 6. Prompt for Cloudflare purge token and zone ID
 7. Create the empty `redis-zstd-dictionary` secret container without embedding dictionary bytes
 8. Create/verify the dedicated Cloud Run runtime service account
-9. Grant the runtime service account access to application runtime secrets, including the dictionary
+9. Grant the runtime service account access to application runtime secrets, including the dictionary and the optional provider, crash-signal and quota-store secrets (`openai-api-key`, `openai-admin-key`, `openrouter-api-key`, `wf-crash-signal-key`, `quota-redis-rest-url`, `quota-redis-rest-token`); secrets that do not exist yet are skipped, so re-run the script after creating one
 10. Grant Cloud Build service accounts access to deploy as the runtime account and read Cloudflare purge secrets
 
 ### Individual Secret Setup
@@ -105,6 +105,8 @@ This script will:
 ```bash
 ./setup-turnstile-secret.sh
 ```
+It grants access to the `bsod-analyzer-runtime` service account only and refuses
+the default Compute Engine service account.
 
 #### Manual Secret Creation
 ```bash

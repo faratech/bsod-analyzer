@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface AnalysisProgressProps {
     stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete';
@@ -67,9 +67,19 @@ const timeEstimates: Record<string, { typical: string; maxSeconds: number }> = {
     complete: { typical: '', maxSeconds: 0 },
 };
 
+// Drops a trailing elapsed counter: `— 40s elapsed` or `(40s)`.
+const ELAPSED_SUFFIX = /\s*(?:\u2014\s*\d+s elapsed|\(\d+s\))\s*$/;
+function stableAnnouncement(message: string | undefined): string {
+    return (message || '').replace(ELAPSED_SUFFIX, '').trim();
+}
+
 const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime, percentage }) => {
     const [currentFact, setCurrentFact] = useState(0);
     const [elapsedTime, setElapsedTime] = useState(0);
+    // Time spent in the current stage: the "taking longer" check compares it
+    // against that stage's own budget (the clock shows the total run time).
+    const [stageElapsedTime, setStageElapsedTime] = useState(0);
+    const stageStartRef = useRef(Date.now());
     const [dots, setDots] = useState('');
 
     // Rotate fun facts every 8 seconds
@@ -80,11 +90,18 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
         return () => clearInterval(interval);
     }, []);
 
+    // Restart the per-stage clock whenever the stage changes
+    useEffect(() => {
+        stageStartRef.current = Date.now();
+        setStageElapsedTime(0);
+    }, [stage]);
+
     // Update elapsed time
     useEffect(() => {
         if (!startTime) return;
         const interval = setInterval(() => {
             setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
+            setStageElapsedTime(Math.floor((Date.now() - stageStartRef.current) / 1000));
         }, 1000);
         return () => clearInterval(interval);
     }, [startTime]);
@@ -108,7 +125,7 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
     const currentStageIndex = stageOrder.indexOf(stage);
 
     const estimate = timeEstimates[stage];
-    const isTakingLong = estimate && estimate.maxSeconds > 0 && elapsedTime > estimate.maxSeconds * 2;
+    const isTakingLong = estimate && estimate.maxSeconds > 0 && stageElapsedTime > estimate.maxSeconds * 2;
     const timeEstimateText = isTakingLong
         ? 'Taking longer than usual...'
         : estimate?.typical || '';
@@ -118,9 +135,20 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
         ? `Uploading... ${percentage}%`
         : message || info.description;
 
+    // What assistive technology hears: the stage and its message only. The
+    // animated dots, the elapsed timer and the upload percentage tick many
+    // times a second/minute and would drown the stage changes. The queued
+    // messages also end in an elapsed counter that changes on every poll
+    // (windbgService), so it is stripped: the region changes, and is
+    // announced, only when the stage or the queue position changes (#311).
+    const announcedMessage = stableAnnouncement(message) || info.description;
+
     return (
         <div className="analysis-progress-container">
             <div className="analysis-progress-card">
+                <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                    {info.title}. {announcedMessage}
+                </div>
                 {/* Animated background */}
                 <div className="progress-bg-animation"></div>
 
@@ -133,19 +161,19 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
                 </div>
 
                 {/* Stage title */}
-                <h3 className="progress-title">{info.title}{dots}</h3>
+                <h3 className="progress-title">{info.title}<span aria-hidden="true">{dots}</span></h3>
                 <p className="progress-description">{displayMessage}</p>
 
                 {/* Fallback warning */}
                 {message && message.includes('unavailable') && (
                     <div style={{
                         backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                        border: '1px solid #f59e0b',
+                        border: '1px solid var(--status-warning)',
                         borderRadius: '0.375rem',
                         padding: '0.5rem 0.75rem',
                         marginTop: '0.5rem',
                         fontSize: '0.8rem',
-                        color: '#f59e0b',
+                        color: 'var(--status-warning)',
                         display: 'flex',
                         alignItems: 'center',
                         gap: '0.5rem'

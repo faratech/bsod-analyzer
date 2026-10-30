@@ -129,13 +129,20 @@ function detectArchiveType(fileBuffer) {
   return null;
 }
 
+function dumpHeader(buffer) {
+  if (!buffer || typeof buffer.slice !== 'function') return '';
+  return Array.from(buffer.slice(0, 8), byte => String.fromCharCode(byte)).join('');
+}
+
+// The dump types the WinDBG service accepts (WinDbg-API DumpTypeDetector):
+// minidumps and 64-bit kernel dumps. 32-bit PAGEDUMP is rejected upstream (#269).
 function looksLikeDump(buffer) {
-  if (!buffer || typeof buffer.slice !== 'function') return false;
-  const header = Array.from(buffer.slice(0, 8), byte => String.fromCharCode(byte)).join('');
-  return header.startsWith('MDMP') ||
-    header.startsWith('PAGEDU64') ||
-    header.startsWith('PAGEDUMP') ||
-    header.startsWith('PAGE');
+  const header = dumpHeader(buffer);
+  return header.startsWith('MDMP') || header.startsWith('PAGEDU64');
+}
+
+function is32BitKernelDump(buffer) {
+  return dumpHeader(buffer).startsWith('PAGEDUMP');
 }
 
 function validatePathEntry(entryPath, maxDepth = FILE_LIMITS.maxPathDepth) {
@@ -154,7 +161,10 @@ function isArchiveFileName(fileName) {
   return ARCHIVE_EXTENSIONS.includes(getFileExtension(fileName));
 }
 
-function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } = {}) {
+// allow32BitKernelDumps keeps 32-bit PAGEDUMP files for the browser path
+// (archive extraction), whose local parser still reads them; anything sent to
+// the WinDBG service leaves it off.
+function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true, allow32BitKernelDumps = false } = {}) {
   if (!fileBuffer || typeof fileBuffer.length !== 'number' || fileBuffer.length === 0) {
     return { valid: false, error: 'File is empty or invalid' };
   }
@@ -172,6 +182,14 @@ function validateUploadedBuffer(fileBuffer, fileName, { allowArchives = true } =
       return {
         valid: false,
         error: `Dump file is too small. Minimum size is ${formatBytes(FILE_LIMITS.minDumpSize)}`
+      };
+    }
+    if (is32BitKernelDump(fileBuffer)) {
+      if (allow32BitKernelDumps) return { valid: true, archiveType: null };
+      return {
+        valid: false,
+        code: 'UNSUPPORTED_DUMP_TYPE',
+        error: '32-bit kernel dumps (PAGEDUMP) are not supported. Submit a minidump or a 64-bit kernel dump.'
       };
     }
     if (!looksLikeDump(fileBuffer)) {
@@ -212,6 +230,7 @@ export {
   hasAnyMagic,
   detectArchiveType,
   looksLikeDump,
+  is32BitKernelDump,
   validatePathEntry,
   isDumpFileName,
   isArchiveFileName,

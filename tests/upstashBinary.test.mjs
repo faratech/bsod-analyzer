@@ -200,3 +200,42 @@ test('binary client deletes keys and reports whether anything was removed', asyn
   assert.equal(await client.del('cachemeta:zstd:dictionary:abc'), false);
   assert.match(calls[0].url, /\/del\/cachemeta%3Azstd%3Adictionary%3Aabc$/);
 });
+
+test('binary client aborts a request the server never answers', async () => {
+  let signalSeen = false;
+  const client = createUpstashBinaryClient({
+    url: 'https://example.upstash.io',
+    token: 'secret',
+    retries: 0,
+    timeoutMs: 40,
+    fetchImpl: (url, init) => new Promise((resolve, reject) => {
+      signalSeen = init.signal instanceof AbortSignal;
+      init.signal?.addEventListener('abort', () => reject(init.signal.reason));
+      // Never resolves on its own: only the signal can end this call.
+    }),
+  });
+  const outcome = await Promise.race([
+    client.get('analysis:abc').then(() => 'resolved', error => error),
+    new Promise(resolve => setTimeout(() => resolve('hung'), 1000)),
+  ]);
+  assert.ok(signalSeen, 'fetch received an AbortSignal');
+  assert.notEqual(outcome, 'hung', 'request must not hang when the server never answers');
+  assert.ok(outcome instanceof Error);
+});
+
+test('binary client defaults to at most one retry and a fresh timeout per attempt', async () => {
+  const signals = [];
+  const client = createUpstashBinaryClient({
+    url: 'https://example.upstash.io',
+    token: 'secret',
+    backoff: () => 0,
+    fetchImpl: async (url, init) => {
+      signals.push(init.signal);
+      throw new Error('temporary network failure');
+    },
+  });
+  await assert.rejects(() => client.get('analysis:abc'), /temporary network failure/);
+  assert.equal(signals.length, 2);
+  assert.ok(signals.every(signal => signal instanceof AbortSignal));
+  assert.notEqual(signals[0], signals[1]);
+});

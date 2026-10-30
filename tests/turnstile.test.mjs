@@ -44,9 +44,23 @@ test('different tokens never collide and raw tokens are not retained', () => {
   assert.notEqual(fingerprintToken('token-e'), fingerprintToken('token-f'));
 
   const guard = createTurnstileReplayGuard();
+  const tokens = ['token-e', 'token-f', 'x'.repeat(4096)];
+  for (const token of tokens) assert.equal(guard.reserve(token).reserved, true);
+  assert.equal(guard.size(), 3);
+
+  // The guard itself must store exactly the fingerprints (issue #265): a
+  // guard keyed on the raw token passed the checks above.
+  const keys = guard.keys();
+  assert.deepEqual([...keys].sort(), tokens.map(fingerprintToken).sort());
+  for (const token of tokens) {
+    assert.ok(!keys.includes(token), 'raw token must not be a key');
+    assert.ok(keys.every(key => !key.includes(token)), 'no key may embed the raw token');
+  }
+
+  // release() and prune() address the same fingerprint keys.
+  guard.release('token-e');
+  assert.deepEqual([...guard.keys()].sort(), tokens.slice(1).map(fingerprintToken).sort());
   assert.equal(guard.reserve('token-e').reserved, true);
-  assert.equal(guard.reserve('token-f').reserved, true);
-  assert.equal(guard.size(), 2);
 });
 
 test('prune drops reservations older than the window', () => {

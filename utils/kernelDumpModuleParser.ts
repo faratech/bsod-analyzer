@@ -4,39 +4,8 @@
  * Based on the DUMP_0x2000 structure that contains module list and strings.
  */
 
-// Bug check code database
-const BUG_CHECK_CODES: Record<number, string> = {
-  0x0000000A: "IRQL_NOT_LESS_OR_EQUAL",
-  0x0000001A: "MEMORY_MANAGEMENT",
-  0x0000001E: "KMODE_EXCEPTION_NOT_HANDLED",
-  0x00000024: "NTFS_FILE_SYSTEM",
-  0x0000003B: "SYSTEM_SERVICE_EXCEPTION",
-  0x00000050: "PAGE_FAULT_IN_NONPAGED_AREA",
-  0x0000007E: "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED",
-  0x0000007F: "UNEXPECTED_KERNEL_MODE_TRAP",
-  0x0000009F: "DRIVER_POWER_STATE_FAILURE",
-  0x000000BE: "ATTEMPTED_WRITE_TO_READONLY_MEMORY",
-  0x000000C1: "SPECIAL_POOL_DETECTED_MEMORY_CORRUPTION",
-  0x000000C2: "BAD_POOL_CALLER",
-  0x000000C4: "DRIVER_VERIFIER_DETECTED_VIOLATION",
-  0x000000D1: "DRIVER_IRQL_NOT_LESS_OR_EQUAL",
-  0x000000EF: "CRITICAL_PROCESS_DIED",
-  0x000000F4: "CRITICAL_OBJECT_TERMINATION",
-  0x000000FC: "ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY",
-  0x00000101: "CLOCK_WATCHDOG_TIMEOUT",
-  0x00000109: "CRITICAL_STRUCTURE_CORRUPTION",
-  0x0000010E: "VIDEO_MEMORY_MANAGEMENT_INTERNAL",
-  0x00000116: "VIDEO_TDR_FAILURE",
-  0x00000117: "VIDEO_TDR_TIMEOUT_DETECTED",
-  0x00000119: "VIDEO_SCHEDULER_INTERNAL_ERROR",
-  0x00000124: "WHEA_UNCORRECTABLE_ERROR",
-  0x00000133: "DPC_WATCHDOG_VIOLATION",
-  0x00000139: "KERNEL_SECURITY_CHECK_FAILURE",
-  0x0000013A: "KERNEL_MODE_HEAP_CORRUPTION",
-  0x00000154: "UNEXPECTED_STORE_EXCEPTION",
-  0x000001C4: "DRIVER_VERIFIER_DETECTED_VIOLATION_LIVEDUMP",
-  0x000001D5: "DRIVER_PNP_WATCHDOG",
-};
+import { bugCheckName } from './bugCheckCodes.js';
+import { IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386, machineTypeLabel } from './machineType.js';
 
 // DUMP_0x2000 structure offsets for 64-bit dumps
 const DUMP_0x2000_OFFSETS = {
@@ -233,10 +202,10 @@ function parseKernelDump64(buffer: ArrayBuffer): KernelDumpResult | null {
 
   return {
     format: "PAGEDU64",
-    architecture: "x64",
+    architecture: machineTypeLabel(view.getUint32(0x30, true)), // MachineImageType
     bugCheck: {
       code: bugCheckCode,
-      name: BUG_CHECK_CODES[bugCheckCode] || "UNKNOWN",
+      name: bugCheckName(bugCheckCode),
       parameters: bugCheckParams,
     },
     exception: {
@@ -414,10 +383,14 @@ export function parseKernelDumpHeader(buffer: ArrayBuffer): KernelDumpHeader | n
 
   // Parse context record
   try {
-    const is64Bit = header.machineImageType === 0x8664;
-    const context = parseContext(buffer, DUMP_HEADER64_OFFSETS.ContextRecord, is64Bit);
-    if (context) {
-      header.context = context;
+    // contextParser knows only the AMD64 and x86 CONTEXT layouts; any other
+    // machine (ARM64, ARM) is left unparsed rather than misread.
+    const machine = header.machineImageType;
+    if (machine === IMAGE_FILE_MACHINE_AMD64 || machine === IMAGE_FILE_MACHINE_I386) {
+      const context = parseContext(buffer, DUMP_HEADER64_OFFSETS.ContextRecord, machine === IMAGE_FILE_MACHINE_AMD64);
+      if (context) {
+        header.context = context;
+      }
     }
   } catch (e) {
     console.error('Failed to parse context record:', e);

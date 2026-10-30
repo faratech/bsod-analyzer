@@ -118,6 +118,23 @@ test('Fastify compat res.set supports header objects and the (name, value) form'
   }
 });
 
+test('Fastify compat res.redirect sets status and Location', async () => {
+  const app = createFastifyCompatApp();
+  app.get('/old', (_req, res) => res.redirect(301, '/new?x=1'));
+  app.get('/temp', (_req, res) => res.redirect('/elsewhere'));
+
+  try {
+    const permanent = await app.fastify.inject({ method: 'GET', url: '/old' });
+    assert.equal(permanent.statusCode, 301);
+    assert.equal(permanent.headers.location, '/new?x=1');
+    const temporary = await app.fastify.inject({ method: 'GET', url: '/temp' });
+    assert.equal(temporary.statusCode, 302);
+    assert.equal(temporary.headers.location, '/elsewhere');
+  } finally {
+    await app.fastify.close();
+  }
+});
+
 test('Fastify compat stack serves static files and rejects traversal', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsod-fastify-static-'));
   await fs.writeFile(path.join(root, 'asset.txt'), 'hello static');
@@ -138,6 +155,30 @@ test('Fastify compat stack serves static files and rejects traversal', async () 
 
     const traversal = await app.fastify.inject({ method: 'GET', url: '/../package.json' });
     assert.equal(traversal.statusCode, 404);
+  } finally {
+    await app.fastify.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('staticMiddleware skipExtensions leaves those files to later middleware (#349)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsod-fastify-static-'));
+  await fs.mkdir(path.join(root, 'prerendered'));
+  await fs.writeFile(path.join(root, 'index.html'), '<p>raw</p>');
+  await fs.writeFile(path.join(root, 'prerendered', 'about.html'), '<p>raw about</p>');
+  await fs.writeFile(path.join(root, 'ads.txt'), 'ads');
+
+  const app = createFastifyCompatApp();
+  app.use(staticMiddleware(root, { skipExtensions: ['.html'] }));
+  app.use((req, res) => res.status(404).send('catch-all'));
+
+  try {
+    for (const url of ['/index.html', '/INDEX.HTML', '/prerendered/about.html', '/prerendered%2Fabout.html', '/index%2Ehtml']) {
+      const response = await app.fastify.inject({ method: 'GET', url });
+      assert.equal(response.payload, 'catch-all', url);
+    }
+    const txt = await app.fastify.inject({ method: 'GET', url: '/ads.txt' });
+    assert.equal(txt.payload, 'ads');
   } finally {
     await app.fastify.close();
     await fs.rm(root, { recursive: true, force: true });

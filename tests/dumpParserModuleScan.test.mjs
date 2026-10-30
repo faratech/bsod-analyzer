@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { rolldown } from 'rolldown';
+import { assertScalesLinearly } from './helpers/linearTime.mjs';
 
 // Same loader as dumpParserBugCheck.test.mjs: dumpParser imports sibling
 // modules with `.js` specifiers that must resolve back to their `.ts` sources.
@@ -42,19 +43,21 @@ function kernelDumpBuffer() {
 
 // Each of these runs made at least one of the old unbounded module patterns
 // backtrack quadratically (seconds at 20-40k chars, hours at 1 MB) on the
-// browser main thread (issue #153).
+// browser main thread (issue #153). Each builder gives the 1 MB run at scale 8
+// and an eighth of it at scale 1; the test compares the two timings rather
+// than a wall-clock budget, which failed on a busy machine.
 const CRAFTED_RUNS = {
-  'identifier characters': 'a'.repeat(1_000_000),
-  'spaces': ' '.repeat(1_000_000),
-  'dashes': '-'.repeat(1_000_000),
-  'drive prefixes': 'C:\\'.repeat(400_000),
-  'long path segments': `C:\\${'a'.repeat(250)}`.repeat(4_000),
+  'identifier characters': k => 'a'.repeat(125_000 * k),
+  'spaces': k => ' '.repeat(125_000 * k),
+  'dashes': k => '-'.repeat(125_000 * k),
+  'drive prefixes': k => 'C:\\'.repeat(50_000 * k),
+  'long path segments': k => `C:\\${'a'.repeat(250)}`.repeat(500 * k),
 };
 
 for (const [label, strings] of Object.entries(CRAFTED_RUNS)) {
   test(`module scan stays linear on a 1 MB run of ${label} (issue #153)`, () => {
-    const started = performance.now();
-    assert.ok(Array.isArray(extractModuleList(kernelDumpBuffer(), strings)));
-    assert.ok(performance.now() - started < 1000, `${label}: the module scan must not backtrack quadratically`);
+    assert.ok(strings(8).length >= 1_000_000, label);
+    assert.ok(Array.isArray(extractModuleList(kernelDumpBuffer(), strings(8))));
+    assertScalesLinearly(label, input => extractModuleList(kernelDumpBuffer(), input), strings);
   });
 }

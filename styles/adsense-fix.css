@@ -20,23 +20,12 @@ body .ad-container {
   width: 100%;
 }
 
-/* Prevent ads in hidden elements */
-.ad-container:empty {
-  display: none;
-}
+/* No .ad-container:empty { display: none } here: DisplayAdSafe and SafeAd add
+   their <ins> only after the container has width, so hiding the empty
+   container kept every slot empty (issue #240). */
 
-/* Fix for mobile sticky ads */
-.sticky-ad {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 1000;
-  background: white;
-  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
-  min-height: 50px;
-  max-height: 100px;
-}
+/* The mobile sticky ad bar is styled in styles.css only (issue #369): a
+   rule here loads later and overrode its theme background with white. */
 
 /* Ensure ads don't show in hidden containers */
 [style*="display: none"] .ad-container,

@@ -104,6 +104,13 @@ let skipped = 0;
 for (const r of ROUTES) {
   try {
     const html = await renderAsync(r.path);
+    // An outlined Suspense boundary ships the Loader as the visible page with the
+    // content in a hidden segment that only a client script reveals (issue #243).
+    // The content marker sits inside that hidden segment, so check this first.
+    if (html && (html.includes('<!--$?-->') || html.includes('hidden id="S:'))) {
+      fail(`${r.path} rendered an outlined Suspense boundary (<!--$?--> / hidden id="S:"); ` +
+        'the page would ship a Loader with its content hidden. Keep progressiveChunkSize: Infinity in entry-server.tsx.');
+    }
     if (!html || !html.includes(r.marker)) {
       console.warn(
         `[prerender] ${r.path} SKIPPED: content marker "${r.marker}" not found ` +

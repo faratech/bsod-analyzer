@@ -22,9 +22,15 @@ export function createSessionQuotaStore() {
     return fresh;
   }
 
-  function liveEntry(quotaKey, now) {
+  // The entry a settlement may touch: the live window, and only when it is
+  // the window that admitted the reservation (`window`, from reserve). A
+  // commit or refund that lands after its window rolled over must not move
+  // the counters of the window that replaced it (issue #253).
+  function liveEntry(quotaKey, now, window) {
     const entry = entries.get(quotaKey);
-    return entry && now <= entry.resetTime ? entry : null;
+    if (!entry || now > entry.resetTime) return null;
+    if (window !== undefined && entry.resetTime !== window) return null;
+    return entry;
   }
 
   // Checks both caps before incrementing either, so a request is admitted
@@ -32,7 +38,7 @@ export function createSessionQuotaStore() {
   function reserve(quotaKey, { requestCost = 1, tokenCost, requestLimit, tokenLimit, windowSeconds, now = Date.now() }) {
     const entry = windowFor(quotaKey, windowSeconds, now);
     const tokens = Math.max(0, Math.ceil(Number(tokenCost) || 0));
-    const snapshot = () => ({ requests: entry.requests, tokens: entry.tokens, resetTime: new Date(entry.resetTime) });
+    const snapshot = () => ({ requests: entry.requests, tokens: entry.tokens, resetTime: new Date(entry.resetTime), window: entry.resetTime });
     if (entry.requests + requestCost > requestLimit) return { allowed: false, reason: 'requests', ...snapshot() };
     if (entry.tokens + tokens > tokenLimit) return { allowed: false, reason: 'tokens', ...snapshot() };
     entry.requests += requestCost;
@@ -41,15 +47,17 @@ export function createSessionQuotaStore() {
   }
 
   // Moves the reserved token estimate toward the provider-reported actuals.
-  function commit(quotaKey, { tokenDelta, now = Date.now() }) {
-    const entry = liveEntry(quotaKey, now);
-    if (entry) entry.tokens = Math.max(0, entry.tokens + Math.ceil(Number(tokenDelta) || 0));
+  function commit(quotaKey, { tokenDelta, window, now = Date.now() }) {
+    const entry = liveEntry(quotaKey, now, window);
+    if (!entry) return false;
+    entry.tokens = Math.max(0, entry.tokens + Math.ceil(Number(tokenDelta) || 0));
+    return true;
   }
 
   // Releases a reservation after a failure that was not the client's fault;
   // capped per window so failures cannot be farmed to shift accounting back.
-  function refund(quotaKey, { requestCost = 1, tokenCost, refundCap, now = Date.now() }) {
-    const entry = liveEntry(quotaKey, now);
+  function refund(quotaKey, { requestCost = 1, tokenCost, refundCap, window, now = Date.now() }) {
+    const entry = liveEntry(quotaKey, now, window);
     if (!entry) return { refunded: false, refundsUsed: 0, refundCap };
     if (entry.refunds >= refundCap) return { refunded: false, refundsUsed: entry.refunds, refundCap };
     entry.refunds += 1;
@@ -60,8 +68,8 @@ export function createSessionQuotaStore() {
 
   // Undoes a reservation outright (no refund cap): used when another scope of
   // the same request rejected it, so the request never ran.
-  function release(quotaKey, { requestCost = 1, tokenCost, now = Date.now() }) {
-    const entry = liveEntry(quotaKey, now);
+  function release(quotaKey, { requestCost = 1, tokenCost, window, now = Date.now() }) {
+    const entry = liveEntry(quotaKey, now, window);
     if (!entry) return;
     entry.requests = Math.max(0, entry.requests - requestCost);
     entry.tokens = Math.max(0, entry.tokens - Math.max(0, Math.ceil(Number(tokenCost) || 0)));
@@ -197,18 +205,24 @@ export function createProviderQuotaStore({ shards = 1 } = {}) {
 /**
  * Settle a reservation only when the provider supplied a positive usage
  * value. Missing usage must retain the original upper-bound reservation.
+ * `unmeteredAttempts` counts retried attempts the provider may have run but
+ * reported no usage for: each keeps one reservation estimate (issue #260).
  */
 export function settleProviderTokenReservation(reservation, {
   inputTokens,
-  outputTokens
+  outputTokens,
+  unmeteredAttempts = 0
 } = {}) {
   if (!reservation?.allowed) return null;
   const reportedInput = Number(inputTokens);
   const reportedOutput = Number(outputTokens);
   const inputKnown = Number.isFinite(reportedInput) && reportedInput > 0;
   const outputKnown = Number.isFinite(reportedOutput) && reportedOutput > 0;
-  const actualInput = inputKnown ? Math.floor(reportedInput) : reservation.reservedInput;
-  const actualOutput = outputKnown ? Math.floor(reportedOutput) : reservation.reservedOutput;
+  const extra = Math.max(0, Math.floor(Number(unmeteredAttempts) || 0));
+  const actualInput = (inputKnown ? Math.floor(reportedInput) : reservation.reservedInput)
+    + extra * reservation.reservedInput;
+  const actualOutput = (outputKnown ? Math.floor(reportedOutput) : reservation.reservedOutput)
+    + extra * reservation.reservedOutput;
   return {
     actualInput,
     actualOutput,
@@ -225,7 +239,8 @@ const RATE_LIMIT_PAUSE_MAX_MS = 5 * 60 * 1000;
  * Settles a provider reservation after a failed call (issue #138). Only a
  * request the provider provably never processed (error.notProcessed) releases
  * its reservation; one that may have run keeps it, moved to the reported usage
- * when the error carries any, so failures cannot spend tokens uncounted.
+ * when the error carries any (plus one estimate per unmetered attempt,
+ * issue #273), so failures cannot spend tokens uncounted.
  */
 export function settleFailedProviderReservation(reservation, error) {
   if (!reservation?.allowed) return null;
@@ -236,11 +251,14 @@ export function settleFailedProviderReservation(reservation, error) {
   if (usage) {
     const settled = settleProviderTokenReservation(reservation, {
       inputTokens: usage.promptTokenCount,
-      outputTokens: usage.candidatesTokenCount
+      outputTokens: usage.candidatesTokenCount,
+      unmeteredAttempts: error.unmeteredAttempts
     });
     return { inputDelta: settled.inputDelta, outputDelta: settled.outputDelta, released: false };
   }
-  return { inputDelta: 0, outputDelta: 0, released: false };
+  // No usage at all: keep one estimate per attempt that may have run (#273).
+  const extra = Math.max(0, Math.floor(Number(error?.unmeteredAttempts) || 0) - 1);
+  return { inputDelta: extra * reservation.reservedInput, outputDelta: extra * reservation.reservedOutput, released: false };
 }
 
 /**

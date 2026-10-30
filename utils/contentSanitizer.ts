@@ -1,4 +1,5 @@
 import { SECURITY_CONFIG } from '../config/security';
+import { PROCESSING_LIMITS } from '../constants';
 
 export function sanitizeExtractedContent(content: string): string {
   // Remove null bytes and other control characters
@@ -7,9 +8,10 @@ export function sanitizeExtractedContent(content: string): string {
   // Remove non-printable characters except common whitespace
   sanitized = sanitized.replace(new RegExp('[^\\x20-\\x7E\\t\\n\\r]', 'g'), '');
 
-  // Limit the length
-  if (sanitized.length > SECURITY_CONFIG.processing.maxStringLength) {
-    sanitized = sanitized.substring(0, SECURITY_CONFIG.processing.maxStringLength);
+  // Limit the length: PROCESSING_LIMITS.MAX_STRINGS_LENGTH is the one budget
+  // for dump strings in a prompt (issue #353).
+  if (sanitized.length > PROCESSING_LIMITS.MAX_STRINGS_LENGTH) {
+    sanitized = sanitized.substring(0, PROCESSING_LIMITS.MAX_STRINGS_LENGTH);
   }
 
   // No HTML-pattern stripping here (issue #81): this text is never rendered as

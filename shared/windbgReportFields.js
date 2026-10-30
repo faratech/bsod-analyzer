@@ -1,4 +1,4 @@
-import { extractFullAnalyzeOutput } from './windbgApiClient.js';
+import { extractFullAnalyzeOutput, stackCallSite } from './windbgApiClient.js';
 import { extractWinDbgWindowsVersion } from './windowsVersion.js';
 
 function stringValue(value) {
@@ -29,6 +29,29 @@ function setString(result, key, value) {
   const text = stringValue(value);
   if (text) result[key] = text;
   return text;
+}
+
+// Split a call site (`module!function+0xoff`, `module+0xoff`, `module!function`)
+// into report frame fields. Trailing debugger annotations such as
+// `(TrapFrame @ ...)` or `[source @ line]` are not part of the symbol. A bare
+// address has no module.
+function parseCallSite(text) {
+  const site = stackCallSite(text)?.replace(/\s+[([].*$/, '').trim();
+  if (!site) return { module: undefined, function: undefined, offset: undefined };
+  const symbolMatch = site.match(/^([^!\s]+)!(.+?)(?:\+(0x[0-9a-fA-F]+|[0-9a-fA-F]+))?$/);
+  if (symbolMatch) {
+    return { module: symbolMatch[1], function: symbolMatch[2], offset: symbolMatch[3] };
+  }
+  const moduleMatch = site.match(/^([^!\s+]+)(?:\+(0x[0-9a-fA-F]+))?$/);
+  if (moduleMatch && !/^(?:0x)?[0-9a-fA-F`]+$/.test(moduleMatch[1])) {
+    return { module: moduleMatch[1], function: undefined, offset: moduleMatch[2] };
+  }
+  return { module: undefined, function: undefined, offset: undefined };
+}
+
+function isResolvedCallStack(callStack) {
+  return Array.isArray(callStack)
+    && callStack.some(frame => frame && stringValue(frame.module) && frame.module !== 'unknown');
 }
 
 function mapStructuredSignalToReport(structured, options = {}) {
@@ -106,13 +129,12 @@ function mapStructuredSignalToReport(structured, options = {}) {
     result.callStack = structured.stackFrames
       .filter(frame => frame && typeof frame === 'object' && !Array.isArray(frame))
       .map(frame => {
-        const symbol = stringValue(frame.symbol)?.replace(/^:\s*/, '');
-        const match = symbol?.match(/^([^!]+)!([^+]+)(?:\+(.+))?$/);
+        const site = parseCallSite(frame.symbol);
         return {
           address: stringValue(frame.sp) || stringValue(frame.ret_addr) || stringValue(frame.address) || 'unknown',
-          module: stringValue(match?.[1]) || stringValue(frame.module) || 'unknown',
-          function: stringValue(match?.[2]) || stringValue(frame.function),
-          offset: stringValue(match?.[3]) || stringValue(frame.offset)
+          module: stringValue(site.module) || stringValue(frame.module) || 'unknown',
+          function: stringValue(site.function) || stringValue(frame.function),
+          offset: stringValue(site.offset) || stringValue(frame.offset)
         };
       })
       .slice(0, 20);
@@ -184,23 +206,30 @@ function extractKernelImageVersion(output) {
   return undefined;
 }
 
+// Parses `!analyze -v` STACK_TEXT / `kv` lines:
+//   x64: `Child-SP RetAddr : Args to Child : Call Site`
+//   x86: `ChildEBP RetAddr Args to Child... Call Site` (no ' : ' separators)
 function parseStackText(stackText) {
   const frames = [];
   for (const line of String(stackText || '').split('\n')) {
-    const match = line.match(/^\s*([0-9a-fA-F`]+)\s+(\S+?)!([^+\s]+)(?:\+0x([0-9a-fA-F]+))?/);
-    if (match) {
-      frames.push({
-        address: match[1],
-        module: match[2],
-        function: match[3],
-        offset: match[4] ? `0x${match[4]}` : undefined
-      });
+    const lineMatch = line.match(/^\s*([0-9a-fA-F`]{8,17})\s+(.*)$/);
+    if (!lineMatch) continue;
+    const rest = lineMatch[2];
+    let callSite;
+    if (rest.includes(' : ')) {
+      callSite = stackCallSite(rest);
     } else {
-      const addressMatch = line.match(/^\s*([0-9a-fA-F`]{16,17})\s+([0-9a-fA-F`]+)/);
-      if (addressMatch && !line.includes('Args to Child')) {
-        frames.push({ address: addressMatch[1], module: 'unknown', function: undefined, offset: undefined });
-      }
+      const tokens = rest.trim().split(/\s+/);
+      const symbolIndex = tokens.findIndex(token => !/^[0-9a-fA-F`]+$/.test(token));
+      callSite = symbolIndex >= 0 ? tokens.slice(symbolIndex).join(' ') : undefined;
     }
+    const site = parseCallSite(callSite);
+    frames.push({
+      address: lineMatch[1],
+      module: site.module || 'unknown',
+      function: site.function,
+      offset: site.offset
+    });
     if (frames.length >= 20) break;
   }
   return frames;
@@ -239,7 +268,8 @@ function parseWinDbgOutput(output) {
   if (Object.keys(systemInfo).length > 0) result.systemInfo = systemInfo;
 
   const stackMatch = output.match(/STACK_TEXT:\s*([\s\S]*?)(?=\n\n[A-Z_]+:|CHKIMG_EXTENSION|SYMBOL_NAME|\n\nFOLLOWUP|$)/i);
-  if (stackMatch) result.callStack = parseStackText(stackMatch[1]);
+  const callStack = stackMatch ? parseStackText(stackMatch[1]) : [];
+  if (callStack.length > 0) result.callStack = callStack;
 
   result.rawWinDbgOutput = extractFullAnalyzeOutput(output) || output;
   return result;
@@ -258,6 +288,14 @@ function mergeReportWithWinDbgFields(report, structuredFields = {}, parsedFields
   };
   if (Object.keys(systemInfo).length > 0) merged.systemInfo = systemInfo;
   else delete merged.systemInfo;
+  // The parsed STACK_TEXT replaces the structured stack only when it actually
+  // resolved frames; an empty or all-`unknown` parse keeps the better stack.
+  if (Array.isArray(parsedFields?.callStack) && !isResolvedCallStack(parsedFields.callStack)) {
+    const fallback = [structuredFields?.callStack, report?.callStack]
+      .find(stack => Array.isArray(stack) && stack.length > 0);
+    if (fallback) merged.callStack = fallback;
+    else if (parsedFields.callStack.length === 0) delete merged.callStack;
+  }
   return merged;
 }
 

@@ -7,6 +7,7 @@ import {
   getFileExtension,
   isArchiveFileName,
   isDumpFileName,
+  looksLikeDump,
   sanitizeUploadFileName,
   validatePathEntry,
   validateUploadedBuffer
@@ -72,4 +73,29 @@ test('filename helpers normalize dangerous upload names', () => {
   assert.equal(getFileExtension('C:\\temp\\crash.MDMP'), '.mdmp');
   assert.equal(sanitizeUploadFileName('../bad\r\nname.mdmp'), 'bad_name.mdmp');
   assert.equal(sanitizeUploadFileName(''), 'upload.dmp');
+});
+
+const withMagic = magic => Buffer.concat([Buffer.from(magic, 'ascii'), Buffer.alloc(FILE_LIMITS.minDumpSize)]);
+
+test('looksLikeDump matches the WinDBG service: MDMP and PAGEDU64 only (#269)', () => {
+  assert.equal(looksLikeDump(withMagic('MDMP')), true);
+  assert.equal(looksLikeDump(withMagic('PAGEDU64')), true);
+  assert.equal(looksLikeDump(withMagic('PAGEDUMP')), false);
+  assert.equal(looksLikeDump(withMagic('PAGEJUNK')), false);
+});
+
+test('32-bit PAGEDUMP is refused with a clear unsupported-type error (#269)', () => {
+  const result = validateUploadedBuffer(withMagic('PAGEDUMP'), 'MEMORY.DMP', { allowArchives: false });
+  assert.equal(result.valid, false);
+  assert.equal(result.code, 'UNSUPPORTED_DUMP_TYPE');
+  assert.match(result.error, /32-bit/);
+  const junk = validateUploadedBuffer(withMagic('PAGEJUNK'), 'MEMORY.DMP', { allowArchives: false });
+  assert.equal(junk.valid, false);
+  assert.equal(junk.error, 'File does not appear to be a valid Windows dump');
+  assert.equal(validateUploadedBuffer(withMagic('PAGEDU64'), 'MEMORY.DMP', { allowArchives: false }).valid, true);
+});
+
+test('archive extraction for the browser path can still keep 32-bit dumps (#269)', () => {
+  const result = validateUploadedBuffer(withMagic('PAGEDUMP'), 'MEMORY.DMP', { allowArchives: false, allow32BitKernelDumps: true });
+  assert.equal(result.valid, true);
 });

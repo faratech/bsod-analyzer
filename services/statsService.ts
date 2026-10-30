@@ -25,6 +25,8 @@ export interface CorpusInsights {
     distinct_modules: number;
     median_analysis_seconds: number | null;
     median_uptime_seconds: number | null;
+    /** Rows with a known uptime (denominator of the first-minute share); absent in older exports. */
+    uptime_known?: number;
     crashes_within_first_minute: number;
     ai_hardware_share: number | null;
     since: string | null;

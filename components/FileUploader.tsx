@@ -1,8 +1,8 @@
-import React, { useState, useCallback, useEffect, memo } from 'react';
+import React, { useState, useCallback, useEffect, useRef, memo } from 'react';
 import { UploadIcon } from './Icons';
 import { validateFiles } from '../utils/fileValidation';
-import CloudflareTurnstile from './CloudflareTurnstile';
-import { hasTurnstileHint, initializeSession, markSessionInitialized, onSessionInvalid, startSessionRefresh } from '../utils/sessionManager';
+import CloudflareTurnstile, { type CloudflareTurnstileHandle } from './CloudflareTurnstile';
+import { hasTurnstileHint, initializeSession, markSessionInitialized, noteNewSession, onSessionInvalid, startSessionRefresh } from '../utils/sessionManager';
 import { ALLOWED_EXTENSIONS } from '../shared/ingestPolicy.js';
 
 interface FileUploaderProps {
@@ -16,7 +16,13 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
   const [isDragging, setIsDragging] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isVerified, setIsVerified] = useState(false);
-  const [, setVerificationError] = useState(false);
+  const [verificationError, setVerificationError] = useState(false);
+  const turnstileRef = useRef<CloudflareTurnstileHandle>(null);
+  // Bumped by "Retry security check" to remount the widget (and reload a
+  // script that failed to load).
+  const [turnstileAttempt, setTurnstileAttempt] = useState(0);
+  // Whether this attempt already reset the widget once (issue #277).
+  const autoResetUsed = useRef(false);
   
   // Use the provided site key
   const TURNSTILE_SITE_KEY = '0x4AAAAAAABiq2_hH-dGCkQi';
@@ -166,6 +172,10 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
       if (result.success) {
         setIsVerified(true);
         setVerificationError(false);
+        setValidationErrors([]);
+        autoResetUsed.current = false;
+        // Verification mints a new session id (#341).
+        noteNewSession();
         markSessionInitialized();
         startSessionRefresh('uploader');
 
@@ -181,12 +191,21 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
         const errorMessage = result.error || 'Security verification failed. Please try again.';
         setValidationErrors([errorMessage]);
 
-        // If token expired or duplicate, clear verification
-        if (result['error-codes']?.includes('timeout-or-duplicate')) {
-          setIsVerified(false);
+        // Turnstile tokens are single-use: when Siteverify says the token was
+        // spent or invalid, ask the widget for a fresh one, once per attempt.
+        // With the default `execution: 'render'` a reset re-solves and calls
+        // back on its own, so resetting on errors a new token cannot fix (429,
+        // 5xx, bad secret, action/hostname mismatch) looped POSTs unboundedly
+        // (issue #277); those wait for the visitor's "Retry security check".
+        const codes: unknown[] = Array.isArray(result['error-codes']) ? result['error-codes'] : [];
+        const tokenProblem = codes.some(code => code === 'timeout-or-duplicate' || code === 'invalid-input-response');
+        if (tokenProblem && !autoResetUsed.current) {
+          autoResetUsed.current = true;
+          turnstileRef.current?.reset();
         }
       }
     } catch (error) {
+      // Network failure or a non-JSON answer: no automatic retry (issue #277).
       console.error('Turnstile verification error:', error);
       setVerificationError(true);
       setValidationErrors(['Network error. Please check your connection and try again.']);
@@ -195,7 +214,14 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
 
   const handleTurnstileError = useCallback(() => {
     setVerificationError(true);
-    setValidationErrors(['Security check failed. Please refresh and try again.']);
+    setValidationErrors(['Security check failed. Please try again.']);
+  }, []);
+
+  const retryTurnstile = useCallback(() => {
+    autoResetUsed.current = false;
+    setVerificationError(false);
+    setValidationErrors([]);
+    setTurnstileAttempt(attempt => attempt + 1);
   }, []);
 
   const handleTurnstileExpire = useCallback(() => {
@@ -214,6 +240,8 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
         </div>
         
         <CloudflareTurnstile
+          key={turnstileAttempt}
+          ref={turnstileRef}
           siteKey={TURNSTILE_SITE_KEY}
           onSuccess={handleTurnstileSuccess}
           onError={handleTurnstileError}
@@ -222,7 +250,7 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
         />
         
         {validationErrors.length > 0 && (
-          <div className="validation-errors" style={{ 
+          <div id="file-upload-errors" role="alert" className="validation-errors" style={{ 
             marginTop: '1rem', 
             color: '#ff4444',
             fontSize: '14px',
@@ -231,6 +259,13 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
             {validationErrors.map((error, index) => (
               <div key={index}>{error}</div>
             ))}
+          </div>
+        )}
+        {verificationError && (
+          <div style={{ marginTop: '1rem', textAlign: 'center' }}>
+            <button type="button" className="btn btn-secondary" onClick={retryTurnstile}>
+              Retry security check
+            </button>
           </div>
         )}
       </div>
@@ -255,6 +290,8 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
         accept={ALLOWED_EXTENSIONS.join(',')}
         style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', borderWidth: 0 }}
         onChange={handleFileChange}
+        aria-describedby={validationErrors.length > 0 ? 'file-upload-errors' : undefined}
+        aria-invalid={validationErrors.length > 0 || undefined}
       />
       <label htmlFor="file-upload" style={{ cursor: 'pointer', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 2 }}>
           <UploadIcon className="upload-icon" />
@@ -262,22 +299,22 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
               Drop dump files or .zip, .7z, or .rar archives here
           </span>
           <span className="upload-hint">or click to browse</span>
-          <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-success)' }}>
+          <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--status-success)' }}>
             ✓ Security check completed
           </div>
-          {validationErrors.length > 0 && (
-            <div className="validation-errors" style={{ 
-              marginTop: '10px', 
-              color: '#ff4444',
-              fontSize: '14px',
-              textAlign: 'center'
-            }}>
-              {validationErrors.map((error, index) => (
-                <div key={index}>{error}</div>
-              ))}
-            </div>
-          )}
       </label>
+      {validationErrors.length > 0 && (
+        <div id="file-upload-errors" role="alert" className="validation-errors" style={{
+          marginTop: '10px',
+          color: '#ff4444',
+          fontSize: '14px',
+          textAlign: 'center'
+        }}>
+          {validationErrors.map((error, index) => (
+            <div key={index}>{error}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 });

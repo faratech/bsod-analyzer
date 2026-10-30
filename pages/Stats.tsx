@@ -17,6 +17,7 @@ import {
   toFamily
 } from '../components/CorpusInsightCharts';
 import type { CorpusInsights } from '../services/statsService';
+import { firstMinuteShare } from '../utils/statsMath';
 import {
   StatsSnapshot,
   StatsUnavailableError,
@@ -130,10 +131,6 @@ const StatsPage: React.FC = () => {
       keywords="bsod statistics, stop code statistics, windows crash stats, bugcheck trends"
       canonicalPath="/stats"
     >
-      <SEO
-        title="Windows Crash Statistics"
-        description="Aggregated Windows crash statistics: most common stop codes, failure buckets, faulting modules, and daily analysis volume."
-      />
       {error ? <p className="stats-error" role="alert">{error}</p> : null}
       <div className="stats-tiles">
         <StatTile
@@ -254,7 +251,8 @@ const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1
 const CorpusInsightsSection: React.FC<{ insights: CorpusInsights }> = ({ insights }) => {
   const t = insights.totals;
   const hardwareShare = typeof t.ai_hardware_share === 'number' ? `${(t.ai_hardware_share * 100).toFixed(1)}%` : '—';
-  const firstMinuteShare = t.analyses ? `${((t.crashes_within_first_minute / t.analyses) * 100).toFixed(1)}%` : '—';
+  const firstMinuteFraction = firstMinuteShare(t);
+  const firstMinuteText = firstMinuteFraction === null ? '—' : `${(firstMinuteFraction * 100).toFixed(1)}%`;
   const products = insights.product_types.filter(p => p.k !== 'Unknown');
   return (
     <section className="corpus-insights" aria-labelledby="corpus-insights-title">
@@ -270,7 +268,7 @@ const CorpusInsightsSection: React.FC<{ insights: CorpusInsights }> = ({ insight
       <div className="stats-tiles">
         <StatTile label="Distinct drivers & modules" value={t.distinct_modules.toLocaleString('en-US')} />
         <StatTile label="Median uptime at crash" value={formatDuration(t.median_uptime_seconds)} />
-        <StatTile label="Crashed in first minute" value={firstMinuteShare}
+        <StatTile label="Crashed in first minute" value={firstMinuteText}
           hint={`${t.crashes_within_first_minute.toLocaleString('en-US')} dumps`} />
         <StatTile label="AI-judged hardware fault" value={hardwareShare} />
         <StatTile label="Median WinDBG analysis" value={formatDuration(t.median_analysis_seconds)} />

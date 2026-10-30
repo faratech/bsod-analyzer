@@ -48,14 +48,16 @@
   --bg-hover: #222222;
   --text-primary: #ffffff;
   --text-secondary: #a0a0a0;
-  --text-tertiary: #666666;
+  --text-tertiary: #8a8a8a;
   --border-primary: #2a2a2a;
   --border-secondary: #333333;
   --status-success: #10b981;
   --status-success-bg: rgba(16, 185, 129, 0.15);
+  --on-status-success: #0a0a0a;
   --status-warning: #f59e0b;
   --status-error: #ef4444;
   --status-error-bg: rgba(239, 68, 68, 0.15);
+  --on-status-error: #0a0a0a;
   --status-info: #3b82f6;
   --shadow-color: rgba(0, 0, 0, 0.5);
   --glass-bg: rgba(26, 26, 26, 0.6);
@@ -77,14 +79,16 @@
   --bg-hover: #e9ecef;
   --text-primary: #1a1a1a;
   --text-secondary: #495057;
-  --text-tertiary: #868e96;
+  --text-tertiary: #5f6770;
   --border-primary: #dee2e6;
   --border-secondary: #ced4da;
-  --status-success: #059669;
+  --status-success: #047857;
   --status-success-bg: #d1fae5;
-  --status-warning: #d97706;
+  --on-status-success: #ffffff;
+  --status-warning: #92400e;
   --status-error: #dc2626;
   --status-error-bg: #fee2e2;
+  --on-status-error: #ffffff;
   --status-info: #2563eb;
   --shadow-color: rgba(0, 0, 0, 0.1);
   --glass-bg: rgba(255, 255, 255, 0.7);
@@ -451,6 +455,18 @@ p {
   cursor: pointer;
   position: relative;
   overflow: hidden;
+}
+
+/* The real file input is visually hidden, so draw its keyboard focus on the
+   area (matches the flow controls). Where :has() is supported, a pointer
+   click that focuses the input does not show the ring. */
+.upload-area:focus-within {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+.upload-area:focus-within:not(:has(:focus-visible)) {
+  outline: none;
 }
 
 .upload-area::before {
@@ -1157,6 +1173,12 @@ body.mobile-menu-open {
   overflow-y: auto;
 }
 
+/* The overlay covers the viewport; while it is open the header (a sticky
+   stacking context holding the close toggle) must paint above it. */
+body.mobile-menu-open .header {
+  z-index: 10000;
+}
+
 .mobile-nav.open {
   display: block;
   opacity: 1;
@@ -1201,6 +1223,21 @@ body.mobile-menu-open {
 
 .mobile-nav-link.donate-link:hover {
   background-color: var(--brand-secondary);
+}
+
+.mobile-nav-theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  margin-top: 1rem;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.mobile-nav-theme .theme-toggle {
+  margin: 0;
 }
 
 /* Enhanced Hero Section - OVERRIDE styles in lower section */
@@ -1547,6 +1584,29 @@ body.mobile-menu-open {
   font-weight: 500;
   font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'Courier New', monospace;
   color: var(--text-primary);
+  /* Extracted archive entries are named with their full in-archive path: break
+     it anywhere rather than pushing the expand button off the card. */
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.result-header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.result-toggle,
+.result-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.5rem;
 }
 
 /* Status System */
@@ -2426,15 +2486,37 @@ body.mobile-menu-open {
   }
 }
 
-.sticky-ad {
+/* Mobile sticky ad bar (issue #369). It shows its themed chrome and takes
+   taps only once AdSense has filled the slot (ins[data-ad-status="filled"]);
+   until then (pending, unfilled, blocked) it is transparent and click-through
+   but stays laid out, since SafeAd only inserts and requests the ad in a
+   container that has width (display: none kept slots empty, issue #240).
+   Browsers without :has() drop those rules and keep the themed bar.
+   .ad-container.sticky-ad outranks adsense-fix.css's later .ad-container
+   (position: relative). */
+:root {
+  --sticky-ad-height: 100px;
+}
+
+.ad-container.sticky-ad {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
-  z-index: 999;
-  background: var(--bg-primary);
+  z-index: 1000;
+  /* .ad-container's 2rem margin lifted the fixed bar off the bottom edge. */
+  margin: 0;
+  box-sizing: border-box;
+  max-height: var(--sticky-ad-height);
+  background-color: var(--bg-primary);
   padding: 0.5rem;
   box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.ad-container.sticky-ad:not(:has(ins[data-ad-status="filled"])) {
+  background-color: transparent;
+  box-shadow: none;
+  pointer-events: none;
 }
 
 .sticky-ad .adsbygoogle {
@@ -2459,10 +2541,11 @@ body.mobile-menu-open {
     max-width: 100%;
   }
   
-  .sticky-ad {
-    max-height: 90px;
+  /* Room for the filled sticky ad bar so the end of the page scrolls clear of it. */
+  body:has(.sticky-ad ins[data-ad-status="filled"]) {
+    padding-bottom: var(--sticky-ad-height);
   }
-  
+
   .mobile-only {
     display: block;
   }
@@ -3220,6 +3303,9 @@ body.mobile-menu-open {
 .progress-stage-dot.completed {
   background: var(--status-success);
   border-color: var(--status-success);
+  /* Text on a solid status fill: dark on the bright dark-theme green, white on
+     the deep light-theme green (issue #324). */
+  color: var(--on-status-success);
 }
 
 .progress-stage-dot.active {
@@ -4356,3 +4442,17 @@ body.mobile-menu-open {
 .privacy-page li, .privacy-page p { color: var(--text-secondary); line-height: 1.6; margin: 6px 0; }
 .privacy-page a { color: var(--brand-primary); }
 .privacy-lede { font-size: 0.95rem; }
+
+/* Reduced motion: stop every looping glow, float, shimmer, spinner and
+   particle animation and make transitions instant. Kept last so it wins over
+   the animation rules above; the loader keeps its static ring. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

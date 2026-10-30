@@ -1,4 +1,5 @@
 import test, { after } from 'node:test';
+import { createMountTracker, failFileAfter, JSDOM_FILE_TIMEOUT_MS } from './helpers/jsdomCleanup.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { rolldown } from 'rolldown';
@@ -85,12 +86,18 @@ after(() => {
 });
 
 const harness = await loadHarness();
+
+// Unmount every root even when an assertion fails, so the component's timers
+// cannot keep this file alive (issue #321).
+failFileAfter(JSDOM_FILE_TIMEOUT_MS, 'dataUseAgreement.test.mjs');
+const track = createMountTracker();
+const mountTracked = async (...args) => { const view = await harness.mount(...args); view.unmount = track(view.unmount); return view; };
 const VERSION_KEY = 'bsod.dataUse.acceptedVersion';
 
 test('terms changed since this browser agreed: the box starts unchecked with a notice (issue #144)', async () => {
   const { dom, storage } = installDom({ [VERSION_KEY]: '2020-01-01' });
   const container = dom.window.document.getElementById('root');
-  const view = await harness.mount(container);
+  const view = await mountTracked(container);
   const box = container.querySelector('input[type="checkbox"]');
   assert.equal(box.checked, false);
   assert.equal(harness.isDataUseAccepted(), false);
@@ -110,7 +117,7 @@ test('the current version, or no stored version, keeps the default-checked box',
   for (const stored of [{ [VERSION_KEY]: DATA_USE_TERMS_VERSION }, {}]) {
     const { dom } = installDom(stored);
     const container = dom.window.document.getElementById('root');
-    const view = await harness.mount(container);
+    const view = await mountTracked(container);
     assert.equal(container.querySelector('input[type="checkbox"]').checked, true, JSON.stringify(stored));
     assert.doesNotMatch(container.textContent, /terms changed/);
     await view.unmount();

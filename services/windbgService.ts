@@ -17,12 +17,43 @@ import { sha256Hex } from '../shared/hash.js';
 // to complete successfully (and cache their results).
 const POLL_INTERVAL_MS = 10000; // Poll every 10 seconds (was 3s, increased to reduce load)
 const MAX_POLL_ATTEMPTS = 60; // Max 10 minutes of polling (60 * 10s = 600s), then fallback to local analysis
-const UPLOAD_TIMEOUT_MS = 240000; // 4 minute upload timeout for slow proxy/origin submits
-const WINDBG_TOTAL_TIMEOUT_MS = 660000; // 11 minute hard timeout: upload window + poll budget + margin
+// The upload is bounded by inactivity, not by a total timer (#234): a large
+// dump on a slow uplink may take minutes to send, which is fine while bytes keep
+// moving. Once the body is sent, the server still buffers it and submits it to
+// WinDBG under its own WINDBG_UPLOAD_TIMEOUT_MS (240 s), so the response gets a
+// separate budget above that.
+const UPLOAD_INACTIVITY_TIMEOUT_MS = 60000; // no upload progress for 60 s
+const UPLOAD_RESPONSE_TIMEOUT_MS = 300000; // server submit budget (240 s) + margin
+// Hard budget for polling + download, armed once the upload has answered
+// (#278). The upload phase gets its own hard budget scaled by file size, so a
+// slow but progressing upload is not cut off while a pathologically slow one
+// is still aborted. Either budget aborts the in-flight request when it fires.
+const WINDBG_TOTAL_TIMEOUT_MS = 660000; // poll budget (600 s) + download + margin
+const MIN_UPLOAD_BYTES_PER_SECOND = 32 * 1024; // slowest uplink the upload budget allows for
+
+function uploadPhaseBudgetMs(fileSize: number): number {
+    return WINDBG_TOTAL_TIMEOUT_MS + Math.ceil((fileSize / MIN_UPLOAD_BYTES_PER_SECOND) * 1000);
+}
 // The backend answers transient upstream trouble with 502/503/504 and the poll
 // limiter with 429. Those are retried on the next poll (and a few times for the
 // download) instead of abandoning a WinDBG job that is still running upstream.
 const TRANSIENT_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+// The upload endpoint's transient failures: gateway errors, and the edge's 52x
+// pages (524 = Cloudflare gave up waiting for the origin, #276), which arrive
+// as HTML rather than JSON.
+const TRANSIENT_UPLOAD_CODE = 'WINDBG_UPLOAD_TRANSIENT';
+function isTransientUploadStatus(status: number): boolean {
+    return status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 530);
+}
+// The upload route answers a submit slower than its response budget with a
+// retryable 504 WINDBG_UPLOAD_TIMEOUT and Retry-After: 15; a retry of the same
+// dump joins or adopts the server-side job (#276, docs/TIMEOUT_CONTRACT.md).
+// Those, the transient gateway failures and any answer marked retryable are
+// retried a bounded number of times, inside the upload-phase budget (#307).
+const MAX_RETRYABLE_UPLOAD_RETRIES = 2;
+const MAX_BUSY_UPLOAD_RETRIES = 2;
+const UPLOAD_RETRY_DEFAULT_DELAY_MS = 15000;
+const UPLOAD_RETRY_MAX_DELAY_MS = 30000;
 const MAX_CONSECUTIVE_POLL_FAILURES = 3;
 const DOWNLOAD_ATTEMPTS = 3;
 const DOWNLOAD_RETRY_DELAY_MS = 3000;
@@ -39,12 +70,64 @@ export interface WinDBGUploadResponse {
         filename: string;
         size: number;
         status: 'pending' | 'processing' | 'completed' | 'failed';
-        queue_position: number;
+        queue_position?: number;
         total_pending: number;
         handle?: string;
     };
     error?: string;
     code?: string;
+    retryable?: boolean;
+}
+
+type UploadError = Error & { code?: string; retryable?: boolean; retryAfterMs?: number };
+
+// Retry-After as delta-seconds or an HTTP date; undefined when absent or invalid.
+function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+    const at = Date.parse(trimmed);
+    return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
+
+function readRetryAfterMs(xhr: XMLHttpRequest): number | undefined {
+    try {
+        return parseRetryAfterMs(xhr.getResponseHeader('Retry-After'));
+    } catch {
+        return undefined;
+    }
+}
+
+function isRetryableUploadError(error: unknown): boolean {
+    const err = error as UploadError;
+    return err?.retryable === true || err?.code === 'WINDBG_UPLOAD_TIMEOUT' || err?.code === TRANSIENT_UPLOAD_CODE;
+}
+
+// The upload route's answer when WinDbg-API took nothing and asked to come
+// back later (queue full, storage pressure; issue #327).
+const RETRY_LATER_UPLOAD_CODE = 'WINDBG_UPLOAD_RETRY_LATER';
+const REJECTED_UPLOAD_CODE = 'WINDBG_UPLOAD_REJECTED';
+
+// The WinDBG failure as quoted in the AI fallback prompt (issue #327): only
+// the upload route's WINDBG_UPLOAD_REJECTED says the dump itself was refused;
+// any other failure text that reads like a rejection is replaced so the model
+// is not told a valid dump was rejected.
+export function describeWinDbgFailureForPrompt(failure: unknown): string {
+    const err = failure as { message?: unknown; code?: unknown } | null | undefined;
+    const message = failure instanceof Error
+        ? failure.message
+        : typeof failure === 'string' ? failure : typeof err?.message === 'string' ? err.message : '';
+    if (!message) return 'Unknown WinDBG failure';
+    if (err?.code !== REJECTED_UPLOAD_CODE && /reject|supported Windows crash dump/i.test(message)) {
+        return 'The WinDBG server could not complete this analysis (a server-side or temporary failure; not a finding about the dump).';
+    }
+    return message;
+}
+
+function uploadRetryDelayMs(error: unknown): number {
+    const requested = (error as UploadError)?.retryAfterMs;
+    const delay = typeof requested === 'number' && Number.isFinite(requested) ? requested : UPLOAD_RETRY_DEFAULT_DELAY_MS;
+    return Math.min(Math.max(delay, 1000), UPLOAD_RETRY_MAX_DELAY_MS);
 }
 
 export interface WinDBGStatusResponse {
@@ -115,13 +198,30 @@ function handleQuery(hash: string): string {
     return handle ? `&h=${encodeURIComponent(handle)}` : '';
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+// Resolves after `ms`, or as soon as `signal` aborts (callers then check it).
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+        if (signal?.aborted) {
+            resolve();
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
 }
 
+// Only the code: every busy producer (the cap gate, the submitter, the
+// concurrency limiter) sets it, and the retry-later answer's "server is busy"
+// wording must not spend the busy budget on top of the retryable one (#344).
 function isBusyError(error: unknown): boolean {
-    const err = error as Error & { code?: string };
-    return err?.code === 'WINDBG_UPLOAD_BUSY' || /Server is busy/i.test(err?.message || '');
+    return (error as { code?: string } | null)?.code === 'WINDBG_UPLOAD_BUSY';
 }
 
 /**
@@ -274,11 +374,14 @@ export async function uploadToWinDBG(
 
     console.log(`[WinDBG] Uploading ${file.name} with file hash UID: ${uid}`);
 
+    // uid goes before the file so it is parsed before the (large) file part
+    // ends; a trailing field can land in a later network read (#244).
     const formData = new FormData();
-    formData.append('file', file);
     formData.append('uid', uid);
+    formData.append('file', file);
 
     // Use XMLHttpRequest for upload progress events
+    let retryAfterMs: number | undefined;
     const result = await new Promise<WinDBGUploadResponse>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/windbg/upload');
@@ -286,44 +389,98 @@ export async function uploadToWinDBG(
         for (const [name, value] of Object.entries(dataUseHeaders())) {
             xhr.setRequestHeader(name, value);
         }
-        xhr.timeout = UPLOAD_TIMEOUT_MS;
+        // Advisory: lets the server admit a retry that joins or adopts this
+        // dump's running submit at the per-instance cap before it reads the
+        // body (#338). The server recomputes the hash from the body.
+        xhr.setRequestHeader('X-File-Hash', uid);
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const clearTimer = () => {
+            if (timer !== undefined) clearTimeout(timer);
+            timer = undefined;
+        };
+        const armTimer = (ms: number) => {
+            clearTimer();
+            timer = setTimeout(() => {
+                timer = undefined;
+                signal?.removeEventListener('abort', onAbort);
+                reject(new Error('Upload timed out'));
+                xhr.abort();
+            }, ms);
+        };
 
         // Cancel the request the moment the owning analysis run is cancelled:
         // a zombie upload holds a backend concurrency slot (and a WinDBG server
-        // job) for up to UPLOAD_TIMEOUT_MS, which starves legitimate retries.
+        // job) until it times out, which starves legitimate retries.
         const onAbort = () => {
+            clearTimer();
             xhr.abort();
             reject(createCancelledError());
         };
 
         xhr.upload.onprogress = (e) => {
+            armTimer(UPLOAD_INACTIVITY_TIMEOUT_MS);
             if (e.lengthComputable) {
                 onUploadProgress?.(Math.round((e.loaded / e.total) * 100));
             }
         };
 
+        // Body fully sent: now wait for the server's buffer + upstream submit.
+        xhr.upload.onload = () => {
+            armTimer(UPLOAD_RESPONSE_TIMEOUT_MS);
+        };
+
         xhr.onload = () => {
+            clearTimer();
             signal?.removeEventListener('abort', onAbort);
+            retryAfterMs = readRetryAfterMs(xhr);
+            let data: WinDBGUploadResponse | null = null;
             try {
-                const data: WinDBGUploadResponse = JSON.parse(xhr.responseText);
-                if (xhr.status === 401) {
-                    handleSessionError(data as unknown as { code?: string; [key: string]: unknown });
-                }
-                resolve(data);
+                data = JSON.parse(xhr.responseText);
             } catch {
-                reject(new Error('Invalid response from upload endpoint'));
+                data = null;
             }
+            if (!data || typeof data !== 'object') {
+                // An HTML error page from the edge (524 when the origin took
+                // longer than 100 s) or a proxy: transient, not malformed (#276).
+                if (isTransientUploadStatus(xhr.status) || xhr.status >= 500) {
+                    const error = new Error(
+                        `The WinDBG server did not answer the upload in time (HTTP ${xhr.status}). Please try again in a few minutes.`
+                    ) as UploadError;
+                    error.code = TRANSIENT_UPLOAD_CODE;
+                    error.retryAfterMs = retryAfterMs;
+                    reject(error);
+                } else {
+                    reject(new Error('Invalid response from upload endpoint'));
+                }
+                return;
+            }
+            if (xhr.status === 401) {
+                handleSessionError(data as unknown as { code?: string; [key: string]: unknown });
+            }
+            // Keep the server's own code (e.g. a retryable 504 or a 422
+            // WINDBG_UPLOAD_REJECTED). A gateway 5xx without one is transient
+            // only when it says so: the upload route marks the upstream
+            // failures that clear up on their own retryable, and a permanent
+            // one must not re-send the whole dump (#325).
+            if (!data.success && !data.code && isTransientUploadStatus(xhr.status) && data.retryable === true) {
+                data = { ...data, code: TRANSIENT_UPLOAD_CODE };
+            }
+            resolve(data);
         };
 
         xhr.onerror = () => {
+            clearTimer();
             signal?.removeEventListener('abort', onAbort);
             reject(new Error('Upload network error'));
         };
         xhr.ontimeout = () => {
+            clearTimer();
             signal?.removeEventListener('abort', onAbort);
             reject(new Error('Upload timed out'));
         };
         xhr.onabort = () => {
+            clearTimer();
             signal?.removeEventListener('abort', onAbort);
             reject(createCancelledError());
         };
@@ -334,11 +491,14 @@ export async function uploadToWinDBG(
         }
         signal?.addEventListener('abort', onAbort, { once: true });
         xhr.send(formData);
+        armTimer(UPLOAD_INACTIVITY_TIMEOUT_MS);
     });
 
     if (!result.success) {
-        const error = new Error(result.error || 'Upload failed') as Error & { code?: string };
+        const error = new Error(result.error || 'Upload failed') as UploadError;
         error.code = result.code;
+        error.retryable = result.retryable === true;
+        error.retryAfterMs = retryAfterMs;
         throw error;
     }
 
@@ -372,17 +532,19 @@ export async function downloadAnalysis(uid: string, signal?: AbortSignal): Promi
         for (let attempt = 1; ; attempt++) {
             try {
                 const response = await fetch(`/api/windbg/download?uid=${encodeURIComponent(uid)}${handleQuery(uid)}`, {
-                    credentials: 'include'
+                    credentials: 'include',
+                    signal
                 });
                 if (!TRANSIENT_HTTP_STATUSES.has(response.status) || attempt >= DOWNLOAD_ATTEMPTS) {
                     return response;
                 }
                 console.warn(`[WinDBG] Download attempt ${attempt} got HTTP ${response.status}, retrying...`);
             } catch (error) {
+                if (signal?.aborted) throw createCancelledError();
                 if (attempt >= DOWNLOAD_ATTEMPTS) throw error;
                 console.warn(`[WinDBG] Download attempt ${attempt} failed, retrying...`, error);
             }
-            await sleep(DOWNLOAD_RETRY_DELAY_MS);
+            await sleep(DOWNLOAD_RETRY_DELAY_MS, signal);
             if (signal?.aborted) throw createCancelledError();
         }
     };
@@ -436,43 +598,91 @@ export async function analyzeWithWinDBG(
     onUploadProgress?: (percent: number) => void,
     signal?: AbortSignal
 ): Promise<WinDBGAnalysisResult> {
-    // Hard timeout wrapper - WINDBG_TOTAL_TIMEOUT_MS max for entire WinDBG process.
-    // The handle is cleared once the race settles, and timedOut lets the
-    // abandoned pipeline notice it lost and stop polling cooperatively.
+    // Hard timeouts: the upload phase gets a budget scaled by file size, then
+    // polling + download get WINDBG_TOTAL_TIMEOUT_MS from when the upload
+    // answered (#278). When a budget runs out the internal controller aborts
+    // whatever request is in flight (upload XHR, poll, download) so nothing
+    // keeps running after the caller fell back to local analysis. The
+    // controller also follows the caller's cancel signal.
+    const controller = new AbortController();
+    const runSignal = controller.signal;
+    const onCallerAbort = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', onCallerAbort, { once: true });
+
     let timedOut = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let rejectTimeout: (error: Error) => void = () => {};
     const timeoutPromise = new Promise<WinDBGAnalysisResult>((_, reject) => {
-        timeoutHandle = setTimeout(() => {
-            timedOut = true;
-            reject(new Error('WinDBG analysis timed out - falling back to local analysis'));
-        }, WINDBG_TOTAL_TIMEOUT_MS);
+        rejectTimeout = reject;
     });
+    const armTimeout = (ms: number) => {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => {
+            timeoutHandle = undefined;
+            timedOut = true;
+            rejectTimeout(new Error('WinDBG analysis timed out - falling back to local analysis'));
+            controller.abort();
+        }, ms);
+    };
+    const uploadDeadline = Date.now() + uploadPhaseBudgetMs(file.size);
+    armTimeout(uploadPhaseBudgetMs(file.size));
 
     const analysisPromise = (async (): Promise<WinDBGAnalysisResult> => {
     try {
         // Stage 1: Upload
         onProgress?.('uploading', `Uploading ${file.name} to WinDBG server...`);
         let uploadResult: WinDBGUploadResponse | null = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
+        let busyRetries = 0;
+        let retryableRetries = 0;
+        for (;;) {
             try {
-                uploadResult = await uploadToWinDBG(file, onUploadProgress, signal);
+                uploadResult = await uploadToWinDBG(file, onUploadProgress, runSignal);
                 break;
             } catch (error) {
-                if (!isBusyError(error) || attempt === 2) {
+                // Busy (the per-instance cap, #314) and retryable answers both
+                // wait for the server's Retry-After (#338); a busy answer used
+                // to re-send the whole dump after 1.5 s and 3 s.
+                const busy = isBusyError(error) && busyRetries < MAX_BUSY_UPLOAD_RETRIES;
+                if (!busy && !(isRetryableUploadError(error) && retryableRetries < MAX_RETRYABLE_UPLOAD_RETRIES)) {
                     throw error;
                 }
-                const delayMs = 1500 * (attempt + 1);
-                onProgress?.('queued', `WinDBG server is busy, retrying upload in ${Math.round(delayMs / 1000)}s...`);
-                await sleep(delayMs);
-                if (signal?.aborted) {
+                const delayMs = uploadRetryDelayMs(error);
+                // A wait that cannot end inside the upload-phase budget only
+                // ends in that budget's timeout: fall back now instead.
+                if (Date.now() + delayMs >= uploadDeadline) {
+                    throw error;
+                }
+                const waitSeconds = Math.round(delayMs / 1000);
+                if (busy) {
+                    busyRetries++;
+                    onProgress?.('queued', `WinDBG server is busy, retrying upload in ${waitSeconds}s...`);
+                } else {
+                    // The submit may still be running server-side: the retry
+                    // joins or adopts it rather than starting over.
+                    retryableRetries++;
+                    onProgress?.('queued', (error as UploadError)?.code === RETRY_LATER_UPLOAD_CODE
+                        ? `WinDBG server is busy, retrying upload in ${waitSeconds}s...`
+                        : `Still submitting to the WinDBG server, retrying in ${waitSeconds}s...`);
+                }
+                // The upload-phase budget keeps running; it (or a cancel)
+                // wakes this sleep and ends the run.
+                await sleep(delayMs, runSignal);
+                if (runSignal.aborted) {
                     throw createCancelledError();
                 }
+                // The whole dump is sent again: the stage, its timer and the
+                // percentage bar follow the re-upload (#326).
+                onProgress?.('uploading', `Retrying upload of ${file.name}...`);
             }
         }
 
         if (!uploadResult) {
             throw new Error('Upload failed');
         }
+
+        // The upload answered: polling and download get their own budget.
+        if (!timedOut) armTimeout(WINDBG_TOTAL_TIMEOUT_MS);
 
         // Handle cached response - skip polling and download
         if (uploadResult.cached && uploadResult.cachedAnalysis) {
@@ -494,7 +704,11 @@ export async function analyzeWithWinDBG(
         const uid = uploadResult.data.uid;
 
         // Stage 2: Poll for completion
-        onProgress?.('queued', `Queued for analysis (position ${uploadResult.data.queue_position})`);
+        // Same rule as the poll loop: 0 or a missing position means unknown (#271).
+        const initialQueuePos = uploadResult.data.queue_position;
+        onProgress?.('queued', initialQueuePos !== undefined && initialQueuePos > 0
+            ? `Queued for analysis (position ${initialQueuePos})`
+            : 'Waiting for WinDBG server...');
 
         let lastStatus = 'pending';
         let statusResult: WinDBGStatusResponse | null = null;
@@ -511,7 +725,7 @@ export async function analyzeWithWinDBG(
             // Cancelled runs stop cooperatively at the next poll boundary (the
             // poll-interval sleep is not abort-woken; ≤POLL_INTERVAL_MS of zombie
             // polling is acceptable, minutes of it is not).
-            if (signal?.aborted) {
+            if (runSignal.aborted) {
                 throw createCancelledError();
             }
             console.log(`[WinDBG] Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
@@ -522,13 +736,15 @@ export async function analyzeWithWinDBG(
             try {
                 response = await fetch(`/api/windbg/status?uid=${encodeURIComponent(uid)}${handleQuery(uid)}&_t=${cacheBuster}`, {
                     credentials: 'include',
-                    cache: 'no-store'
+                    cache: 'no-store',
+                    signal: runSignal
                 });
             } catch (error) {
+                if (runSignal.aborted) throw createCancelledError();
                 // Network blip: the upstream job keeps running, so poll again.
                 if (++consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw error;
                 console.warn(`[WinDBG] Poll network error (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES}), retrying...`, error);
-                await sleep(POLL_INTERVAL_MS);
+                await sleep(POLL_INTERVAL_MS, runSignal);
                 continue;
             }
 
@@ -536,7 +752,7 @@ export async function analyzeWithWinDBG(
 
             if (TRANSIENT_HTTP_STATUSES.has(response.status) && ++consecutiveFailures <= MAX_CONSECUTIVE_POLL_FAILURES) {
                 console.warn(`[WinDBG] Poll got HTTP ${response.status} (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES}), retrying...`);
-                await sleep(POLL_INTERVAL_MS);
+                await sleep(POLL_INTERVAL_MS, runSignal);
                 continue;
             }
 
@@ -598,7 +814,7 @@ export async function analyzeWithWinDBG(
                 throw failure;
             }
 
-            await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+            await sleep(POLL_INTERVAL_MS, runSignal);
         }
 
         if (!statusResult) {
@@ -609,11 +825,11 @@ export async function analyzeWithWinDBG(
         if (timedOut) {
             throw new Error('WinDBG analysis timed out - stopping background download');
         }
-        if (signal?.aborted) {
+        if (runSignal.aborted) {
             throw createCancelledError();
         }
         onProgress?.('downloading', 'Downloading WinDBG analysis...');
-        const downloadedAnalysis = await downloadAnalysis(uid, signal);
+        const downloadedAnalysis = await downloadAnalysis(uid, runSignal);
 
         onProgress?.('complete', 'WinDBG analysis complete');
 
@@ -654,5 +870,6 @@ export async function analyzeWithWinDBG(
         };
     } finally {
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        signal?.removeEventListener('abort', onCallerAbort);
     }
 }

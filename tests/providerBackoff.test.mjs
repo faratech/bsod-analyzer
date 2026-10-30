@@ -59,3 +59,17 @@ test('only explicit quota responses latch; rate limits pause briefly', () => {
   assert.equal(store.isExhausted('experiential-luna', NOW + 29_000), true);
   assert.equal(store.isExhausted('experiential-luna', NOW + 31_000), false, 'a pause ends long before the hour');
 });
+
+// Issue #260: an attempt the provider may have run but did not meter keeps
+// its share of the reservation's estimate.
+test('settlement keeps the estimate for each unmetered retried attempt', async () => {
+  const { settleProviderTokenReservation } = await import('../server/quotaStore.js');
+  const reservation = { allowed: true, reservedInput: 1000, reservedOutput: 2000 };
+  const once = settleProviderTokenReservation(reservation, { inputTokens: 100, outputTokens: 50 });
+  assert.equal(once.actualInput, 100);
+  const retried = settleProviderTokenReservation(reservation, { inputTokens: 100, outputTokens: 50, unmeteredAttempts: 1 });
+  assert.equal(retried.actualInput, 1100);
+  assert.equal(retried.actualOutput, 2050);
+  assert.equal(retried.inputDelta, 100);
+  assert.equal(retried.outputDelta, 50);
+});

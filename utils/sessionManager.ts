@@ -19,7 +19,23 @@ export function hasTurnstileHint(): boolean {
     .some(cookie => cookie.trim().startsWith('bsod_turnstile_verified=true'));
 }
 
+// Bumped whenever the session the client holds may have changed identity: a
+// newly minted session (Turnstile verification, forum SSO exchange) or a
+// cleared one. File handles are signed for the session that uploaded the dump,
+// so a kept WinDBG result is reusable only within one generation (#341).
+let sessionGeneration = 0;
+
+export function getSessionGeneration(): number {
+  return sessionGeneration;
+}
+
+// Call when the server answered with a new session cookie (new session id).
+export function noteNewSession(): void {
+  sessionGeneration++;
+}
+
 export function clearSessionState(notify: boolean = true): void {
+  sessionGeneration++;
   sessionInitialized = false;
   lastRefreshTime = 0;
   clearTurnstileHintCookie();

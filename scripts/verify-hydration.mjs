@@ -6,9 +6,12 @@
  *    hydration, so byte-equality means no mismatch.
  * 2. Actually runs hydrateRoot() under jsdom against the prerendered markup and
  *    fails on any React hydration error/warning.
+ * 3. Hydrates the shipped #root markup of every dist/prerendered/<route>.html
+ *    (the lazy routes) the same way, waiting for each route's chunk to load.
  *
  * Requires jsdom (install locally with: npm i --no-save jsdom).
  */
+import fs from 'fs';
 import path from 'path';
 import { pathToFileURL, fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -85,19 +88,61 @@ console.error = (...args) => {
   if (errors.length < 100) { errors.push(args.map(String).join(' ')); origError(...args); }
 };
 
-hydrateRoot(rootEl, clientApp());
-await new Promise((r) => setTimeout(r, 200)); // let effects flush
-console.error = origError;
+const isHydrationError = (e) =>
+  /hydrat|did not match|server html|mismatch|text content does not match/i.test(e);
+const onRecoverableError = (err) => { errors.push(`recoverable: ${err && err.message ? err.message : err}`); };
 
-const hydrationErrors = errors.filter((e) =>
-  /hydrat|did not match|server html|mismatch|text content does not match/i.test(e)
-);
+const homeRoot = hydrateRoot(rootEl, clientApp(), { onRecoverableError });
+await new Promise((r) => setTimeout(r, 200)); // let effects flush
+
+let hydrationErrors = errors.filter(isHydrationError);
 if (hydrationErrors.length) {
+  console.error = origError;
   hydrationErrors.forEach((e) => console.error('  • ' + e.slice(0, 200)));
   fail(`${hydrationErrors.length} hydration error(s) reported by React.`);
 }
 
 console.log('✓ hydrateRoot completed with no hydration mismatch');
+homeRoot.unmount();
+
+// --- Check 3: every prerendered inner route, from the shipped HTML ---
+// The lazy routes can't be byte-compared (the client's first render suspends),
+// so hydrate the exact #root markup the server serves and let React report any
+// mismatch while the route's chunk loads (issue #243).
+// Lazy chunks resolve outside act(); this is a real-browser-style hydration.
+setGlobal('IS_REACT_ACT_ENVIRONMENT', false);
+globalThis.fetch = async () => new Response('{}', { status: 503, headers: { 'Content-Type': 'application/json' } });
+const prerenderedDir = path.join(root, 'dist', 'prerendered');
+const files = fs.existsSync(prerenderedDir)
+  ? fs.readdirSync(prerenderedDir).filter((f) => f.endsWith('.html')).sort()
+  : [];
+if (!files.length) fail('no dist/prerendered/*.html to verify — run the prerender first.');
+for (const f of files) {
+  const route = '/' + f.replace(/\.html$/, '');
+  const shipped = new JSDOM(fs.readFileSync(path.join(prerenderedDir, f), 'utf-8'));
+  const markup = shipped.window.document.getElementById('root')?.innerHTML;
+  shipped.window.close();
+  if (!markup) fail(`${f} has no prerendered #root markup.`);
+  if (markup.includes('<!--$?-->') || markup.includes('hidden id="S:')) {
+    fail(`${f} ships an outlined Suspense boundary (Loader visible, content hidden).`);
+  }
+
+  window.history.replaceState(null, '', route);
+  rootEl.innerHTML = markup;
+  errors.length = 0;
+  const routeRoot = hydrateRoot(rootEl, clientApp(), { onRecoverableError });
+  // Wait for the lazy chunk to load and the boundary to hydrate.
+  await new Promise((r) => setTimeout(r, 500));
+  hydrationErrors = errors.filter(isHydrationError);
+  if (hydrationErrors.length) {
+    console.error = origError;
+    hydrationErrors.forEach((e) => console.error('  • ' + e.slice(0, 200)));
+    fail(`${route}: ${hydrationErrors.length} hydration error(s) reported by React.`);
+  }
+  routeRoot.unmount();
+  console.log(`✓ ${route} hydrated with no hydration mismatch`);
+}
+console.error = origError;
 console.log('✅ HYDRATION CHECK PASSED');
 // jsdom keeps timers/handles open, so force a clean exit.
 process.exit(0);

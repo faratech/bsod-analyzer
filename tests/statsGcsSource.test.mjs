@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STATS_FILES, createGcsStatsSource } from '../server/statsGcsSource.js';
+import { createStatsStore } from '../server/statsStore.js';
 
 function reader(files) {
   const reads = [];
@@ -35,11 +36,31 @@ test('load maps the exported live, baseline and insights files', async () => {
   assert.deepEqual(r.reads.sort(), Object.values(STATS_FILES).sort());
 });
 
-test('missing files degrade to empty live, no baseline and no insights', async () => {
-  const { live: l, baseline, insights } = await createGcsStatsSource({ reader: reader({}) }).load();
-  assert.equal(l.total, 0);
+test('missing baseline and insights files degrade to null', async () => {
+  const { live: l, baseline, insights } = await createGcsStatsSource({ reader: reader({
+    [STATS_FILES.live]: [{ aggregates: JSON.stringify(live) }]
+  }) }).load();
+  assert.equal(l.total, 3);
   assert.equal(baseline, null);
   assert.equal(insights, null);
+});
+
+test('a missing or empty live export is an error, never an all-zero snapshot (issue #250)', async () => {
+  await assert.rejects(createGcsStatsSource({ reader: reader({}) }).load(), error => error?.status === 404);
+  await assert.rejects(createGcsStatsSource({ reader: reader({ [STATS_FILES.live]: [] }) }).load(), /live stats export/);
+  await assert.rejects(createGcsStatsSource({ reader: reader({ [STATS_FILES.live]: [{ generated_at: 'x' }] }) }).load(), /live stats export/);
+});
+
+test('a cold instance with no live export answers null instead of memoizing zeros (issue #250)', async () => {
+  let files = {};
+  const source = createGcsStatsSource({ reader: { read: async path => reader(files).read(path) } });
+  const store = createStatsStore({ source, emit: () => {} });
+  assert.equal(await store.buildSnapshot(), null, 'the route answers 503 rather than a confident zero');
+  assert.equal(store.getSnapshot(), null, 'nothing is memoized, so the next request retries');
+
+  files = { [STATS_FILES.live]: [{ aggregates: JSON.stringify(live) }] };
+  const snapshot = await store.buildSnapshot();
+  assert.equal(snapshot.totals.analyses, 3);
 });
 
 test('a failing live file surfaces, optional files only warn', async () => {

@@ -40,7 +40,10 @@ async function optional(promise) {
 export function createGcsStatsSource({ reader, files = STATS_FILES } = {}) {
   async function load() {
     const [liveRows, baselineRows, insightRows] = await Promise.all([
-      optional(reader.read(files.live)),
+      // The live file is required: a missing export (404) rejects, so
+      // statsStore keeps serving its last good snapshot (or none, and the
+      // route answers 503) instead of memoizing an all-zero one (issue #250).
+      reader.read(files.live),
       optional(reader.read(files.baseline)).catch(error => {
         console.warn('[Stats] baseline read failed:', error?.message || error);
         return null;
@@ -51,10 +54,11 @@ export function createGcsStatsSource({ reader, files = STATS_FILES } = {}) {
       })
     ]);
     const liveAggregates = firstJsonField(liveRows, 'aggregates');
+    if (!liveAggregates) throw new Error('live stats export has no aggregates row');
     return {
       // generated_at is when the scheduled query ran: its CURRENT_DATE() is the
       // day that runs_today, last_hour and the newest daily bucket describe.
-      live: rawFromAggregates(liveAggregates || {}, { asOf: liveRows?.[0]?.generated_at }),
+      live: rawFromAggregates(liveAggregates, { asOf: liveRows?.[0]?.generated_at }),
       baseline: optionalJsonField(baselineRows, 'raw', 'baseline'),
       insights: optionalJsonField(insightRows, 'payload', 'insights')
     };

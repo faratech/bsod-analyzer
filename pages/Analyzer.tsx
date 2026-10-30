@@ -7,6 +7,7 @@ import FilePreview from '../components/FilePreview';
 import ErrorAlert from '../components/ErrorAlert';
 import AnalysisResults from '../components/AnalysisResults';
 import AnalysisProgress from '../components/AnalysisProgress';
+import AnalysisCompletionAnnouncer from '../components/AnalysisCompletionAnnouncer';
 import { AnalyzeIcon } from '../components/Icons';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
@@ -16,6 +17,7 @@ import { useFileProcessor } from '../hooks/useFileProcessor';
 import { useAnalysis } from '../hooks/useAnalysis';
 import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
+import { countBatchFiles } from '../utils/fileValidation';
 import { initializeSession, onSessionInvalid, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 
 const Analyzer: React.FC = () => {
@@ -60,8 +62,12 @@ const Analyzer: React.FC = () => {
         return unsubscribe;
     }, []);
 
+    // Files waiting for or under analysis: the 10-file cap is per batch, so
+    // finished results stay on the page without blocking new files (#370).
+    const batchFileCount = countBatchFiles(dumpFiles);
+
     const handleFilesAdded = useCallback(async (acceptedFiles: File[]) => {
-        const newDumpFiles = await processFiles(acceptedFiles, dumpFiles.length, trackFileUpload);
+        const newDumpFiles = await processFiles(acceptedFiles, batchFileCount, trackFileUpload);
         if (newDumpFiles.length > 0) {
             setFileProgress(prev => {
                 const next = { ...prev };
@@ -72,7 +78,7 @@ const Analyzer: React.FC = () => {
             });
         }
         setDumpFiles(prevFiles => addFilesToState(newDumpFiles, prevFiles));
-    }, [processFiles, addFilesToState, trackFileUpload, dumpFiles.length]);
+    }, [processFiles, addFilesToState, trackFileUpload, batchFileCount]);
     
     const handleRemoveFile = useCallback((fileId: string) => {
         setDumpFiles(prevFiles => {
@@ -82,6 +88,17 @@ const Analyzer: React.FC = () => {
                 return next;
             });
             return prevFiles.filter(file => file.id !== fileId);
+        });
+    }, []);
+
+    // Drops every analyzed or failed result. Each DumpFile carries its report
+    // and any WinDBG result kept for a retry (#331), so dropping it frees them.
+    const handleClearFinished = useCallback(() => {
+        setDumpFiles(prevFiles => {
+            const kept = prevFiles.filter(df => df.status === FileStatus.PENDING || df.status === FileStatus.ANALYZING);
+            const keptIds = new Set(kept.map(df => df.id));
+            setFileProgress(prev => Object.fromEntries(Object.entries(prev).filter(([id]) => keptIds.has(id))));
+            return kept;
         });
     }, []);
 
@@ -109,17 +126,25 @@ const Analyzer: React.FC = () => {
     };
     
     const handleRetry = useCallback((fileId: string) => {
+        // Same gate as Analyze: without the data-use terms the upload is
+        // refused with 428 after consuming rate-limit slots (#236).
+        if (!dataUseAccepted) return;
         retryFile(fileId, dumpFiles, setDumpFiles, {
             trackAnalysisStart,
             trackAnalysisComplete
         });
-    }, [dumpFiles, retryFile, trackAnalysisStart, trackAnalysisComplete]);
+    }, [dataUseAccepted, dumpFiles, retryFile, trackAnalysisStart, trackAnalysisComplete]);
 
     const pendingFilesCount = dumpFiles.filter(df => df.status === FileStatus.PENDING).length;
     // Stable identity so AnalysisResults' memo is not defeated by a fresh
     // .filter() array on every render (e.g. each upload-progress tick).
     const analyzedFiles = useMemo(
         () => dumpFiles.filter(df => df.status !== FileStatus.PENDING),
+        [dumpFiles]
+    );
+
+    const analyzedCount = useMemo(
+        () => dumpFiles.filter(df => df.status === FileStatus.ANALYZED).length,
         [dumpFiles]
     );
 
@@ -179,7 +204,7 @@ const Analyzer: React.FC = () => {
                     </div>
 
                     <div className="analyzer-upload-section">
-                        <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={dumpFiles.length} disabled={!dataUseAccepted} />
+                        <FileUploader onFilesAdded={handleFilesAdded} currentFileCount={batchFileCount} disabled={!dataUseAccepted} />
                         <DataUseAgreement accepted={dataUseAccepted} onChange={setDataUseAccepted} />
                         
                         {dumpFiles.length > 0 && (
@@ -226,6 +251,8 @@ const Analyzer: React.FC = () => {
             <div className="container">
                 {error && <ErrorAlert error={error} className="mt-2" />}
 
+                <AnalysisCompletionAnnouncer isAnalyzing={isAnalyzing} analyzedCount={analyzedCount} />
+
                 {/* Show fancy progress animation during analysis */}
                 {isAnalyzing && progress && (
                     <AnalysisProgress
@@ -239,6 +266,9 @@ const Analyzer: React.FC = () => {
                 <AnalysisResults
                     dumpFiles={analyzedFiles}
                     onRetry={handleRetry}
+                    onRemove={handleRemoveFile}
+                    onClearFinished={handleClearFinished}
+                    retryDisabled={!dataUseAccepted}
                     showAds={true}
                     AdComponent={InFeedAd}
                 />
@@ -260,18 +290,19 @@ const Analyzer: React.FC = () => {
             </div>
         </main>
         
-        {/* Sticky ad for mobile - only shows on mobile devices */}
+        {/* Sticky ad for mobile - only shows on mobile devices. Its height
+            (--sticky-ad-height) and the page padding it needs come from
+            styles.css, shown only once the slot is filled (issue #369). */}
         <div className="mobile-only">
             <SafeAd
                 type="display"
                 className="sticky-ad"
-                style={{ maxHeight: '90px' }}
                 minWidth={320}
             />
         </div>
         <div
             suppressHydrationWarning
-            style={{ textAlign: 'center', padding: '0.5rem 0', opacity: 0.3, fontSize: '0.65rem', color: 'var(--text-tertiary)' }}
+            style={{ textAlign: 'center', padding: '0.5rem 0', fontSize: '0.65rem', color: 'var(--text-tertiary)' }}
         >
             {__BUILD_VERSION__}
         </div>

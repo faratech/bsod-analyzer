@@ -132,3 +132,21 @@ test('cache-hit handles carry no job id', () => {
   assert.ok(claims);
   assert.equal(claims.jid, undefined);
 });
+
+test('file handles carry the uploaded size to the corpus row (#270)', async () => {
+  const { buildCorpusRow } = await import('../server/windbgCorpus.js');
+  const codec = createFileHandleCodec({ secret: SECRET, ttlMs: HOUR });
+  const now = Date.now();
+  const handle = codec.issue({ fileHash: HASH, jobId: 'job-42', dumpType: 'minidump', size: 524288, sessionId: SID }, now);
+  const claims = codec.verify(handle, { fileHash: HASH, sessionId: SID }, now);
+  assert.equal(claims.sz, 524288);
+
+  // The upstream job status has no file size: the handle's is the only source.
+  const job = { id: 'job-42', status: 'completed', result: {} };
+  assert.equal(buildCorpusRow(job, { fileHash: HASH, fileSizeBytes: claims.sz, dataUseTerms: 'v1', now }).file_size_bytes, 524288);
+
+  for (const size of [undefined, -1, 1.5, 'big', Infinity]) {
+    const bad = codec.verify(codec.issue({ fileHash: HASH, size, sessionId: SID }, now), { fileHash: HASH, sessionId: SID }, now);
+    assert.equal(bad.sz, undefined, String(size));
+  }
+});

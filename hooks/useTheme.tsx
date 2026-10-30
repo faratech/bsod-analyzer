@@ -47,14 +47,9 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     root.classList.remove('light', 'dark');
     root.classList.add(theme);
 
-    // Only save if different from system preference or manually set
-    try {
-      if (localStorage.getItem('theme-manually-set') === 'true') {
-        localStorage.setItem('theme', theme);
-      }
-    } catch {
-      /* localStorage unavailable (private mode) — skip persistence */
-    }
+    // Persistence happens only in toggleTheme (an explicit choice). This
+    // effect also runs for the ?theme= embed override and the system
+    // preference, neither of which may overwrite the stored theme.
 
     // Update meta theme-color
     const metaThemeColor = document.querySelector('meta[name="theme-color"]');

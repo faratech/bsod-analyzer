@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import { maybeCompressPayload } from './rawCompression.js';
+import { requestTargetPath } from './requestPath.js';
 
 const ASSET_EXT_RE = /\.(js|css|woff2|woff|ttf|otf|eot|png|jpg|jpeg|webp|svg|ico|json|xml|txt|webmanifest)$/i;
 
@@ -10,11 +11,27 @@ function pathMatches(prefix, pathname) {
   return pathname === prefix || pathname.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);
 }
 
+// The raw request target's path (issue #350): no WHATWG URL parsing, which
+// would read "//about" as a host and resolve backslashes and dot segments into
+// a path the router never sees. server/requestPath.js has the policy for
+// those shapes.
+function getRawPathname(request) {
+  return requestTargetPath(request.url);
+}
+
+// The path Fastify routes on (issue #289): find-my-way percent-decodes the URL
+// with decodeURI, which keeps reserved escapes such as %2F encoded, and it keeps
+// %25 encoded so the path is never decoded twice. Path-scoped middleware and
+// the error format must see that same path, or `/%61pi/...` reaches /api
+// handlers while skipping app.use('/api/', ...). A malformed escape keeps the
+// raw path (the router rejects those anyway).
 function getPathname(request) {
+  const raw = getRawPathname(request);
+  if (!raw.includes('%')) return raw;
   try {
-    return new URL(request.url, 'http://localhost').pathname;
+    return decodeURI(raw.replace(/%25/g, '%2525'));
   } catch {
-    return String(request.url || '').split('?')[0] || '/';
+    return raw;
   }
 }
 
@@ -83,6 +100,17 @@ function patchResponse(res, req, options = {}) {
 
   res.type = function type(value) {
     res.setHeader('Content-Type', value);
+    return res;
+  };
+
+  // Express-style redirect([status], location). Callers pass a same-origin
+  // path; the body stays empty so HEAD and GET answer alike.
+  res.redirect = function redirect(statusOrLocation, maybeLocation) {
+    const status = typeof statusOrLocation === 'number' ? statusOrLocation : 302;
+    const location = typeof statusOrLocation === 'number' ? maybeLocation : statusOrLocation;
+    res.statusCode = status;
+    res.setHeader('Location', String(location));
+    res.end();
     return res;
   };
 
@@ -200,7 +228,18 @@ function createRunner({ middlewares, errorMiddlewares, compression }) {
           try {
             const result = handler(nextErr, req, res, next);
             Promise.resolve(result).then(() => {
-              if (!settled && !isEnded(res)) resolve();
+              // Same contract as runAt (issue #177): a handler that settled
+              // without next() resolves this step, including when it ended
+              // the response itself, so the stack settles and
+              // onRequestSettled callbacks run. One still writing waits for
+              // the response to finish.
+              if (settled) return;
+              if (handler.length >= 4 && !isEnded(res)) {
+                res.once('finish', resolve);
+                res.once('close', resolve);
+                return;
+              }
+              resolve();
             }, next);
           } catch (handlerErr) {
             next(handlerErr);
@@ -323,10 +362,103 @@ export function jsonParser(options = {}) {
   };
 }
 
+// Entity tags of an If-None-Match value: "*" or a list of (W/)"..." tags.
+// Parsed as quoted strings so a comma inside a tag does not split it.
+function parseEntityTags(value) {
+  const tags = [];
+  const re = /\s*(W\/)?("[^"]*")\s*(?:,|$)/gy;
+  const raw = String(value);
+  let match;
+  while (re.lastIndex < raw.length && (match = re.exec(raw))) tags.push(match[2]);
+  return tags;
+}
+
+const HTTP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const HTTP_DAY = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)';
+const HTTP_DAY_LONG = '(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)';
+const HTTP_MONTH = `(${HTTP_MONTHS.join('|')})`;
+const HTTP_TIME = '(\\d{2}):(\\d{2}):(\\d{2})';
+// RFC 9110 5.6.7: IMF-fixdate, then the obsolete RFC 850 and asctime forms
+// (case-sensitive).
+const IMF_FIXDATE = new RegExp(`^${HTTP_DAY}, (\\d{2}) ${HTTP_MONTH} (\\d{4}) ${HTTP_TIME} GMT$`);
+const RFC850_DATE = new RegExp(`^${HTTP_DAY_LONG}, (\\d{2})-${HTTP_MONTH}-(\\d{2}) ${HTTP_TIME} GMT$`);
+const ASCTIME_DATE = new RegExp(`^${HTTP_DAY} ${HTTP_MONTH} ( \\d|\\d{2}) ${HTTP_TIME} (\\d{4})$`);
+
+/**
+ * Milliseconds since the epoch for an HTTP-date (RFC 9110 5.6.7), or null
+ * when `value` is not one: only IMF-fixdate, RFC 850 and asctime are
+ * accepted, with every field in range (Date.parse alone accepts "9999",
+ * ISO dates and more: issue #366).
+ * @param {unknown} value
+ * @returns {number | null}
+ */
+export function parseHttpDate(value) {
+  const text = String(value ?? '').trim();
+  let day;
+  let month;
+  let year;
+  let time;
+  let m;
+  if ((m = IMF_FIXDATE.exec(text))) {
+    [, day, month, year, ...time] = m;
+    year = Number(year);
+  } else if ((m = RFC850_DATE.exec(text))) {
+    [, day, month, year, ...time] = m;
+    // A two-digit year more than 50 years in the future is the most recent
+    // past year with the same last two digits.
+    const now = new Date().getUTCFullYear();
+    year = Math.floor(now / 100) * 100 + Number(year);
+    if (year > now + 50) year -= 100;
+  } else if ((m = ASCTIME_DATE.exec(text))) {
+    let rest;
+    [, month, day, ...rest] = m;
+    time = rest.slice(0, 3);
+    year = Number(rest[3]);
+  } else {
+    return null;
+  }
+  const [hour, minute, second] = time.map(Number);
+  const monthIndex = HTTP_MONTHS.indexOf(month);
+  const dayNumber = Number(day);
+  if (hour > 23 || minute > 59 || second > 60 || dayNumber < 1) return null;
+  // setUTCFullYear keeps years below 100 as written (Date.UTC maps them to
+  // 19xx); a leap second (:60) counts as :59.
+  const date = new Date(0);
+  date.setUTCFullYear(year, monthIndex, dayNumber);
+  date.setUTCHours(hour, minute, Math.min(second, 59), 0);
+  // Reject days past the end of the month (they would roll over).
+  if (date.getUTCDate() !== dayNumber) return null;
+  return date.getTime();
+}
+
+// Conditional GET/HEAD for static files (RFC 9110 13.1.2, 13.1.3, 13.2.2;
+// issue #356). If-None-Match uses weak comparison (the W/ prefix is ignored on
+// both sides), and when present If-Modified-Since is not consulted. Otherwise
+// If-Modified-Since hits when the mtime, truncated to the whole seconds that
+// Last-Modified carries, is not later than the date; invalid dates are ignored.
+export function staticNotModified(headers, etag, mtimeMs) {
+  const ifNoneMatch = headers?.['if-none-match'];
+  if (ifNoneMatch !== undefined && String(ifNoneMatch).trim() !== '') {
+    if (String(ifNoneMatch).trim() === '*') return true;
+    const opaque = String(etag).replace(/^W\//, '');
+    return parseEntityTags(ifNoneMatch).includes(opaque);
+  }
+  const ifModifiedSince = headers?.['if-modified-since'];
+  if (!ifModifiedSince) return false;
+  // RFC 9110 13.1.3: a value that is not a valid HTTP-date is ignored
+  // (Date.parse would read "9999" as the year 9999: issue #366).
+  const since = parseHttpDate(ifModifiedSince);
+  if (since === null) return false;
+  return Math.floor(Number(mtimeMs) / 1000) * 1000 <= since;
+}
+
 export function staticMiddleware(root, options = {}) {
   const base = path.resolve(root);
   const maxAge = options.maxAge === '1y' ? 31536000 : Number.parseInt(options.maxAge || '0', 10) || 0;
   const setHeaders = typeof options.setHeaders === 'function' ? options.setHeaders : null;
+  // Extensions never served from this root (checked on the resolved file, so
+  // %2F/%2E-encoded and upper-case forms are covered too).
+  const skipExtensions = new Set((options.skipExtensions || []).map(ext => String(ext).toLowerCase()));
 
   return function serveStatic(req, res, next) {
     if (!['GET', 'HEAD'].includes(req.method)) return next();
@@ -338,6 +470,7 @@ export function staticMiddleware(root, options = {}) {
     }
     const filePath = path.resolve(base, `.${pathname}`);
     if (!filePath.startsWith(`${base}${path.sep}`) && filePath !== base) return next();
+    if (skipExtensions.has(path.extname(filePath).toLowerCase())) return next();
 
     fs.stat(filePath, (statErr, stat) => {
       if (statErr || !stat.isFile()) return next();
@@ -345,8 +478,19 @@ export function staticMiddleware(root, options = {}) {
       if (!res.getHeader('Cache-Control') && maxAge > 0) {
         res.setHeader('Cache-Control', `public, max-age=${maxAge}`);
       }
+      const etag = `W/"${stat.size.toString(16)}-${Number(stat.mtimeMs).toString(16)}"`;
       res.setHeader('Last-Modified', stat.mtime.toUTCString());
-      res.setHeader('ETag', `W/"${stat.size.toString(16)}-${Number(stat.mtimeMs).toString(16)}"`);
+      res.setHeader('ETag', etag);
+      // Byte ranges are not served (issue #356); say so instead of silently
+      // answering a Range request with the whole file.
+      res.setHeader('Accept-Ranges', 'none');
+      if (staticNotModified(req.headers, etag, stat.mtimeMs)) {
+        // Same validators and Cache-Control/Vary as the 200; no body. Static
+        // files are streamed past the compression hook, so the 304 carries no
+        // Content-Encoding either.
+        res.statusCode = 304;
+        return res.end();
+      }
       if (req.method === 'HEAD') return res.end();
       const stream = fs.createReadStream(filePath);
       stream.on('error', err => {
@@ -388,10 +532,19 @@ export function createFastifyCompatApp(options = {}) {
     }
   });
 
-  fastify.removeContentTypeParser('application/json');
-  fastify.addContentTypeParser(/^application\/json\b/i, function jsonPassthrough(_request, payload, done) {
+  // No body is read before the Express-style stack (ingress gate, limiters,
+  // requireSession) has run (issue #288). JSON is parsed per route by
+  // jsonParser, multipart by @fastify/multipart's own streaming parser; every
+  // other type, including Fastify's default text/plain, is handed through as
+  // the unread stream instead of being buffered up to bodyLimit.
+  const passthrough = function passthroughBody(_request, payload, done) {
     done(null, payload);
-  });
+  };
+  fastify.removeContentTypeParser('application/json');
+  fastify.removeContentTypeParser('text/plain');
+  fastify.addContentTypeParser(/^application\/json\b/i, passthrough);
+  fastify.addContentTypeParser('*', passthrough);
+  const routeBodyLimits = options.routeBodyLimits || {};
 
   if (compression.enabled !== false) {
     fastify.addHook('onSend', async (request, reply, payload) => {
@@ -472,6 +625,11 @@ export function createFastifyCompatApp(options = {}) {
         callback?.(address);
       });
       return fastify.server;
+    },
+    // Stops accepting connections and resolves once in-flight requests have
+    // finished (server/shutdown.js drives it on SIGTERM, issue #368).
+    close() {
+      return fastify.close();
     }
   };
 
@@ -480,9 +638,11 @@ export function createFastifyCompatApp(options = {}) {
       ...middlewares,
       ...handlers.flat().filter(fn => typeof fn === 'function').map(fn => ({ path: '/', fn }))
     ];
+    const bodyLimit = routeBodyLimits[url];
     fastify.route({
       method,
       url,
+      ...(bodyLimit ? { bodyLimit } : {}),
       handler: (request, reply) => runLegacyStack(stack, request, reply)
     });
   }

@@ -1,6 +1,10 @@
 // Processing limits and constants
 export const PROCESSING_LIMITS = {
-    MAX_STRINGS_LENGTH: 65536, // 64KB of extracted strings — signal-bearing content lives in first ~32-64KB
+    // Characters of extracted dump strings in a fallback AI prompt, enforced by
+    // sanitizeExtractedContent (the only limit; issue #353). 25,000 is what has
+    // always applied: it fits the local prompt's TARGET_TOKENS budget and keeps
+    // the large-dump failover prompt (no token budget) small.
+    MAX_STRINGS_LENGTH: 25000,
     HEX_DUMP_LENGTH: 4096, // 4KB hex dump — larger dumps overwhelm the prompt with noise
     MAX_FILE_SIZE: 100 * 1024 * 1024, // 100MB
     PROCESSING_TIMEOUT: 30000, // 30 seconds

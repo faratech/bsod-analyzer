@@ -4,7 +4,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import PageLayout from '../components/PageLayout';
-import SEO from '../components/SEO';
 import { DATA_USE_TERMS_VERSION } from '../shared/dataUseTerms.js';
 
 const Privacy: React.FC = () => (
@@ -15,10 +14,6 @@ const Privacy: React.FC = () => (
     keywords="bsod analyzer privacy, crash dump data use, windbg analysis privacy"
     canonicalPath="/privacy"
   >
-    <SEO
-      title="Privacy & data use"
-      description="How BSOD AI Analyzer uses crash dumps: producing your report, improving our AI, and publishing anonymous aggregate statistics."
-    />
     <div className="privacy-page">
       <p className="privacy-lede">
         This notice covers the BSOD AI Analyzer at bsod.windowsforum.com and its API. It applies alongside the{' '}
@@ -64,10 +59,11 @@ const Privacy: React.FC = () => (
         <ul>
           <li><strong>WinDBG analysis server</strong> operated by Stack Tech, which runs the debugger on your dump.</li>
           <li><strong>Google Cloud</strong> (United States) hosts the website and stores analyses and statistics (Cloud Run, BigQuery, Cloud Storage).</li>
-          <li><strong>AI providers</strong> write the report from a structured summary of the WinDBG output: DeepSeek, Experiential Labs, OpenAI, Google (Gemini) and OpenRouter, depending on availability. The dump file itself is not sent to them.</li>
+          <li><strong>AI providers</strong> write the report: DeepSeek, Experiential Labs, OpenAI, Google (Gemini) and OpenRouter, depending on availability. Normally they receive a structured summary of the WinDBG output, not the dump file. If the WinDBG analysis is unavailable, your browser instead sends them text strings and short byte excerpts read from the dump, and that request is stored with the report. Before sending, your browser removes, from the byte excerpts as well as the text: the user folder name in Windows paths (the folder after C:\Users), the user and computer names in environment strings such as USERNAME and COMPUTERNAME, email addresses, and other whole-word occurrences of up to 128 of the names found this way (names of three or more characters, or two in scripts such as Chinese, Japanese or Korean). Names are recognized only by where they appear: a name, or part of one, that the dump shows only outside such a path, environment string or email address is not removed.</li>
           <li><strong>WindowsForum&apos;s search service</strong> (mcp.windowsforum.com) receives the stop code, its name and the faulting driver&apos;s file name to find related discussions.</li>
           <li><strong>WindowsForum&apos;s crash-signal service</strong> receives and keeps the short crash record described above for each WinDBG analysis.</li>
           <li><strong>Cloudflare</strong> provides security checks (Turnstile) and delivers the site; <strong>Google AdSense</strong> shows ads on some pages and may use cookies under Google&apos;s own policies.</li>
+          <li><strong>Google Analytics</strong> measures how the site is used: the pages you view, and on the analyzer when a dump is added (its dump type and size, never the file, its name or its contents), when an analysis starts and finishes (dump type and whether it succeeded), and clicks on the donation buttons. It sets its own cookies and identifiers under Google&apos;s policies. It loads on every page after your first interaction with a page, or after about a minute.</li>
         </ul>
       </section>
 
@@ -76,7 +72,7 @@ const Privacy: React.FC = () => (
         <ul>
           <li>The website does not store uploaded files; it passes them to the analysis server.</li>
           <li>The analysis server currently keeps uploaded dump files. It keeps its own full copy of the analysis output for about 30 days after that analysis is stored in our private dataset, then keeps only a short summary.</li>
-          <li>The stored analysis and AI report are kept in our private dataset to improve the AI. They are not public.</li>
+          <li>The stored analysis and AI report, including the request sent to the AI provider, are kept in our private dataset to improve the AI. They are not public.</li>
           <li>Server logs are kept for up to 30 days.</li>
         </ul>
       </section>

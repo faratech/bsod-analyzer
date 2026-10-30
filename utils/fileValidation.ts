@@ -1,4 +1,5 @@
 import { SECURITY_CONFIG } from '../config/security';
+import { FileStatus } from '../types';
 import {
   ARCHIVE_EXTENSIONS,
   detectArchiveType,
@@ -95,13 +96,23 @@ async function readFileHeader(file: File, bytes: number): Promise<Uint8Array> {
   });
 }
 
+// The file cap bounds one analysis batch: files waiting for or under
+// analysis. Finished and failed results stay on the page but no longer count,
+// so a visitor can keep analyzing dumps one by one (issue #370).
+export const TOO_MANY_FILES_MESSAGE =
+  `Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files can be analyzed in one batch.`;
+
+export function countBatchFiles(files: ReadonlyArray<{ status: FileStatus }>): number {
+  return files.filter(f => f.status === FileStatus.PENDING || f.status === FileStatus.ANALYZING).length;
+}
+
 export function validateFileCount(currentCount: number, newFiles: number): ValidationResult {
   const totalCount = currentCount + newFiles;
   
   if (totalCount > SECURITY_CONFIG.file.maxFileCount) {
     return {
       valid: false,
-      error: `Too many files. Maximum ${SECURITY_CONFIG.file.maxFileCount} files allowed per session.`
+      error: TOO_MANY_FILES_MESSAGE
     };
   }
   

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { DumpFile, FileStatus } from '../types';
+import { DumpFile, FileAnalysisResult, FileStatus } from '../types';
+import { applyFileResult } from '../utils/fileResult';
 import { analyzeDumpFiles } from '../services/geminiProxy';
 import { useError } from './useError';
 import { initializeSession, onSessionInvalid } from '../utils/sessionManager';
@@ -105,31 +106,14 @@ export const useAnalysis = () => {
             };
 
             // Callback to update UI immediately when each file completes
-            const onFileComplete = (result: { id: string; report?: typeof filesToAnalyze[0]['report']; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => {
+            const onFileComplete = (result: FileAnalysisResult) => {
                 if (runIdRef.current !== runId) return;
                 onUpdate(prevFiles =>
                     prevFiles.map(df => {
-                        if (df.id === result.id) {
-                            if (result.report) {
-                                // Track successful analysis
-                                if (analytics?.trackAnalysisComplete) {
-                                    analytics.trackAnalysisComplete(true, df.dumpType);
-                                }
-                                return {
-                                    ...df,
-                                    status: FileStatus.ANALYZED,
-                                    report: result.report,
-                                    cached: result.cached || false,
-                                    analysisMethod: result.analysisMethod
-                                };
-                            }
-                            // Track failed analysis
-                            if (analytics?.trackAnalysisComplete) {
-                                analytics.trackAnalysisComplete(false, df.dumpType);
-                            }
-                            return { ...df, status: FileStatus.ERROR, error: result.error || 'Unknown analysis error' };
-                        }
-                        return df;
+                        if (df.id !== result.id) return df;
+                        // Track the analysis outcome
+                        analytics?.trackAnalysisComplete?.(Boolean(result.report), df.dumpType);
+                        return applyFileResult(df, result);
                     })
                 );
             };
@@ -240,34 +224,22 @@ export const useAnalysis = () => {
                 setProgress(prev => prev ? { ...prev, percentage: percent } : null);
             };
 
-            const onFileComplete = (result: { id: string; report?: typeof fileToRetry['report']; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => {
+            const onFileComplete = (result: FileAnalysisResult) => {
                 if (runIdRef.current !== runId) return;
                 onUpdate(prevFiles =>
                     prevFiles.map(df => {
-                        if (df.id === result.id) {
-                            if (result.report) {
-                                if (analytics?.trackAnalysisComplete) {
-                                    analytics.trackAnalysisComplete(true, df.dumpType);
-                                }
-                                return {
-                                    ...df,
-                                    status: FileStatus.ANALYZED,
-                                    report: result.report,
-                                    cached: result.cached || false,
-                                    analysisMethod: result.analysisMethod
-                                };
-                            }
-                            if (analytics?.trackAnalysisComplete) {
-                                analytics.trackAnalysisComplete(false, df.dumpType);
-                            }
-                            return { ...df, status: FileStatus.ERROR, error: result.error || 'Unknown analysis error' };
-                        }
-                        return df;
+                        if (df.id !== result.id) return df;
+                        analytics?.trackAnalysisComplete?.(Boolean(result.report), df.dumpType);
+                        // Keeps or drops the WinDBG result kept after an AI-only
+                        // failure (issue #331).
+                        return applyFileResult(df, result);
                     })
                 );
             };
 
-            // Re-analyze just this one file
+            // Re-analyze just this one file. A WinDBG result kept after an
+            // AI-only failure (fileToRetry.windbgResult) makes this run only
+            // the AI step, with no upload (issue #331).
             const retryDumpFile = { ...fileToRetry, status: FileStatus.PENDING };
             await analyzeDumpFiles([retryDumpFile], onProgress, onFileComplete, onUploadProgress, {
                 signal: abortController.signal

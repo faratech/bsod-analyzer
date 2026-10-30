@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import * as acorn from 'acorn';
+import { routeMiddleware, topLevelInit } from './helpers/serverAst.mjs';
 
 import {
   QUOTA_ADJUST_SCRIPT,
@@ -19,7 +17,7 @@ import { createSessionQuotaStore } from '../server/quotaStore.js';
 // In-memory stand-in for the dedicated Upstash database: implements exactly the
 // four scripts server/sharedCounters.js sends, against a controllable clock.
 function createFakeUpstash(clock) {
-  const values = new Map(); // key -> { n, expiresAt }
+  const values = new Map(); // key -> { n, expiresAt } (n is a string for window ids)
   const calls = [];
   const live = key => {
     const entry = values.get(key);
@@ -58,28 +56,37 @@ function createFakeUpstash(clock) {
       const a = args.map(Number);
       switch (script) {
         case QUOTA_RESERVE_SCRIPT: {
-          const [req, tok] = keys;
+          const [req, tok, ref, win] = keys;
           if (get(req) + a[0] > a[2]) return [0, 1, get(req), get(tok), ttlSeconds(req)];
           if (get(tok) + a[1] > a[3]) return [0, 2, get(req), get(tok), ttlSeconds(tok)];
+          const opening = !live(req);
           incrby(req, a[0]);
           incrby(tok, a[1]);
           for (const key of [req, tok]) if (ttlSeconds(key) < 1) expireMs(key, a[4] * 1000);
-          return [1, 0, get(req), get(tok), ttlSeconds(req)];
+          if (opening || !live(win)) {
+            if (opening) values.delete(ref);
+            values.set(win, { n: args[5], expiresAt: null });
+          }
+          expireMs(win, ttlMs(req));
+          return [1, 0, get(req), get(tok), ttlSeconds(req), live(win).n];
         }
         case QUOTA_ADJUST_SCRIPT: {
-          keys.forEach((key, i) => {
+          if (live(keys[2])?.n !== args[2]) return 0;
+          keys.slice(0, 2).forEach((key, i) => {
             if (a[i] !== 0 && live(key)) incrby(key, Math.max(-get(key), a[i]));
           });
           return 1;
         }
         case QUOTA_REFUND_SCRIPT: {
-          const [req, tok, ref] = keys;
+          const [req, tok, ref, win] = keys;
+          if (live(win)?.n !== args[4]) return [0, 0];
           const refunded = get(ref);
           if (refunded >= a[2]) return [0, refunded];
           incrby(ref, 1);
           if (get(req) > 0) incrby(req, -Math.min(get(req), a[0]));
           if (get(tok) > 0) incrby(tok, -Math.min(get(tok), a[1]));
-          for (const key of keys) if (ttlSeconds(key) < 1) expireMs(key, a[3] * 1000);
+          const left = ttlMs(win);
+          for (const key of [req, tok, ref]) if (ttlSeconds(key) < 1) expireMs(key, left > 0 ? left : a[3] * 1000);
           return [1, refunded + 1];
         }
         case RATE_LIMIT_SCRIPT: {
@@ -239,7 +246,7 @@ test('commit and refund settle on the backend that admitted each scope', async (
   assert.equal((await a.ledger.refund(reservation, refundArgs)).refunded, false, 'the refund cap is shared too');
   next = await a.ledger.reserve([scope('s', 5, 1000)], { ...QUOTA, tokenCost: 0 });
   assert.equal(next.requests, 2);
-  assert.equal(next.tokens, 50);
+  assert.equal(next.tokens, 0, 'the refund returns the estimate plus the committed delta (issue #199)');
 
   // A reservation admitted locally (store down at the time) settles locally.
   const local = createSessionQuotaStore();
@@ -275,6 +282,73 @@ test('a shared-admitted reservation never settles on the local store when shared
   assert.equal(snap.requests, 1, 'local requests untouched by shared-scope refund');
 });
 
+test('settlement after the window rolled over leaves the new window alone (issue #253)', async () => {
+  for (const sharedBackend of [true, false]) {
+    const clock = { now: 1_000_000 };
+    const client = createFakeUpstash(clock);
+    const store = createSharedCounterStore({ client: sharedBackend ? client : null, now: () => clock.now });
+    const raw = createSessionQuotaStore();
+    // Drive the per-instance store on the same controllable clock.
+    const local = {
+      reserve: (key, args) => raw.reserve(key, { ...args, now: clock.now }),
+      commit: (key, args) => raw.commit(key, { ...args, now: clock.now }),
+      refund: (key, args) => raw.refund(key, { ...args, now: clock.now }),
+      release: (key, args) => raw.release(key, { ...args, now: clock.now }),
+      prune: () => raw.prune(clock.now)
+    };
+    const ledger = createQuotaLedger({ shared: store, local });
+    const label = `shared=${sharedBackend}`;
+
+    const slow = await ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, tokenCost: 100 });
+    assert.equal(slow.allowed, true);
+    assert.equal(slow.shared, sharedBackend, label);
+
+    // The slow request outlives its window; another request opens the next one.
+    clock.now += 3600 * 1000 + 1;
+    const fresh = await ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, tokenCost: 100 });
+    assert.equal(fresh.allowed, true);
+
+    await ledger.commit(slow, { tokenDelta: 400 });
+    const refundArgs = { requestCost: 1, tokenCost: 100, refundCap: 1, windowSeconds: 3600 };
+    assert.equal((await ledger.refund(slow, refundArgs)).refunded, false, `${label}: a late refund is not applied`);
+
+    let snap = await ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, requestCost: 0, tokenCost: 0 });
+    assert.equal(snap.requests, 1, `${label}: the new window keeps its request count`);
+    assert.equal(snap.tokens, 100, `${label}: the new window keeps its token count`);
+
+    // The new window's refund allowance is intact and its own settlement applies.
+    assert.equal((await ledger.refund(fresh, refundArgs)).refunded, true, `${label}: refund cap not consumed by the late refund`);
+    const third = await ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, tokenCost: 100 });
+    await ledger.commit(third, { tokenDelta: 25 });
+    snap = await ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, requestCost: 0, tokenCost: 0 });
+    assert.equal(snap.tokens, 125, `${label}: same-window settlement still applies`);
+  }
+});
+
+test('a refund after commit returns everything the reservation was charged (issue #199)', async () => {
+  for (const sharedBackend of [true, false]) {
+    const { a } = instancePair({ shared: sharedBackend });
+    const label = `shared=${sharedBackend}`;
+    // generateContent: reserve the input estimate, settle to the provider's
+    // actual usage, then refund when the report fails validation.
+    const reservation = await a.ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, tokenCost: 100 });
+    await a.ledger.commit(reservation, { tokenDelta: 50 });
+    const refunded = await a.ledger.refund(reservation, { requestCost: 1, tokenCost: 100, refundCap: 5, windowSeconds: 3600 });
+    assert.equal(refunded.refunded, true, label);
+    const snap = await a.ledger.reserve([scope('s', 5, 10_000)], { ...QUOTA, requestCost: 0, tokenCost: 0 });
+    assert.equal(snap.requests, 0, `${label}: the request is returned`);
+    assert.equal(snap.tokens, 0, `${label}: the committed delta is returned with the estimate`);
+
+    // A downward settlement is honoured too: only what is still charged returns.
+    const other = await a.ledger.reserve([scope('t', 5, 10_000)], { ...QUOTA, tokenCost: 100 });
+    await a.ledger.reserve([scope('t', 5, 10_000)], { ...QUOTA, tokenCost: 30 });
+    await a.ledger.commit(other, { tokenDelta: -60 });
+    await a.ledger.refund(other, { requestCost: 1, tokenCost: 100, refundCap: 5, windowSeconds: 3600 });
+    const left = await a.ledger.reserve([scope('t', 5, 10_000)], { ...QUOTA, requestCost: 0, tokenCost: 0 });
+    assert.equal(left.tokens, 30, `${label}: the other request's tokens stay charged`);
+  }
+});
+
 test('the store is configured only by the dedicated quota variables', () => {
   assert.equal(createSharedCounterStoreFromEnv({}).configured, false);
   assert.equal(createSharedCounterStoreFromEnv({
@@ -288,27 +362,6 @@ test('the store is configured only by the dedicated quota variables', () => {
 });
 
 // server.js has no unit tests; pin its wiring the way tests/aiHandlerScope.test.mjs does.
-const SERVER = fileURLToPath(new URL('../server.js', import.meta.url));
-const serverAst = acorn.parse(readFileSync(SERVER, 'utf8'), { ecmaVersion: 'latest', sourceType: 'module' });
-
-function topLevelInit(name) {
-  for (const statement of serverAst.body) {
-    if (statement.type !== 'VariableDeclaration') continue;
-    const declarator = statement.declarations.find(node => node.id.name === name);
-    if (declarator) return declarator.init;
-  }
-  return null;
-}
-
-function routeMiddleware(method, path) {
-  for (const statement of serverAst.body) {
-    const call = statement.expression;
-    if (call?.type !== 'CallExpression' || call.callee.property?.name !== method) continue;
-    if (call.arguments[0]?.value !== path) continue;
-    return call.arguments.slice(1, -1).map(arg => arg.type === 'Identifier' ? arg.name : arg.callee?.name || arg.callee?.property?.name);
-  }
-  return null;
-}
 
 test('server.js counts the cost-bearing limiters in the shared store', () => {
   for (const name of ['geminiLimiter', 'windbgUploadLimiter', 'archiveLimiter', 'externalAnalyzeSubmitLimiter',
@@ -321,7 +374,9 @@ test('server.js keeps the provider budget split opt-in until that budget is shar
   // The quota store does not hold provider budgets, so binding it must not
   // change them; 1/MAX_INSTANCES shares are opt-in via PROVIDER_QUOTA_SHARDS.
   const shards = topLevelInit('PROVIDER_QUOTA_SHARDS');
-  assert.equal(shards?.arguments?.[0]?.object?.object?.name, 'process');
+  // readPositiveInt('PROVIDER_QUOTA_SHARDS', 2): read from the environment (#292).
+  assert.equal(shards?.callee?.name, 'readPositiveInt');
+  assert.equal(shards?.arguments?.[0]?.value, 'PROVIDER_QUOTA_SHARDS');
   assert.equal(shards?.arguments?.[1]?.value, 2);
   assert.equal(topLevelInit('MAX_INSTANCES')?.arguments?.[1]?.value, 10);
 });

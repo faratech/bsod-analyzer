@@ -6,10 +6,15 @@ import {
   extractRelevantWinDbgSignalText,
   extractWinDbgAnalysisText,
   extractWinDbgAnalysisPackage,
+  getWinDbgJob,
+  isTransientUpstreamStatus,
   mapWinDbgJobStatus,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
-  toLegacyWinDbgStatusResponse
+  toLegacyWinDbgStatusResponse,
+  WINDBG_JOB_ERROR_GENERIC_MESSAGE,
+  WINDBG_JOB_ERROR_MESSAGES,
+  winDbgJobErrorLogFields
 } from '../shared/windbgApiClient.js';
 
 // A minimal `!analyze -v` body with the fields the extractor cares about.
@@ -103,7 +108,7 @@ test('WinDBG submit retries only failures that guarantee no job was created', as
 test('WinDBG submit does not retry ambiguous gateway failures (issue #140)', async () => {
   // These can arrive after the origin accepted the upload; with no
   // idempotency key a retry would queue a second job for the same dump.
-  for (const status of [502, 503, 504, 520, 522, 524, 525]) {
+  for (const status of [502, 503, 504, 520, 522, 524, 530]) {
     const { calls, run } = submitWith([failing(status), accepted]);
     await assert.rejects(run(), error => error?.code === 'WINDBG_UPSTREAM_ERROR' && error?.upstreamStatus === status);
     assert.equal(calls.length, 1, `status ${status} must not be retried`);
@@ -114,6 +119,68 @@ test('WinDBG submit does not retry ambiguous gateway failures (issue #140)', asy
   const { calls, run } = submitWith([reset, accepted]);
   await assert.rejects(run());
   assert.equal(calls.length, 1, 'a reset mid-request is ambiguous too');
+});
+
+// Issue #340: a 429 for an exhausted per-key quota (or with a long
+// Retry-After) cannot clear before the re-POST, so it is not re-sent.
+const tooMany = (body, headers = {}) => () => new Response(
+  typeof body === 'string' ? body : JSON.stringify(body),
+  { status: 429, headers: { 'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json', ...headers } }
+);
+
+test('WinDBG submit does not re-POST a 429 that cannot clear within seconds (#340)', async () => {
+  const cases = [
+    tooMany('Rate limit exceeded for this API key'),
+    tooMany({ message: 'Rate limit exceeded for this API key' }),
+    tooMany({ message: 'Too many requests', error_code: 'RATE_LIMITED' }),
+    tooMany({ message: 'Queue full', code: 'QUEUE_FULL' }, { 'Retry-After': '60' }),
+    tooMany('<html>upstream</html>', { 'Retry-After': '120' })
+  ];
+  for (const first of cases) {
+    const { calls, run } = submitWith([first, accepted]);
+    await assert.rejects(run(), error => error?.upstreamStatus === 429);
+    assert.equal(calls.length, 1);
+  }
+  const { run } = submitWith([tooMany({ message: 'nope', error_code: 'RATE_LIMITED' })]);
+  await assert.rejects(run(), error => error?.upstreamCode === 'RATE_LIMITED');
+});
+
+test('WinDBG submit re-POSTs a queue-full 429 and waits its short Retry-After (#340)', async () => {
+  for (const first of [tooMany({ message: 'Queue full', code: 'QUEUE_FULL' }), tooMany({ message: 'Queue full' })]) {
+    const { calls, run } = submitWith([first, accepted]);
+    assert.equal((await run()).job_id, 'WF-retry-123');
+    assert.equal(calls.length, 2);
+  }
+  const { calls, run } = submitWith([tooMany({ message: 'Queue full', error_code: 'QUEUE_FULL' }, { 'Retry-After': '2' }), accepted]);
+  const started = Date.now();
+  assert.equal((await run()).job_id, 'WF-retry-123');
+  assert.equal(calls.length, 2);
+  assert.ok(Date.now() - started >= 1900, `waited ${Date.now() - started} ms`);
+});
+
+// Issue #335: Cloudflare's 521/523/525/526 mean the request never reached
+// WinDbg-API, so a re-POST cannot queue a second job.
+test('WinDBG submit retries Cloudflare origin-not-reached statuses once (#335)', async () => {
+  for (const status of [521, 523, 525, 526]) {
+    const { calls, run } = submitWith([failing(status), accepted]);
+    const result = await run();
+    assert.equal(result.job_id, 'WF-retry-123', `status ${status}`);
+    assert.equal(calls.length, 2, `status ${status}`);
+  }
+});
+
+test('WinDBG status poll retries every Cloudflare origin-not-reached status (#335)', async () => {
+  for (const status of [520, 521, 522, 523, 524, 525, 526]) {
+    assert.equal(isTransientUpstreamStatus(status), true, `status ${status}`);
+  }
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    return calls < 3 ? failing(521)() : new Response(JSON.stringify({ job_id: 'WF-1', status: 'queued' }), { status: 200 });
+  };
+  const job = await getWinDbgJob({ baseUrl: 'https://x', apiKey: 'k', jobId: 'WF-1', fetchImpl });
+  assert.equal(job.job_id, 'WF-1');
+  assert.equal(calls, 3);
 });
 
 test('WinDBG submit can disable retries for a non-idempotent durable handoff', async () => {
@@ -445,13 +512,132 @@ test('unknown upstream status maps to pending but exposes raw_status', () => {
   assert.equal(res.data.raw_status, 'some_new_state');
 });
 
-test('cancelled status maps to failed and surfaces error + category', () => {
+test('cancelled status maps to failed and surfaces a fixed message + category', () => {
   assert.equal(mapWinDbgJobStatus('cancelled'), 'failed');
   const res = toLegacyWinDbgStatusResponse(
     { status: 'failed', error: 'cdb.exe exited with code 1', error_category: 'cdb' },
     'abc12345'
   );
   assert.equal(res.data.status, 'failed');
-  assert.equal(res.data.error_message, 'cdb.exe exited with code 1');
+  assert.equal(res.data.error_message, WINDBG_JOB_ERROR_MESSAGES.cdb);
   assert.equal(res.data.error_category, 'cdb');
+});
+
+test('failed job status never forwards the raw upstream job.error text (#293)', () => {
+  const raw = 'C:\\symbols\\ntkrnlmp.pdb\\ABC\\ntkrnlmp.pdb: E_FAIL loading D:\\WinDbgApi\\ext\\foo.dll';
+  for (const category of ['cdb', 'storage', 'worker', 'timeout', 'upload', 'watchdog', 'something_new', undefined]) {
+    const res = toLegacyWinDbgStatusResponse(
+      { status: 'failed', error: raw, error_category: category },
+      'abc12345'
+    );
+    const body = JSON.stringify(res);
+    assert.ok(!body.includes('ntkrnlmp'), `raw error leaked for category ${category}`);
+    assert.ok(!body.includes('WinDbgApi'), `raw error leaked for category ${category}`);
+    assert.equal(typeof res.data.error_message, 'string');
+    assert.ok(res.data.error_message.length > 0);
+    assert.equal(res.data.error_category, category);
+  }
+  assert.equal(
+    toLegacyWinDbgStatusResponse({ status: 'failed', error: raw, error_category: 'storage' }, 'abc12345').data.error_message,
+    WINDBG_JOB_ERROR_MESSAGES.storage
+  );
+  assert.equal(
+    toLegacyWinDbgStatusResponse({ status: 'failed', error: raw, error_category: 'nope' }, 'abc12345').data.error_message,
+    WINDBG_JOB_ERROR_GENERIC_MESSAGE
+  );
+  // A failed job with no upstream error text still gets the fixed message;
+  // a running job without an error carries none.
+  assert.equal(
+    toLegacyWinDbgStatusResponse({ status: 'timed_out', error_category: 'timeout' }, 'abc12345').data.error_message,
+    WINDBG_JOB_ERROR_MESSAGES.timeout
+  );
+  assert.equal(toLegacyWinDbgStatusResponse({ status: 'running' }, 'abc12345').data.error_message, undefined);
+});
+
+test('winDbgJobErrorLogFields bounds the raw upstream job error for server logs', () => {
+  const fields = winDbgJobErrorLogFields({ id: 'job-1', status: 'failed', error: 'x'.repeat(5000), error_category: 'cdb' });
+  assert.equal(fields.jobId, 'job-1');
+  assert.equal(fields.errorCategory, 'cdb');
+  assert.equal(fields.error.length, 500);
+  assert.equal(winDbgJobErrorLogFields({ status: 'complete' }), null);
+});
+
+test('local signal keeps only the kv call site and selects module+offset stack modules', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: {
+      sections: { STEP_03_analyze_v: ANALYZE_V },
+      parsed: {
+        stack_frames: [
+          { sp: 'ffff8a0c`5c2f6f48', ret_addr: 'fffff803`63a2b5a9', symbol: ': 00000000`0000000a 00000000`00000010 00000000`00000002 00000000`00000000 : nt!KeBugCheckEx' },
+          { sp: 'ffff8a0c`5c2f7090', ret_addr: 'fffff803`6b1a1234', symbol: ': 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : xyzfilt+0x1a1234' }
+        ],
+        modules: [
+          { name: 'nt', status: 'pdb symbols' },
+          { name: 'xyzfilt', status: 'deferred' },
+          { name: 'unrelated', status: 'deferred' }
+        ]
+      }
+    }
+  });
+  assert.deepEqual(signal.stackFrames.map(frame => frame.symbol), ['nt!KeBugCheckEx', 'xyzfilt+0x1a1234']);
+  assert.ok(signal.notableModules.some(module => module.name === 'xyzfilt'));
+  assert.ok(!signal.notableModules.some(module => module.name === 'unrelated'));
+});
+
+test('server ai_signal kv-style stack frames are normalised to the call site', () => {
+  const signal = extractRelevantWinDbgSignal({
+    result: {
+      ai_signal: {
+        schema: 'windbg_crash_signal_v1',
+        bugcheck: { code: '0xD1' },
+        stackFrames: [
+          { sp: 'ffff8a0c`5c2f6f50', ret_addr: 'fffff803`63a26f83', symbol: ': ffffcb00`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiBugCheckDispatch+0x69' }
+        ]
+      }
+    }
+  });
+  assert.deepEqual(signal.stackFrames, [
+    { sp: 'ffff8a0c`5c2f6f50', ret_addr: 'fffff803`63a26f83', symbol: 'nt!KiBugCheckDispatch+0x69' }
+  ]);
+});
+
+test('server ai_signal is merged over the local extraction so client-only keys survive', async () => {
+  const { readFile } = await import('node:fs/promises');
+  // Real WinDbg-API job result (C# CrashSignalBuilder ai_signal + sections + parsed).
+  const result = JSON.parse(await readFile(new URL('./fixtures/windbgJobResultD1.json', import.meta.url), 'utf8'));
+  result.sections.STEP_03_analyze_v += [
+    '',
+    'STACK_COMMAND:  .cxr; .ecxr ; kb',
+    '',
+    'FAILURE_ID_HASH:  {9a3c1f2e-0000-4d2b-8c6a-1234567890ab}',
+    '',
+    '    Key  : Analysis.CPU.mSec',
+    '    Value: 1234'
+  ].join('\n');
+  result.ai_signal.bugcheck.name = 'SERVER_NAME_WINS';
+  result.ai_signal.crash.processName = 'ServerProcess';
+
+  const signal = extractRelevantWinDbgSignal({ result });
+
+  // Server values win where both sides have them.
+  assert.equal(signal.bugcheck.code, '0xD1');
+  assert.equal(signal.bugcheck.name, 'SERVER_NAME_WINS');
+  assert.deepEqual(signal.bugcheck.parameters, ['10', '2', '0', 'fffff8036b1a1234']);
+  assert.equal(signal.crash.processName, 'ServerProcess');
+  assert.equal(signal.crash.failureBucketId, 'AV_nvlddmkm!unknown_function');
+  assert.equal(signal.stackFrames.length, 3);
+  assert.equal(signal.target.os_version, 'Windows 10 Kernel Version 22621');
+
+  // Keys the server signal omits come from the local extraction.
+  assert.match(signal.bugcheck.description, /pageable \(or completely invalid\) address/);
+  assert.deepEqual(signal.bugcheck.keyValues, { 'Analysis.CPU.mSec': '1234' });
+  assert.equal(signal.crash.readAddress, '0000000000000010');
+  assert.equal(signal.crash.stackCommand, '.cxr; .ecxr ; kb');
+  assert.equal(signal.crash.failureHash, '{9a3c1f2e-0000-4d2b-8c6a-1234567890ab}');
+  assert.deepEqual(signal.blackboxes, ['BLACKBOXNTFS']);
+  const nvlddmkm = signal.notableModules.find(module => module.name === 'nvlddmkm');
+  assert.equal(nvlddmkm?.details?.fileVersion, '31.0.15.5222');
+
+  const pkg = extractWinDbgAnalysisPackage({ result });
+  assert.match(pkg.analysisSignalText, /notableModules/);
 });

@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import { transform } from 'rolldown/experimental';
+import { rolldown } from 'rolldown';
 
-// services/wfAuth.ts only has a type import, so a single-file transform loads it.
+// services/wfAuth.ts imports utils/sessionManager.ts (a successful exchange
+// marks a new session, issue #341), so bundle it with its imports.
 async function loadWfAuth() {
-  const source = await fs.readFile(new URL('../services/wfAuth.ts', import.meta.url), 'utf8');
-  const result = await transform('wfAuth.ts', source);
-  if (result.errors?.length) throw new Error(`Failed to transform wfAuth.ts: ${result.errors[0]}`);
-  return import(`data:text/javascript;base64,${Buffer.from(result.code, 'utf8').toString('base64')}`);
+  const bundle = await rolldown({ input: new URL('../services/wfAuth.ts', import.meta.url).pathname, logLevel: 'silent' });
+  const { output } = await bundle.generate({ format: 'esm' });
+  return import(`data:text/javascript;base64,${Buffer.from(output[0].code, 'utf8').toString('base64')}`);
 }
 
 function memoryStorage() {
@@ -94,4 +93,43 @@ test('the guest answer (#wf_sso_anon=1) is bound to the state too', () => {
   const { state } = startSignIn(win);
   win.location.hash = `#wf_sso_anon=1&wf_sso_state=${state}`;
   assert.deepEqual(wfAuth.consumeCallbackToken(), { anon: true });
+});
+
+// Issue #354: the server keeps the session id when an exchange re-verifies
+// this session's own user, and says so; only a new id bumps the generation
+// that guards kept WinDBG results (#341).
+test('an exchange that kept the session id does not bump the session generation; any other does (#354)', async t => {
+  const root = new URL('..', import.meta.url).pathname;
+  const bundle = await rolldown({
+    input: 'entry',
+    logLevel: 'silent',
+    plugins: [{
+      name: 'entry',
+      resolveId: id => (id === 'entry' ? id : null),
+      load: id => (id === 'entry'
+        ? `export { exchangeToken } from '${root}services/wfAuth.ts'; export { getSessionGeneration } from '${root}utils/sessionManager.ts';`
+        : null)
+    }]
+  });
+  const { output } = await bundle.generate({ format: 'esm' });
+  const { exchangeToken, getSessionGeneration } = await import(`data:text/javascript;base64,${Buffer.from(output[0].code, 'utf8').toString('base64')}`);
+  installWindow();
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  let answer;
+  globalThis.fetch = async () => new Response(JSON.stringify(answer), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const user = { userId: 42, username: 'user42', avatar: '', tier: 'premium', isPremium: true };
+
+  const start = getSessionGeneration();
+  answer = { success: true, sessionKept: true, tier: 'premium', user };
+  assert.deepEqual(await exchangeToken(TOKEN), user);
+  assert.equal(getSessionGeneration(), start, 'same session id: kept results stay usable');
+
+  answer = { success: true, sessionKept: false, tier: 'premium', user };
+  await exchangeToken(TOKEN);
+  assert.equal(getSessionGeneration(), start + 1);
+
+  answer = { success: true, tier: 'premium', user }; // an older server: always a new id
+  await exchangeToken(TOKEN);
+  assert.equal(getSessionGeneration(), start + 2);
 });

@@ -57,6 +57,35 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         relatedDrivers: ['ndis.sys', 'tcpip.sys', 'netio.sys']
     },
 
+    0x0000003B: {
+        bugCheckCode: 0x0000003B,
+        name: 'SYSTEM_SERVICE_EXCEPTION',
+        parameters: {
+            param1: { name: 'Exception Code', description: 'The exception that was not handled (e.g., 0xC0000005 for access violation)' },
+            param2: { name: 'Exception Address', description: 'Address of the instruction that caused the exception' },
+            param3: { name: 'Context Record', description: 'Address of the context record for the exception' },
+            param4: { name: 'Reserved', description: 'Always 0' }
+        },
+        commonCauses: [
+            'Driver or system service passing a bad pointer across the user/kernel transition',
+            'Faulty or outdated third-party driver (graphics, antivirus, VPN, peripheral software)',
+            'Corrupted system files',
+            'Memory corruption from hardware faults or overclocking'
+        ],
+        diagnosticSteps: [
+            'Decode Param1 (exception code) - 0xC0000005 is an access violation',
+            'Resolve Param2 to the module containing the faulting instruction',
+            'Use .cxr with Param3 to switch to the exception context and inspect the stack',
+            'Check whether the faulting module is a recently installed or updated driver'
+        ],
+        immediateActions: [
+            'Update or remove the driver that owns the faulting address',
+            'Run sfc /scannow and DISM /Online /Cleanup-Image /RestoreHealth',
+            'Test memory with Windows Memory Diagnostic',
+            'Remove overclocking and update BIOS/firmware'
+        ]
+    },
+
     0x0000001E: {
         bugCheckCode: 0x0000001E,
         name: 'KMODE_EXCEPTION_NOT_HANDLED',
@@ -102,9 +131,9 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         name: 'PAGE_FAULT_IN_NONPAGED_AREA',
         parameters: {
             param1: { name: 'Memory Referenced', description: 'Virtual address that caused the fault' },
-            param2: { name: 'Access Type', description: '0=Read, 1=Write, 2=Execute, 10=Execute (DEP)' },
-            param3: { name: 'Faulting Address', description: 'Address of instruction that caused fault' },
-            param4: { name: 'Reserved', description: 'Reserved for future use' }
+            param2: { name: 'Access Type', description: 'x64/x86 since Windows 10 1507: 0=Read, 2=Write, 0x10=Execute; Arm: 0=Read, 1=Write, 8=Execute; before 1507: 0=Read, 1=Write' },
+            param3: { name: 'Faulting Address', description: 'Address of instruction that referenced the memory (if known)' },
+            param4: { name: 'Page Fault Type', description: 'Type of page fault: 0x0 freed PTE, 0x2 not-present page table, 0x3 wrong session, 0x4 non-canonical VA, 0xF user VA access inconsistent' }
         },
         commonCauses: [
             'Faulty RAM or other hardware issues',
@@ -166,10 +195,10 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         bugCheckCode: 0x00000124,
         name: 'WHEA_UNCORRECTABLE_ERROR',
         parameters: {
-            param1: { name: 'MCE Bank Number', description: 'Machine Check Exception bank or error source' },
+            param1: { name: 'Error Source Type', description: 'Type of error source that reported the error (0x0 = machine check exception)' },
             param2: { name: 'Error Record Address', description: 'Address of WHEA_ERROR_RECORD structure' },
-            param3: { name: 'MCi_STATUS High', description: 'High 32 bits of MCi_STATUS MSR' },
-            param4: { name: 'MCi_STATUS Low', description: 'Low 32 bits of MCi_STATUS MSR' }
+            param3: { name: 'MCi_STATUS High', description: 'High 32 bits of MCi_STATUS MSR for the MCA bank that had the error when Arg1 = 0; reserved otherwise' },
+            param4: { name: 'MCi_STATUS Low', description: 'Low 32 bits of MCi_STATUS MSR for the MCA bank that had the error when Arg1 = 0; reserved otherwise' }
         },
         commonCauses: [
             'CPU hardware errors or overheating',
@@ -201,9 +230,9 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         name: 'KERNEL_SECURITY_CHECK_FAILURE',
         parameters: {
             param1: { name: 'Security Check Type', description: 'Type of corruption detected' },
-            param2: { name: 'Failure Address', description: 'Address of corruption or security check' },
-            param3: { name: 'Expected Value', description: 'Expected security cookie or value' },
-            param4: { name: 'Context', description: 'Additional context information' }
+            param2: { name: 'Trap Frame', description: 'Address of the trap frame for the exception that caused the bug check' },
+            param3: { name: 'Exception Record', description: 'Address of the exception record for the exception that caused the bug check' },
+            param4: { name: 'Reserved', description: 'Reserved' }
         },
         commonCauses: [
             'Stack buffer overflow detected',
@@ -265,10 +294,10 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         bugCheckCode: 0x00000133,
         name: 'DPC_WATCHDOG_VIOLATION',
         parameters: {
-            param1: { name: 'DPC Time Count', description: '0=Single DPC exceeded limit, 1=System cumulative limit' },
-            param2: { name: 'Time Limit', description: 'DPC time limit in ticks' },
-            param3: { name: 'Cast to nt!DPC_WATCHDOG_GLOBAL_TRIAGE_BLOCK', description: 'Pointer to triage block' },
-            param4: { name: 'Reserved', description: 'Reserved' }
+            param1: { name: 'Violation Type', description: 'Type of violation: 0=a single DPC or ISR exceeded its time allotment, 1=the system cumulatively spent too long at DISPATCH_LEVEL or above' },
+            param2: { name: 'Time Count / Watchdog Period', description: 'Arg1 = 0: DPC time count (in ticks); Arg1 = 1: watchdog period' },
+            param3: { name: 'Time Allotment / Triage Block', description: 'Arg1 = 0: DPC time allotment (in ticks); Arg1 = 1: address to cast to nt!DPC_WATCHDOG_GLOBAL_TRIAGE_BLOCK' },
+            param4: { name: 'Triage Block / Reserved', description: 'Arg1 = 0: address to cast to nt!DPC_WATCHDOG_GLOBAL_TRIAGE_BLOCK; Arg1 = 1: reserved' }
         },
         commonCauses: [
             'Storage driver latency (SSD firmware bugs)',
@@ -360,14 +389,14 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         relatedDrivers: ['fltmgr.sys', 'bindflt.sys', 'wcifs.sys', 'cldflt.sys']
     },
 
-    0x000001E0: {
-        bugCheckCode: 0x000001E0,
+    0x00000093: {
+        bugCheckCode: 0x00000093,
         name: 'INVALID_KERNEL_HANDLE',
         parameters: {
             param1: { name: 'Handle Value', description: 'The invalid handle value' },
-            param2: { name: 'Handle Table Entry', description: 'Pointer to handle table entry' },
-            param3: { name: 'Object Type', description: 'Expected object type' },
-            param4: { name: 'Calling Address', description: 'Address that used invalid handle' }
+            param2: { name: 'Close Type', description: '0=Protected handle closed, 1=Invalid handle closed' },
+            param3: { name: 'Reserved', description: 'Reserved' },
+            param4: { name: 'Reserved', description: 'Reserved' }
         },
         commonCauses: [
             'Driver using closed or invalid handle',
@@ -463,10 +492,10 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         bugCheckCode: 0x00000101,
         name: 'CLOCK_WATCHDOG_TIMEOUT',
         parameters: {
-            param1: { name: 'Clock Interrupt Period', description: 'Expected clock interrupt period' },
-            param2: { name: 'Nominal Period', description: 'Measured clock interrupt period' },
-            param3: { name: 'Reserved', description: 'Reserved' },
-            param4: { name: 'Processor Number', description: 'Processor that timed out' }
+            param1: { name: 'Time-out Interval', description: 'Clock interrupt time-out interval, in nominal clock ticks' },
+            param2: { name: 'Zero', description: 'Always 0' },
+            param3: { name: 'PRCB Address', description: 'Address of the processor control block (PRCB) for the unresponsive processor' },
+            param4: { name: 'Processor Index', description: 'The index of the hung processor' }
         },
         commonCauses: [
             'Multi-processor synchronization failure',
@@ -836,9 +865,9 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
 
     0x0000006B: {
         bugCheckCode: 0x0000006B,
-        name: 'BOOT_INITIALIZATION_FAILED',
+        name: 'PROCESS1_INITIALIZATION_FAILED',
         parameters: {
-            param1: { name: 'Failure Code', description: 'Specific initialization failure' },
+            param1: { name: 'NT Status', description: 'NT status code that describes why system initialization failed' },
             param2: { name: 'Reserved', description: 'Reserved' },
             param3: { name: 'Reserved', description: 'Reserved' },
             param4: { name: 'Reserved', description: 'Reserved' }
@@ -865,12 +894,12 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         ]
     },
 
-    0xC00002E2: {
-        bugCheckCode: 0xC00002E2,
-        name: 'STATUS_SYSTEM_PROCESS_TERMINATED',
+    0xC000021A: {
+        bugCheckCode: 0xC000021A,
+        name: 'WINLOGON_FATAL_ERROR',
         parameters: {
-            param1: { name: 'Process', description: 'Critical process that terminated' },
-            param2: { name: 'Reserved', description: 'Reserved' },
+            param1: { name: 'Error Message', description: 'Pointer to a string that identifies the failing user-mode subsystem (Winlogon or CSRSS)' },
+            param2: { name: 'Error Code', description: 'Status code returned by the failing subsystem' },
             param3: { name: 'Reserved', description: 'Reserved' },
             param4: { name: 'Reserved', description: 'Reserved' }
         },
@@ -897,37 +926,6 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
     },
 
     // Memory and Resource Errors
-    0x0000002D: {
-        bugCheckCode: 0x0000002D,
-        name: 'OUT_OF_MEMORY',
-        parameters: {
-            param1: { name: 'Size', description: 'Size of allocation that failed' },
-            param2: { name: 'Pool Type', description: 'Type of pool allocation' },
-            param3: { name: 'Reserved', description: 'Reserved' },
-            param4: { name: 'Reserved', description: 'Reserved' }
-        },
-        commonCauses: [
-            'Memory leak in driver or application',
-            'Insufficient RAM for workload',
-            'Page file too small or disabled',
-            'Memory fragmentation',
-            'Resource exhaustion'
-        ],
-        diagnosticSteps: [
-            'Check available memory at crash',
-            'Identify pool type that failed',
-            'Look for memory leak patterns',
-            'Review resource usage'
-        ],
-        immediateActions: [
-            'Increase page file size',
-            'Add more physical RAM',
-            'Check for memory leaks',
-            'Update problematic drivers',
-            'Close unnecessary programs'
-        ]
-    },
-
     0x000000DE: {
         bugCheckCode: 0x000000DE,
         name: 'POOL_CORRUPTION_IN_FILE_AREA',
@@ -1022,8 +1020,8 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
     },
 
     // Network and Communication Errors
-    0x00000165: {
-        bugCheckCode: 0x00000165,
+    0x00000150: {
+        bugCheckCode: 0x00000150,
         name: 'TCPIP_AOAC_NIC_ACTIVE_REFERENCE_LEAK',
         parameters: {
             param1: { name: 'Leaked Reference', description: 'The leaked active reference' },
@@ -1053,8 +1051,8 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         ]
     },
 
-    0x0000006C: {
-        bugCheckCode: 0x0000006C,
+    0x000000BB: {
+        bugCheckCode: 0x000000BB,
         name: 'NETWORK_BOOT_INITIALIZATION_FAILED',
         parameters: {
             param1: { name: 'Failure Code', description: 'Specific network boot failure' },
@@ -1086,7 +1084,7 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
 
     0x0000007C: {
         bugCheckCode: 0x0000007C,
-        name: 'NDIS_INTERNAL_ERROR',
+        name: 'BUGCODE_NDIS_DRIVER',
         parameters: {
             param1: { name: 'NDIS Error Code', description: 'Specific NDIS error' },
             param2: { name: 'Parameter 1', description: 'Depends on error code' },
@@ -1147,8 +1145,8 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         ]
     },
 
-    0x00000180: {
-        bugCheckCode: 0x00000180,
+    0x000001A5: {
+        bugCheckCode: 0x000001A5,
         name: 'USB_DRIPS_BLOCKER_SURPRISE_REMOVAL_LIVEDUMP',
         parameters: {
             param1: { name: 'USB Device', description: 'Device that was removed' },
@@ -1178,46 +1176,15 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
         ]
     },
 
-    0x00000166: {
-        bugCheckCode: 0x00000166,
-        name: 'INVALID_USB_DESCRIPTOR',
-        parameters: {
-            param1: { name: 'USB Device Object', description: 'Device with invalid descriptor' },
-            param2: { name: 'Descriptor Type', description: 'Type of invalid descriptor' },
-            param3: { name: 'Reserved', description: 'Reserved' },
-            param4: { name: 'Reserved', description: 'Reserved' }
-        },
-        commonCauses: [
-            'Faulty USB device',
-            'Corrupted USB firmware',
-            'Incompatible USB device',
-            'USB descriptor corruption',
-            'Non-compliant USB implementation'
-        ],
-        diagnosticSteps: [
-            'Identify problematic USB device',
-            'Check descriptor type',
-            'Test device on another system',
-            'Review USB compatibility'
-        ],
-        immediateActions: [
-            'Remove the faulty USB device',
-            'Update device firmware',
-            'Try different USB port',
-            'Check device compatibility',
-            'Replace if defective'
-        ]
-    },
-
     // Graphics and Display Errors
     0x00000116: {
         bugCheckCode: 0x00000116,
         name: 'VIDEO_TDR_FAILURE',
         parameters: {
-            param1: { name: 'Device Object', description: 'GPU device object pointer' },
-            param2: { name: 'TDR Recovery Reason', description: 'Reason for TDR' },
-            param3: { name: 'Reserved', description: 'Reserved' },
-            param4: { name: 'Reserved', description: 'Reserved' }
+            param1: { name: 'TDR Recovery Context', description: 'Pointer to the internal TDR recovery context (TDR_RECOVERY_CONTEXT), if available' },
+            param2: { name: 'Driver Module Pointer', description: 'Pointer into the responsible device driver module (for example, the owner tag)' },
+            param3: { name: 'Last Error Code', description: 'Error code (NTSTATUS) of the last failed operation, if available' },
+            param4: { name: 'Internal Data', description: 'Internal context dependent data, if available' }
         },
         commonCauses: [
             'GPU driver timeout',
@@ -1306,7 +1273,7 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
 
     0x00000117: {
         bugCheckCode: 0x00000117,
-        name: 'DISPLAY_DRIVER_STOPPED_RESPONDING',
+        name: 'VIDEO_TDR_TIMEOUT_DETECTED',
         parameters: {
             param1: { name: 'Device Object', description: 'Display adapter device' },
             param2: { name: 'Reserved', description: 'Reserved' },
@@ -1364,37 +1331,6 @@ export const CRASH_PATTERN_DATABASE: Record<number, CrashPattern> = {
             'Check Windows features',
             'Verify hardware compatibility',
             'Update system firmware'
-        ]
-    },
-
-    0x00000151: {
-        bugCheckCode: 0x00000151,
-        name: 'VMBUS_VIRTUAL_PROCESSOR_LIMIT_EXCEEDED',
-        parameters: {
-            param1: { name: 'Current VP Count', description: 'Current virtual processor count' },
-            param2: { name: 'VP Limit', description: 'Virtual processor limit' },
-            param3: { name: 'Reserved', description: 'Reserved' },
-            param4: { name: 'Reserved', description: 'Reserved' }
-        },
-        commonCauses: [
-            'Too many virtual processors configured',
-            'Hyper-V host limitations',
-            'License restrictions',
-            'Hardware limitations',
-            'Configuration error'
-        ],
-        diagnosticSteps: [
-            'Check VP configuration',
-            'Review host capabilities',
-            'Verify licensing limits',
-            'Check hardware specs'
-        ],
-        immediateActions: [
-            'Reduce virtual processor count',
-            'Check Hyper-V host limits',
-            'Review VM configuration',
-            'Update Hyper-V version',
-            'Check licensing'
         ]
     },
 
@@ -1548,11 +1484,16 @@ export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2
 
         case 0x00000050: // PAGE_FAULT_IN_NONPAGED_AREA
             if (paramNumber === 2) {
+                // Since Windows 10 1507 the x64/x86 value is the page-fault
+                // error code's write (0x2) / instruction-fetch (0x10) bits.
                 const accessType = Number(value);
                 if (accessType === 0) explanation += 'Access Type: Read';
-                else if (accessType === 1) explanation += 'Access Type: Write';
-                else if (accessType === 2) explanation += 'Access Type: Execute';
-                else if (accessType === 10) explanation += 'Access Type: Execute (DEP violation)';
+                else if (accessType === 2) explanation += 'Access Type: Write';
+                else if (accessType === 0x10) explanation += 'Access Type: Execute';
+                else if (accessType === 1) explanation += 'Access Type: Write (Arm, or Windows before 1507)';
+                else if (accessType === 8) explanation += 'Access Type: Execute (Arm)';
+            } else if (paramNumber === 4) {
+                explanation += getNonpagedFaultType(Number(value));
             }
             break;
 
@@ -1565,6 +1506,26 @@ export function getParameterExplanation(bugCheckCode: number, paramNumber: 1 | 2
         case 0x00000139: // KERNEL_SECURITY_CHECK_FAILURE
             if (paramNumber === 1) {
                 explanation += getSecurityCheckType(Number(value));
+            }
+            break;
+
+        case 0x00000116: // VIDEO_TDR_FAILURE
+            if (paramNumber === 3) {
+                // Parameter 3 is the NTSTATUS of the last failed operation
+                explanation += `Status: ${getSimpleNtStatus(Number(value))}`;
+            }
+            break;
+
+        case 0x00000133: // DPC_WATCHDOG_VIOLATION
+            if (paramNumber === 1) {
+                if (value === 0n) explanation += 'A single DPC or ISR exceeded its time allotment';
+                else if (value === 1n) explanation += 'The system cumulatively spent an extended period at IRQL DISPATCH_LEVEL or above';
+            }
+            break;
+
+        case 0x00000124: // WHEA_UNCORRECTABLE_ERROR
+            if (paramNumber === 1) {
+                explanation += getWheaErrorSourceType(Number(value));
             }
             break;
 
@@ -1624,31 +1585,77 @@ function getPoolViolationType(type: number): string {
     return violations[type] || `Pool violation type 0x${type.toString(16)}`;
 }
 
+// Parameter 1 of 0x124 (Microsoft Learn, Bug Check 0x124 parameters table).
+function getWheaErrorSourceType(type: number): string {
+    const sources: Record<number, string> = {
+        0x0: 'A machine check exception occurred',
+        0x1: 'A corrected machine check exception occurred',
+        0x2: 'A corrected platform error occurred',
+        0x3: 'A nonmaskable interrupt (NMI) error occurred',
+        0x4: 'An uncorrectable PCI Express error occurred',
+        0x5: 'A generic hardware error occurred',
+        0x6: 'An initialization error occurred',
+        0x7: 'A BOOT error occurred',
+        0x8: 'A scalable coherent interface (SCI) generic error occurred',
+        0x9: 'An uncorrectable Itanium-based machine check abort error occurred',
+        0xA: 'A corrected Itanium-based machine check error occurred',
+        0xB: 'A corrected Itanium platform error occurred',
+        0xC: 'Other types of error sources v2',
+        0xD: 'SCI-based GHESv2 (ACPI generic hardware error source)',
+        0xE: 'BMC (baseboard management controller) error info',
+        0xF: 'ARS PMEM (address range scrubbing persistent memory) error source',
+        0x10: 'Device driver error source',
+        0x11: 'Arm Synchronous External Abort',
+        0x12: 'Arm SError Interrupt'
+    };
+    return sources[type] || `Error source type 0x${type.toString(16)}`;
+}
+
+function getNonpagedFaultType(type: number): string {
+    const types: Record<number, string> = {
+        0x0: 'NONPAGED_BUGCHECK_FREED_PTE: the address is on a page table entry marked as free',
+        0x2: 'NONPAGED_BUGCHECK_NOT_PRESENT_PAGE_TABLE: the address has no valid active page table entry',
+        0x3: 'NONPAGED_BUGCHECK_WRONG_SESSION: session space referenced from a process with no session',
+        0x4: 'NONPAGED_BUGCHECK_VA_NOT_CANONICAL: reference to a non-canonical (illegal) virtual address',
+        0xF: 'NONPAGED_BUGCHECK_USER_VA_ACCESS_INCONSISTENT: kernel mode accessed a user mode address where that is not allowed'
+    };
+    return types[type] || `Page fault type 0x${type.toString(16)}`;
+}
+
+// Parameter 1 of 0x139 is a FAST_FAIL_* code (Windows SDK winnt.h); the
+// descriptions are Microsoft Learn's (Bug Check 0x139 parameter 1 table).
 function getSecurityCheckType(type: number): string {
     const checkTypes: Record<number, string> = {
-        0x00: 'Unknown security check failure',
-        0x01: 'FAST_FAIL_GUARD_ICALL_CHECK_FAILURE',
-        0x02: 'FAST_FAIL_STACK_COOKIE_CHECK_FAILURE',
-        0x03: 'FAST_FAIL_CORRUPT_LIST_ENTRY',
-        0x04: 'FAST_FAIL_INCORRECT_STACK',
-        0x05: 'FAST_FAIL_INVALID_ARG',
-        0x06: 'FAST_FAIL_GS_COOKIE_INIT',
-        0x07: 'FAST_FAIL_FATAL_APP_EXIT',
-        0x08: 'FAST_FAIL_RANGE_CHECK_FAILURE',
-        0x09: 'FAST_FAIL_UNSAFE_REGISTRY_ACCESS',
-        0x0A: 'FAST_FAIL_GUARD_ICALL_CHECK_SUPPRESSED',
-        0x0B: 'FAST_FAIL_INVALID_FIBER_SWITCH',
-        0x0C: 'FAST_FAIL_INVALID_SET_OF_CONTEXT',
-        0x0D: 'FAST_FAIL_INVALID_REFERENCE_COUNT',
-        0x14: 'FAST_FAIL_INVALID_JUMP_BUFFER',
-        0x15: 'FAST_FAIL_MRDATA_MODIFIED',
-        0x16: 'FAST_FAIL_CERTIFICATION_FAILURE',
-        0x17: 'FAST_FAIL_INVALID_EXCEPTION_CHAIN',
-        0x18: 'FAST_FAIL_CRYPTO_LIBRARY',
-        0x19: 'FAST_FAIL_INVALID_CALL_IN_DLL_CALLOUT',
-        0x1A: 'FAST_FAIL_INVALID_IMAGE_BASE',
-        0x1B: 'FAST_FAIL_DLOAD_PROTECTION_FAILURE',
-        0x1C: 'FAST_FAIL_UNSAFE_EXTENSION_CALL'
+        0: 'FAST_FAIL_LEGACY_GS_VIOLATION: a stack-based buffer is overrun (legacy /GS violation)',
+        1: 'FAST_FAIL_VTGUARD_CHECK_FAILURE: VTGuard detected an attempt to use an illegal virtual function table',
+        2: 'FAST_FAIL_STACK_COOKIE_CHECK_FAILURE: stack cookie instrumentation detected a stack-based buffer overrun (/GS violation)',
+        3: 'FAST_FAIL_CORRUPT_LIST_ENTRY: a LIST_ENTRY is corrupted (for example, a double remove)',
+        4: 'FAST_FAIL_INCORRECT_STACK: reserved',
+        5: 'FAST_FAIL_INVALID_ARG: an invalid parameter was passed to a function that considers invalid parameters fatal',
+        6: 'FAST_FAIL_GS_COOKIE_INIT: the loader did not properly initialize the stack cookie',
+        7: 'FAST_FAIL_FATAL_APP_EXIT: a fatal program exit was requested',
+        8: 'FAST_FAIL_RANGE_CHECK_FAILURE: a compiler-inserted array bounds check detected an illegal array index',
+        9: 'FAST_FAIL_UNSAFE_REGISTRY_ACCESS: RtlQueryRegistryValues used RTL_QUERY_REGISTRY_DIRECT without TYPECHECK on an untrusted hive',
+        10: 'FAST_FAIL_GUARD_ICALL_CHECK_FAILURE: Indirect call guard check detected invalid control transfer',
+        11: 'FAST_FAIL_GUARD_WRITE_CHECK_FAILURE: Write guard check detected invalid memory write',
+        12: 'FAST_FAIL_INVALID_FIBER_SWITCH: an attempt was made to switch to an invalid fiber context',
+        13: 'FAST_FAIL_INVALID_SET_OF_CONTEXT: an attempt was made to assign an invalid register context',
+        14: 'FAST_FAIL_INVALID_REFERENCE_COUNT: the reference count for an object is invalid',
+        18: 'FAST_FAIL_INVALID_JUMP_BUFFER: an attempt was made to switch to an invalid jmp_buf context',
+        19: 'FAST_FAIL_MRDATA_MODIFIED: an unsafe modification was made to read-only data',
+        20: 'FAST_FAIL_CERTIFICATION_FAILURE: a cryptographic self-test failed',
+        21: 'FAST_FAIL_INVALID_EXCEPTION_CHAIN: an invalid exception chain was detected',
+        22: 'FAST_FAIL_CRYPTO_LIBRARY: a cryptographic library error occurred',
+        23: 'FAST_FAIL_INVALID_CALL_IN_DLL_CALLOUT: an invalid call was made from within DllMain',
+        24: 'FAST_FAIL_INVALID_IMAGE_BASE: an invalid image base address was detected',
+        25: 'FAST_FAIL_DLOAD_PROTECTION_FAILURE: an unrecoverable failure while protecting a delay load import',
+        26: 'FAST_FAIL_UNSAFE_EXTENSION_CALL: a call was made to an unsafe extension',
+        27: 'FAST_FAIL_DEPRECATED_SERVICE_INVOKED: a deprecated service was invoked',
+        28: 'FAST_FAIL_INVALID_BUFFER_ACCESS: an out of bounds buffer access was detected',
+        29: 'FAST_FAIL_INVALID_BALANCED_TREE: an RTL_BALANCED_NODE RBTree entry is corrupted',
+        37: 'FAST_FAIL_GUARD_JUMPTABLE: an out of range switch jumptable entry was invoked',
+        38: 'FAST_FAIL_INVALID_LONGJUMP_TARGET: a longjmp was attempted to an invalid target',
+        39: 'FAST_FAIL_INVALID_DISPATCH_CONTEXT: an export suppressed call target could not be made a valid call target'
     };
     return checkTypes[type] || `Security check type 0x${type.toString(16)}`;
 }

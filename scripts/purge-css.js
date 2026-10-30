@@ -3,20 +3,26 @@
 import { PurgeCSS } from 'purgecss';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const APPLY_FLAG = process.argv.includes('--apply');
 
-async function analyzeCSSUsage() {
-  console.log('🔍 Analyzing CSS usage...\n');
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const fromRoot = glob => path.join(ROOT, glob);
 
-  const purgeCSSResult = await new PurgeCSS().purge({
+// PurgeCSS options, exported so tests can check that no live class is purged.
+// Every directory that renders markup must be scanned: AppRouter.tsx (root)
+// applies app-embed, and hooks/ and utils/ build class names too.
+export const purgeOptions = {
     content: [
-      './index.html',
-      './src/**/*.{js,ts,jsx,tsx}',
-      './components/**/*.{js,ts,jsx,tsx}',
-      './pages/**/*.{js,ts,jsx,tsx}'
-    ],
-    css: ['./styles.css'],
+      'index.html',
+      '*.{ts,tsx}',
+      'components/**/*.{js,ts,jsx,tsx}',
+      'pages/**/*.{js,ts,jsx,tsx}',
+      'hooks/**/*.{js,ts,jsx,tsx}',
+      'utils/**/*.{js,ts,jsx,tsx}'
+    ].map(fromRoot),
+    css: [fromRoot('styles.css')],
     defaultExtractor: content => content.match(/[\w-/:]+(?<!:)/g) || [],
     safelist: {
       standard: [
@@ -35,6 +41,15 @@ async function analyzeCSSUsage() {
         // Dynamic classes
         /^binary-/,
         /^hero-/,
+        // Built from template strings, so the extractor never sees them whole:
+        // confidence-${source} (AnalysisReportCard), related-match-${kind}
+        // (RelatedDiscussions), step-${n} (CorpusInsightCharts heatmap),
+        // particle-${n} (AnalysisProgress).
+        /^confidence-/,
+        /^related-match-/,
+        /^step-\d+$/,
+        /^particle-\d+$/,
+        'app-embed',
         // React Router classes
         'active',
         'pending',
@@ -56,7 +71,12 @@ async function analyzeCSSUsage() {
       ]
     },
     rejected: true
-  });
+};
+
+async function analyzeCSSUsage() {
+  console.log('🔍 Analyzing CSS usage...\n');
+
+  const purgeCSSResult = await new PurgeCSS().purge(purgeOptions);
 
   const originalSize = fs.statSync('./styles.css').size;
   const purgedSize = Buffer.byteLength(purgeCSSResult[0].css, 'utf8');
@@ -127,4 +147,6 @@ async function analyzeCSSUsage() {
   }
 }
 
-analyzeCSSUsage().catch(console.error);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  analyzeCSSUsage().catch(console.error);
+}

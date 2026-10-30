@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import Loader from './Loader';
-import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon } from './Icons';
+import { FileIcon, ZipIcon, ChevronDownIcon, ChevronUpIcon, ClipboardIcon, DownloadIcon, ShareIcon, TwitterIcon, CheckIcon, CloseIcon } from './Icons';
 import { generateForumReport, generateMarkdownReport, getReportFacts } from '../utils/reportFacts';
 import RelatedDiscussions from './RelatedDiscussions';
+import { formatFileSize } from '../utils/formatFileSize';
 
 // Disclosure toggle for the Call Stack / Raw WinDBG Output headings (issue
 // #156): a real <button> inside the <h3>, so it is focusable and opens with
@@ -25,13 +26,22 @@ const SECTION_TOGGLE_STYLE: React.CSSProperties = {
     userSelect: 'none',
 };
 
+// Dump data (hex values, module and symbol names, FAST_FAIL_* codes, build
+// strings) comes as long unbroken tokens that are wider than a phone-width
+// card: let them break anywhere, and let flex/grid items shrink (#332, #339).
+const BREAK_ANYWHERE: React.CSSProperties = { overflowWrap: 'anywhere', minWidth: 0 };
+
 interface AnalysisReportCardProps {
     dumpFile: DumpFile;
     onRetry?: () => void;
+    /** Removes this finished or failed result from the page (issue #370). */
+    onRemove?: () => void;
+    /** Data-use terms unchecked: Retry is shown disabled, like the Analyze button. */
+    retryDisabled?: boolean;
     style?: React.CSSProperties;
 }
 
-const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRetry, style }) => {
+const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRetry, onRemove, retryDisabled = false, style }) => {
     const [isExpanded, setIsExpanded] = useState(dumpFile.status !== FileStatus.PENDING);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [forumCopySuccess, setForumCopySuccess] = useState<boolean>(false);
@@ -109,7 +119,6 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
 
 
     const FileTypeIcon = dumpFile.file.name.toLowerCase().endsWith('.zip') ? ZipIcon : FileIcon;
-    const fileSize = (dumpFile.file.size / 1024).toFixed(2);
 
     const getStatusBadge = () => {
         switch (dumpFile.status) {
@@ -132,7 +141,9 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                         {onRetry && (
                             <button
                                 className="btn btn-primary"
-                                onClick={onRetry}
+                                onClick={retryDisabled ? undefined : onRetry}
+                                disabled={retryDisabled}
+                                title={retryDisabled ? 'Check "Use my crash analysis to improve BSOD AI" to retry' : undefined}
                                 style={{marginTop: '1rem'}}
                             >
                                 &#x21BB; Retry Analysis
@@ -261,31 +272,38 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 padding: '1rem',
                                 marginBottom: '1.5rem'
                             }}>
-                                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap'}}>
+                                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', minWidth: 0}}>
                                     <span style={{
                                         fontFamily: 'Jetbrains Mono, monospace',
                                         fontSize: '1.25rem',
                                         fontWeight: 'bold',
                                         color: 'var(--status-error)'
                                     }}>{bugCheck.code}</span>
+                                    {/* One unbroken token (SYSTEM_THREAD_EXCEPTION_NOT_HANDLED_M)
+                                        wider than a phone-width card: let it break (#332). */}
                                     <span style={{
                                         fontSize: '1.1rem',
                                         fontWeight: '600',
-                                        color: 'var(--text-primary)'
+                                        color: 'var(--text-primary)',
+                                        overflowWrap: 'anywhere',
+                                        minWidth: 0
                                     }}>{bugCheck.name}</span>
                                 </div>
                                 {bugCheck.parameters && bugCheck.parameters.length > 0 && (
                                     <div style={{marginTop: '0.75rem', fontSize: '0.875rem'}}>
                                         {bugCheck.parameters.map((param, i) => (
+                                            // Wraps so the meaning drops under the value on a
+                                            // phone; both may break inside their token (#339).
                                             <div key={i} style={{
                                                 display: 'flex',
-                                                gap: '0.5rem',
+                                                flexWrap: 'wrap',
+                                                gap: '0.125rem 0.5rem',
                                                 marginTop: '0.25rem',
                                                 color: 'var(--text-secondary)'
                                             }}>
-                                                <span style={{fontFamily: 'Jetbrains Mono, monospace', minWidth: '140px'}}>{param.value}</span>
-                                                <span style={{color: 'var(--text-tertiary)'}}>→</span>
-                                                <span>{param.meaning}</span>
+                                                <span style={{fontFamily: 'Jetbrains Mono, monospace', minWidth: '140px', maxWidth: '100%', overflowWrap: 'anywhere'}}>{param.value}</span>
+                                                <span style={{color: 'var(--text-secondary)'}}>→</span>
+                                                <span style={{flex: '1 1 12rem', ...BREAK_ANYWHERE}}>{param.meaning}</span>
                                             </div>
                                         ))}
                                     </div>
@@ -344,12 +362,13 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 fontSize: '0.85rem'
                             }}>
                                 {systemInfo?.processName && (
-                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                                        <span style={{color: 'var(--text-tertiary)'}}>Process:</span>
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0}}>
+                                        <span style={{color: 'var(--text-tertiary)', flexShrink: 0}}>Process:</span>
                                         <span style={{
                                             fontFamily: 'Jetbrains Mono, monospace',
                                             color: 'var(--text-primary)',
-                                            fontWeight: '500'
+                                            fontWeight: '500',
+                                            ...BREAK_ANYWHERE
                                         }}>{systemInfo.processName}</span>
                                     </div>
                                 )}
@@ -365,9 +384,9 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                     </div>
                                 )}
                                 {systemInfo?.windowsVersion && (
-                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                                        <span style={{color: 'var(--text-tertiary)'}}>Windows:</span>
-                                        <span style={{color: 'var(--text-secondary)'}}>{systemInfo.windowsVersion}</span>
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0}}>
+                                        <span style={{color: 'var(--text-tertiary)', flexShrink: 0}}>Windows:</span>
+                                        <span style={{color: 'var(--text-secondary)', ...BREAK_ANYWHERE}}>{systemInfo.windowsVersion}</span>
                                     </div>
                                 )}
                             </div>
@@ -396,12 +415,13 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                     {parameterAnalysis.map((param, i) => (
                                         <div key={i} style={{
                                             display: 'grid',
-                                            gridTemplateColumns: 'auto 1fr',
+                                            gridTemplateColumns: 'auto minmax(0, 1fr)',
                                             gap: '0.5rem 1rem',
                                             padding: '0.5rem',
                                             backgroundColor: 'var(--bg-primary)',
                                             borderRadius: '0.375rem',
-                                            fontSize: '0.85rem'
+                                            fontSize: '0.85rem',
+                                            overflowWrap: 'anywhere'
                                         }}>
                                             <span style={{
                                                 fontFamily: 'Jetbrains Mono, monospace',
@@ -448,10 +468,11 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 </h3>
                                 <div style={{
                                     display: 'grid',
-                                    gridTemplateColumns: 'auto 1fr',
+                                    gridTemplateColumns: 'auto minmax(0, 1fr)',
                                     gap: '0.5rem 1rem',
                                     fontSize: '0.875rem',
-                                    marginBottom: '0.75rem'
+                                    marginBottom: '0.75rem',
+                                    overflowWrap: 'anywhere'
                                 }}>
                                     <span style={{color: 'var(--text-tertiary)'}}>Error Type:</span>
                                     <span style={{color: 'var(--text-primary)', fontWeight: '500'}}>{hardwareError.errorType}</span>
@@ -468,7 +489,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                         color: 'var(--text-secondary)',
                                         marginBottom: '0.75rem',
                                         maxHeight: '120px',
-                                        overflowY: 'auto'
+                                        overflowY: 'auto',
+                                        overflowWrap: 'anywhere'
                                     }}>
                                         {hardwareError.details.slice(0, 5).map((detail, i) => (
                                             <div key={i}>{detail}</div>
@@ -502,9 +524,11 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                         padding: '0.25rem 0.75rem',
                                         borderRadius: '0.25rem',
                                         fontWeight: '600',
-                                        fontSize: '0.95rem'
+                                        fontSize: '0.95rem',
+                                        maxWidth: '100%',
+                                        ...BREAK_ANYWHERE
                                     }}>{crashLocation.module}</span>
-                                    <span style={{fontFamily: 'Jetbrains Mono, monospace', fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
+                                    <span style={{fontFamily: 'Jetbrains Mono, monospace', fontSize: '0.85rem', color: 'var(--text-secondary)', ...BREAK_ANYWHERE}}>
                                         at {crashLocation.address}{crashLocation.offset && ` (${crashLocation.offset})`}
                                     </span>
                                     <button
@@ -532,7 +556,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                             return validWarnings.length > 0 && (
                             <div style={{
                                 backgroundColor: 'var(--bg-secondary)',
-                                border: '1px solid #f59e0b',
+                                border: '1px solid var(--status-warning)',
                                 borderRadius: '0.5rem',
                                 padding: '1rem',
                                 marginBottom: '1.5rem'
@@ -540,7 +564,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                 <h3 style={{
                                     margin: '0 0 0.75rem 0',
                                     fontSize: '0.95rem',
-                                    color: '#f59e0b',
+                                    color: 'var(--status-warning)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: '0.5rem'
@@ -554,13 +578,16 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                             backgroundColor: 'var(--bg-primary)',
                                             padding: '0.75rem',
                                             borderRadius: '0.375rem',
+                                            overflowWrap: 'anywhere',
                                             border: warning.isAssociatedWithBugCheck ? '1px solid var(--status-error)' : '1px solid var(--border-primary)'
                                         }}>
-                                            <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem'}}>
+                                            <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem', minWidth: 0}}>
                                                 <span style={{
                                                     fontFamily: 'Jetbrains Mono, monospace',
                                                     fontWeight: '600',
-                                                    color: warning.isAssociatedWithBugCheck ? 'var(--status-error)' : 'var(--text-primary)'
+                                                    color: warning.isAssociatedWithBugCheck ? 'var(--status-error)' : 'var(--text-primary)',
+                                                    overflowWrap: 'anywhere',
+                                                    minWidth: 0
                                                 }}>{warning.driverName}</span>
                                                 {warning.category && (
                                                 <span style={{
@@ -574,7 +601,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                                 {warning.isAssociatedWithBugCheck && (
                                                     <span style={{
                                                         backgroundColor: 'var(--status-error)',
-                                                        color: 'white',
+                                                        color: 'var(--on-status-error)',
                                                         padding: '0.1rem 0.4rem',
                                                         borderRadius: '0.2rem',
                                                         fontSize: '0.65rem',
@@ -661,6 +688,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                     {loadedModules.map((mod, i) => (
                                         <div key={i} style={{
                                             display: 'flex',
+                                            flexWrap: 'wrap',
                                             alignItems: 'center',
                                             gap: '0.5rem',
                                             padding: '0.25rem 0',
@@ -669,7 +697,7 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                             {mod.isCulprit && (
                                                 <span style={{
                                                     backgroundColor: 'var(--status-error)',
-                                                    color: 'white',
+                                                    color: 'var(--on-status-error)',
                                                     padding: '0.1rem 0.4rem',
                                                     borderRadius: '0.2rem',
                                                     fontSize: '0.7rem',
@@ -679,10 +707,11 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                             <span style={{
                                                 fontFamily: 'Jetbrains Mono, monospace',
                                                 color: mod.isCulprit ? 'var(--status-error)' : 'var(--text-primary)',
-                                                fontWeight: mod.isCulprit ? '600' : '400'
+                                                fontWeight: mod.isCulprit ? '600' : '400',
+                                                ...BREAK_ANYWHERE
                                             }}>{mod.name}</span>
                                             {mod.base && (
-                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem'}}>{mod.base}</span>
+                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem', ...BREAK_ANYWHERE}}>{mod.base}</span>
                                             )}
                                         </div>
                                     ))}
@@ -720,7 +749,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                                 padding: '0.25rem 0',
                                                 borderBottom: i < callStack.length - 1 ? '1px solid var(--border-primary)' : 'none',
                                                 display: 'flex',
-                                                gap: '0.75rem',
+                                                flexWrap: 'wrap',
+                                                gap: '0 0.75rem',
                                                 alignItems: 'baseline'
                                             }}>
                                                 <span style={{
@@ -728,8 +758,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                                     minWidth: '1.5rem',
                                                     textAlign: 'right'
                                                 }}>{i}</span>
-                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem'}}>{frame.address}</span>
-                                                <span>
+                                                <span style={{color: 'var(--text-tertiary)', fontSize: '0.75rem', ...BREAK_ANYWHERE}}>{frame.address}</span>
+                                                <span style={BREAK_ANYWHERE}>
                                                     <span style={{color: 'var(--brand-primary)'}}>{frame.module}</span>
                                                     {frame.function && (
                                                         <>
@@ -834,10 +864,10 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
     return (
         <div className="card analysis-result fade-in" style={style}>
             <div className="result-header">
-                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap'}}>
+                <div className="result-header-main">
                     <FileTypeIcon />
                     <span className="result-filename">{displayName}</span>
-                    <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>({fileSize} KB)</span>
+                    <span style={{fontSize: '0.75rem', color: 'var(--text-tertiary)'}}>({formatFileSize(dumpFile.file.size)})</span>
                     {getStatusBadge()}
                     {/* Show "Previously Analyzed" after analysis completes from cache */}
                     {dumpFile.cached && dumpFile.status === FileStatus.ANALYZED && (
@@ -868,11 +898,24 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                         </div>
                     )}
                 </div>
-                <button onClick={() => setIsExpanded(!isExpanded)} style={{background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.5rem'}} aria-expanded={isExpanded} aria-controls={`report-content-${dumpFile.id}`}>
+                {onRemove && (
+                    <button
+                        type="button"
+                        onClick={onRemove}
+                        className="result-remove"
+                        aria-label={`Remove report for ${displayName}`}
+                        title="Remove this result"
+                    >
+                        <CloseIcon />
+                    </button>
+                )}
+                <button onClick={() => setIsExpanded(!isExpanded)} className="result-toggle" aria-expanded={isExpanded} aria-controls={`report-content-${dumpFile.id}`} aria-label={`${isExpanded ? 'Collapse' : 'Expand'} report for ${dumpFile.file.name}`}>
                     {isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
                 </button>
             </div>
-            <div id={`report-content-${dumpFile.id}`} className={`expandable-content ${isExpanded ? 'expanded' : ''}`}>
+            {/* Collapse only clips the content (grid-rows transition), so mark it
+                inert to drop it from the tab order and accessibility tree. */}
+            <div id={`report-content-${dumpFile.id}`} className={`expandable-content ${isExpanded ? 'expanded' : ''}`} inert={!isExpanded} aria-hidden={isExpanded ? undefined : true}>
               <div className="content-inner" style={{borderTop: `1px solid ${isExpanded ? 'var(--border-primary)' : 'transparent'}`, transition: 'border-color 0.4s ease-in-out'}}>
                 {renderContent()}
               </div>

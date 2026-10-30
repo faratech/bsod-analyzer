@@ -164,7 +164,7 @@ const About: React.FC = () => {
                         <BsodAnalyzerFlow />
 
                         <p>
-                            Our analyzer combines real WinDBG debugging, Google's Gemini AI, and validated
+                            Our analyzer combines real WinDBG debugging, an AI model, and validated
                             fallback analysis to deliver professional-grade crash reports. When you upload a dump file:
                         </p>
                         <ol>
@@ -179,13 +179,10 @@ const About: React.FC = () => {
                                 driver versions, and call stacks.
                             </li>
                             <li>
-                                <strong>AI Interpretation and Fallback:</strong> Google's Gemini AI interprets WinDBG
-                                output into a clear report. If WinDBG is unavailable, the backend analyzes validated
-                                local or sampled dump evidence and marks the report as fallback analysis.
-                            </li>
-                            <li>
-                                <strong>Intelligent Caching:</strong> Results are cached by file content hash,
-                                so analyzing the same dump again returns instant results.
+                                <strong>AI Interpretation and Fallback:</strong> An AI model (from one of several
+                                providers, depending on availability) turns the WinDBG output into a clear report.
+                                If WinDBG is unavailable, the AI works from validated local or sampled dump evidence
+                                instead, and the report is marked as fallback analysis.
                             </li>
                         </ol>
                     </section>
@@ -203,7 +200,7 @@ const About: React.FC = () => {
                             <Link to="/privacy">privacy &amp; data use notice</Link>.
                         </p>
                         <ul>
-                            <li>Dumps are analyzed by our WinDBG server; an AI model writes the report from a summary of that analysis</li>
+                            <li>Dumps are analyzed by our WinDBG server; an AI model writes the report from a summary of that analysis (if WinDBG is unavailable, from text and byte excerpts read from the dump)</li>
                             <li>We keep analyses to improve our AI and publish only anonymous, aggregate statistics; we never publish your dump or its contents</li>
                             <li>Using the analyzer requires agreeing to this; you can decline on the analyzer page and nothing is uploaded</li>
                             <li>All communications are encrypted using industry-standard SSL/TLS</li>
@@ -317,7 +314,7 @@ const About: React.FC = () => {
                                     </tr>
                                     <tr>
                                         <td><strong>Privacy</strong></td>
-                                        <td>✅ Secure server-side processing, no permanent file storage</td>
+                                        <td>✅ Encrypted upload; dumps and analyses are kept to improve BSOD AI, never published</td>
                                         <td>✅ Fully local analysis</td>
                                     </tr>
                                 </tbody>

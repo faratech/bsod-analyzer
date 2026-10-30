@@ -35,6 +35,7 @@ SELECT CURRENT_TIMESTAMP() AS generated_at, TO_JSON_STRING(STRUCT(
     (SELECT COUNT(DISTINCT image_name) FROM t) AS distinct_modules,
     (SELECT APPROX_QUANTILES(analysis_seconds, 100)[OFFSET(50)] FROM t WHERE analysis_seconds >= 0) AS median_analysis_seconds,
     (SELECT APPROX_QUANTILES(uptime_seconds, 100)[OFFSET(50)] FROM t WHERE uptime_seconds IS NOT NULL) AS median_uptime_seconds,
+    (SELECT COUNTIF(uptime_seconds IS NOT NULL) FROM t) AS uptime_known,
     (SELECT COUNTIF(uptime_seconds < 60) FROM t) AS crashes_within_first_minute,
     (SELECT ROUND(SAFE_DIVIDE(COUNTIF(ai_hardware_error), COUNTIF(ai_model IS NOT NULL)), 4) FROM t) AS ai_hardware_share,
     (SELECT MIN(completed_at) FROM t) AS since

@@ -50,11 +50,16 @@ export function buildCloudflareBlockList() {
 // (Cloudflare edge + Cloud Run load balancer = 2 in production). Every trusted
 // proxy APPENDS to X-Forwarded-For, so a chain shorter than the trusted hop
 // count means a proxy was skipped or replaced the header — the rightmost entry
-// is then attacker-controlled and must not be trusted.
+// is then attacker-controlled and must not be trusted. A hop count that is not
+// an integer >= 1 (0, negative, NaN) trusts no chain at all: with 0 every
+// request would pass and the rightmost, client-written entry would be read
+// as the peer (issue #292).
 export function createPeerIpResolver({
   trustProxyHops = 0,
   blockList = buildCloudflareBlockList()
 } = {}) {
+  const hops = Number.isInteger(trustProxyHops) && trustProxyHops >= 1 ? trustProxyHops : null;
+
   function xffParts(req) {
     const xff = req.headers?.['x-forwarded-for'];
     if (typeof xff !== 'string' || xff.length === 0) return [];
@@ -62,7 +67,7 @@ export function createPeerIpResolver({
   }
 
   function hasTrustedXffChain(req) {
-    return xffParts(req).length >= trustProxyHops;
+    return hops !== null && xffParts(req).length >= hops;
   }
 
   // Returns the IP of the immediate upstream peer. Only trusted when the XFF

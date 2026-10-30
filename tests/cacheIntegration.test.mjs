@@ -192,6 +192,65 @@ test('a cache write is one read plus one write, and existence checks never downl
   assert.deepEqual(fake.events, [['exists', 'analysis:5555666677778888']]);
 });
 
+test('knownCached stays bounded on a write-heavy instance and evicts the oldest hashes first', async () => {
+  const fake = createFakeClients();
+  initCache({ redisClient: fake.redisClient, analysisClient: fake.analysisClient });
+  await initCacheCompression({ dictionaryPath: '/nonexistent/dictionary', writesEnabled: false });
+
+  const hashes = Array.from({ length: 5100 }, (_, i) => `bound${String(i).padStart(11, '0')}`);
+  for (const hash of hashes) {
+    assert.equal(await setCachedAnalysis(hash, { windbgOutput: 'x' }), true);
+  }
+
+  // Wipe the backing store: only the in-process map can still answer "true".
+  fake.values.clear();
+  fake.events.length = 0;
+  let answeredFromMemory = 0;
+  for (const hash of hashes) {
+    const before = fake.events.length;
+    await isAnalysisCached(hash);
+    if (fake.events.length === before) answeredFromMemory += 1;
+  }
+  assert.ok(answeredFromMemory <= 5000, `map retained ${answeredFromMemory} hashes (cap is 5000)`);
+  // Newest write is still remembered, the oldest was evicted and re-checked.
+  fake.events.length = 0;
+  assert.equal(await isAnalysisCached(hashes.at(-1)), true);
+  assert.deepEqual(fake.events, []);
+  await isAnalysisCached(hashes[0]);
+  assert.deepEqual(fake.events, [['exists', `analysis:${hashes[0]}`]]);
+});
+
+test('the default Upstash REST client has a per-request timeout signal and at most one retry', async t => {
+  const calls = [];
+  const savedEnv = {
+    REDIS_ENABLED: process.env.REDIS_ENABLED,
+    UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
+    UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+  };
+  const savedFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = savedFetch;
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  process.env.REDIS_ENABLED = 'true';
+  process.env.UPSTASH_REDIS_REST_URL = 'https://cache-timeout.example.upstash.io';
+  process.env.UPSTASH_REDIS_REST_TOKEN = 'secret';
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), signal: init.signal });
+    throw new TypeError('fetch failed');
+  };
+
+  assert.equal(initCache(), true);
+  // Fails open: a dead Upstash answers as a miss instead of throwing.
+  assert.equal(await isAnalysisCached('timeoutcheck000001'), false);
+  assert.ok(calls.length >= 1);
+  assert.ok(calls.length <= 2, `expected at most 1 retry, saw ${calls.length} attempts`);
+  assert.ok(calls.every(call => call.signal instanceof AbortSignal), 'every attempt carries an abort signal');
+});
+
 test('quota errors trip the breaker, reads fail open, and a re-probe turns the cache back on', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const fake = createFakeClients();

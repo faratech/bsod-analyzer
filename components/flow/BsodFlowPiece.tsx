@@ -14,6 +14,11 @@
 import React from 'react';
 import { Captions, Easing, Shot, clamp, useComposition, type CaptionItem } from './composition';
 import { FlowIcon, type FlowIconName } from './icons';
+import { FILE_LIMITS, formatBytes } from '../../shared/ingestPolicy.js';
+
+// The example dump stays under the real upload limit (FILE_LIMITS.maxFileSize,
+// issue #352): a minidump, the file most crashes leave behind.
+const DUMP_NAME = '103026-9671-01.dmp';
 
 // ── Design-system constants ─────────────────────────────────────────────────
 const C = {
@@ -245,7 +250,7 @@ const BsodScreen: React.FC<{ T: number }> = ({ T }) => {
                 }}
             >
                 <FlowIcon name="fileCheck" size={18} color={C.blue} />
-                <span style={{ font: `700 16px ${MONO}`, color: C.ink }}>MEMORY.DMP saved</span>
+                <span style={{ font: `700 16px ${MONO}`, color: C.ink }}>{DUMP_NAME} saved</span>
             </div>
         </div>
     );
@@ -352,15 +357,15 @@ const BrowserScreen: React.FC<{ T: number; K: Cues }> = ({ T, K }) => {
                         <>
                             <FlowIcon name="cloudUpload" size={44} color={C.blue} />
                             <div style={{ font: `700 20px ${FONT}`, color: C.ink }}>Drop your .dmp file here</div>
-                            <div style={{ font: `400 15px ${FONT}`, color: C.grey }}>up to 500 MB — .dmp, .zip, .7z, .rar</div>
+                            <div style={{ font: `400 15px ${FONT}`, color: C.grey }}>{`up to ${formatBytes(FILE_LIMITS.maxFileSize)} — .dmp, .zip, .7z, .rar`}</div>
                         </>
                     ) : (
                         <div style={{ width: 520 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                                 <FlowIcon name="fileShield" size={28} color={C.blue} />
                                 <div style={{ textAlign: 'left', flex: 1 }}>
-                                    <div style={{ font: `700 17px ${MONO}`, color: C.ink }}>MEMORY.DMP</div>
-                                    <div style={{ font: `400 14px ${FONT}`, color: C.grey }}>1.2 GB — kernel memory dump</div>
+                                    <div style={{ font: `700 17px ${MONO}`, color: C.ink }}>{DUMP_NAME}</div>
+                                    <div style={{ font: `400 14px ${FONT}`, color: C.grey }}>1.4 MB — small memory dump</div>
                                 </div>
                                 {uploaded ? (
                                     <span
@@ -440,7 +445,7 @@ const BrowserScreen: React.FC<{ T: number; K: Cues }> = ({ T, K }) => {
                     }}
                 >
                     <FlowIcon name="file" size={17} color={C.blue} />
-                    <span style={{ font: `700 15px ${MONO}`, color: C.ink }}>MEMORY.DMP</span>
+                    <span style={{ font: `700 15px ${MONO}`, color: C.ink }}>{DUMP_NAME}</span>
                 </div>
             ) : null}
         </div>
@@ -578,7 +583,7 @@ const WindbgNode: React.FC<{ T: number; K: Cues }> = ({ T, K }) => {
     const D = K.Debugging;
     const lines: { t: number; txt: string; hl?: boolean }[] = [
         { t: D + 6.6, txt: 'Microsoft (R) Windows Debugger — kernel mode' },
-        { t: D + 7.4, txt: '> Opening MEMORY.DMP  (kernel memory dump)' },
+        { t: D + 7.4, txt: `> Opening ${DUMP_NAME}  (small memory dump)` },
         { t: D + 8.5, txt: '> Loading Microsoft symbols… ntoskrnl.exe  hal.dll' },
         { t: D + 10.4, txt: '> Rebuilding the moment of the crash…' },
         { t: D + 11.9, txt: '> Stack: nt!KeBugCheckEx  <-  netwtw10.sys+0x41c2' },
@@ -844,7 +849,7 @@ const Packets: React.FC<{ T: number; K: Cues }> = ({ T, K }) => {
     const pollPct = 40 + Math.floor(clamp((T - K.Progress) / 7, 0, 1) * 45);
     return (
         <>
-            <Chip x={dp[0]} y={dp[1]} opacity={dumpOp} scale={T > K.Debugging + 2 ? 0.85 : 1} icon="file" label="MEMORY.DMP" />
+            <Chip x={dp[0]} y={dp[1]} opacity={dumpOp} scale={T > K.Debugging + 2 ? 0.85 : 1} icon="file" label={DUMP_NAME} />
             <Chip x={rp[0]} y={rp[1]} opacity={rawOp} scale={0.95} dark icon="fileLines" label="raw analysis" />
             <Chip x={pp[0]} y={pp[1]} opacity={repOp} icon="fileCheck" label="your report" />
             {pulses.map((pu, i) => {

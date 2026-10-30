@@ -18,26 +18,74 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Cloudflare edge answers that mean the request never reached WinDbg-API
+// (issue #335): 521 origin refused the connection, 523 origin unreachable,
+// 525 TLS handshake with the origin failed, 526 invalid origin certificate.
+// 522 is not among them: Cloudflare also sends it when the connection was
+// established and the origin did not acknowledge the (already sent) request
+// within 90 s. 520 (empty/invalid origin answer) and 524 (origin took the
+// request and did not answer within 100 s) follow a delivered request.
+const ORIGIN_NOT_REACHED_STATUS = new Set([521, 523, 525, 526]);
+
 // Transient upstream failures: Cloudflare 52x edge errors plus origin
 // overload/limiting statuses that resolve on their own within seconds.
 function isTransientUpstreamStatus(status) {
   return status === 429 || status === 502 || status === 503 || status === 504
-    || status === 520 || status === 522 || status === 524 || status === 525;
+    || (status >= 520 && status <= 526);
 }
 
 // The submit API has no idempotency key, so a submit is retried only when the
 // failure guarantees no job was created (issue #140): a 429, a 503 that says
-// when to come back, or a connection that was never established. A 502, 504 or
-// Cloudflare 52x can arrive after the origin already accepted the upload, and
-// retrying those queued a second WinDBG job for the same dump.
+// when to come back, a connection that was never established, or a Cloudflare
+// answer that says the request never reached the origin (521/523/525/526,
+// issue #335). A 502, 504 or Cloudflare 520/522/524 can arrive after the
+// origin already accepted the upload, and retrying those queued a second
+// WinDBG job for the same dump.
 const PRE_SEND_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
 
-function isRetryableSubmitError(error) {
+const SUBMIT_RETRY_DELAY_MS = 750;
+// The longest upstream Retry-After the submit helper waits out before its one
+// re-POST of the dump; a longer one is passed on to the caller (issue #340).
+const MAX_SUBMIT_RETRY_WAIT_SECONDS = 5;
+
+// Retry-After as delta-seconds or an HTTP date; null when absent or invalid.
+function parseRetryAfterSeconds(value, now = Date.now()) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : null;
+}
+
+// WinDbg-API's 429 means either "queue full" (clears in seconds) or "this API
+// key's hourly/daily submission quota is used up" (issue #340). The quota one
+// says so in its text ("Rate limit exceeded for this API key", JobEndpoints.cs
+// and RateLimitMiddleware.cs) or, once WinDbg-API sends one, with the JSON
+// code RATE_LIMITED (QUEUE_FULL for the other).
+const PER_KEY_LIMIT_TEXT = /rate limit exceeded for this api key|quota/i;
+
+function isQuotaRateLimit(error) {
+  if (Number(error?.upstreamStatus) !== 429) return false;
+  if (error?.upstreamCode === 'RATE_LIMITED') return true;
+  if (error?.upstreamCode === 'QUEUE_FULL') return false;
+  return PER_KEY_LIMIT_TEXT.test(error?.message || '');
+}
+
+// Milliseconds to wait before re-POSTing a failed submit, or null when it must
+// not be re-POSTed.
+function submitRetryDelayMs(error) {
   if (error?.code === 'WINDBG_UPSTREAM_ERROR') {
     const status = Number(error.upstreamStatus);
-    return status === 429 || (status === 503 && Boolean(error.retryAfter));
+    if (ORIGIN_NOT_REACHED_STATUS.has(status)) return SUBMIT_RETRY_DELAY_MS;
+    if (status !== 429 && !(status === 503 && error.retryAfter)) return null;
+    if (isQuotaRateLimit(error)) return null;
+    const seconds = parseRetryAfterSeconds(error.retryAfter);
+    if (seconds == null) return SUBMIT_RETRY_DELAY_MS;
+    return seconds > MAX_SUBMIT_RETRY_WAIT_SECONDS ? null : Math.max(SUBMIT_RETRY_DELAY_MS, seconds * 1000);
   }
-  return error?.name !== 'AbortError' && PRE_SEND_NETWORK_CODES.has(error?.cause?.code ?? error?.code);
+  return error?.name !== 'AbortError' && PRE_SEND_NETWORK_CODES.has(error?.cause?.code ?? error?.code)
+    ? SUBMIT_RETRY_DELAY_MS
+    : null;
 }
 
 function escapeMultipartValue(value) {
@@ -103,6 +151,8 @@ async function readJsonResponse(response, context) {
     err.code = 'WINDBG_UPSTREAM_ERROR';
     err.upstreamStatus = response.status;
     err.retryAfter = response.headers?.get?.('retry-after') || null;
+    const upstreamCode = body?.error_code ?? body?.code;
+    err.upstreamCode = typeof upstreamCode === 'string' && upstreamCode.trim() ? upstreamCode.trim().toUpperCase() : null;
     throw err;
   }
 
@@ -145,16 +195,21 @@ async function submitWinDbgJob({
       const body = await readJsonResponse(response, 'WinDBG job submit');
       const jobId = body.job_id || body.id;
       if (!jobId || typeof jobId !== 'string') {
-        throw new Error('WinDBG job submit response did not include job_id');
+        // A 2xx without a job id: the upload may have been accepted (#328).
+        throw Object.assign(new Error('WinDBG job submit response did not include job_id'), {
+          code: 'WINDBG_UPSTREAM_NO_JOB_ID',
+          upstreamStatus: response.status
+        });
       }
 
       return { ...body, job_id: jobId };
     } catch (error) {
       lastError = error;
-      if (attempt >= maxAttempts || !isRetryableSubmitError(error)) {
+      const delayMs = attempt < maxAttempts ? submitRetryDelayMs(error) : null;
+      if (delayMs == null) {
         throw error;
       }
-      await sleep(750);
+      await sleep(delayMs);
     }
   }
 
@@ -310,8 +365,42 @@ function findSection(sections, suffixRe) {
   return undefined;
 }
 
+// Fixed user-facing text per upstream `error_category`. The upstream `error`
+// column holds raw cdb stderr or storage-check text (host paths, symbol and
+// extension paths, engine internals), so it is never sent to the browser:
+// the status response carries one of these messages instead, and the server
+// logs the raw text bounded (winDbgJobErrorLogFields).
+const WINDBG_JOB_ERROR_GENERIC_MESSAGE = 'The analysis server could not analyze this dump. Please try again later.';
+const WINDBG_JOB_ERROR_MESSAGES = Object.freeze({
+  cdb: 'The debugger could not analyze this dump.',
+  storage: 'The analysis server is temporarily out of capacity. Please try again later.',
+  worker: 'The analysis server hit an internal error. Please try again later.',
+  timeout: 'The analysis took too long and was stopped.',
+  upload: 'The analysis server could not read the uploaded dump.',
+  watchdog: 'The analysis was interrupted on the server. Please try again later.'
+});
+
+function winDbgJobErrorMessage(category) {
+  return (typeof category === 'string' && Object.hasOwn(WINDBG_JOB_ERROR_MESSAGES, category))
+    ? WINDBG_JOB_ERROR_MESSAGES[category]
+    : WINDBG_JOB_ERROR_GENERIC_MESSAGE;
+}
+
+// Bounded log fields for a job that carries upstream error text, or null when
+// there is nothing to log. Server-side only.
+function winDbgJobErrorLogFields(job) {
+  if (!job || (typeof job.error !== 'string' && !job.error_category)) return null;
+  return {
+    jobId: typeof (job.job_id || job.id) === 'string' ? String(job.job_id || job.id).slice(0, 100) : undefined,
+    status: typeof job.status === 'string' ? job.status.slice(0, 40) : undefined,
+    errorCategory: typeof job.error_category === 'string' ? job.error_category.slice(0, 40) : undefined,
+    error: typeof job.error === 'string' ? job.error.slice(0, 500) : undefined
+  };
+}
+
 function toLegacyWinDbgStatusResponse(job, uid) {
   const status = mapWinDbgJobStatus(job?.status);
+  const hasError = status === 'failed' || Boolean(job?.error);
   return {
     success: true,
     data: {
@@ -323,7 +412,7 @@ function toLegacyWinDbgStatusResponse(job, uid) {
       analysis_available: status === 'completed',
       output_file_size: undefined,
       processing_time_seconds: processingSeconds(job),
-      error_message: job?.error || undefined,
+      error_message: hasError ? winDbgJobErrorMessage(job?.error_category) : undefined,
       error_category: job?.error_category || undefined,
       // Pass the raw upstream status through so the proxy/UI can see an unmapped
       // value rather than silently treating an unknown status as 'pending'.
@@ -473,11 +562,22 @@ function parseAnalyzeFields(analyzeText) {
   };
 }
 
+// `kv` and `!analyze -v` STACK_TEXT lines are
+// `Child-SP RetAddr : Args to Child : Call Site`; parsers that keep everything
+// after RetAddr leave the argument columns in the symbol. The call site is the
+// text after the last ' : ' (or the whole text when there is no separator).
+function stackCallSite(text) {
+  if (typeof text !== 'string') return undefined;
+  const separator = text.lastIndexOf(' : ');
+  const site = (separator >= 0 ? text.slice(separator + 3) : text)
+    .replace(/^\s*:\s*/, '')
+    .trim();
+  return site || undefined;
+}
+
 function cleanParsedStackFrame(frame) {
   if (!frame || typeof frame !== 'object') return undefined;
-  const symbol = typeof frame.symbol === 'string'
-    ? frame.symbol.replace(/^\s*:\s*/, '').trim()
-    : undefined;
+  const symbol = stackCallSite(frame.symbol);
   return compactObject({
     frame: frame.frame,
     sp: frame.sp,
@@ -490,9 +590,10 @@ function stackModuleNames(stackFrames) {
   const names = new Set();
   for (const frame of stackFrames || []) {
     const symbol = frame?.symbol || '';
-    for (const match of symbol.matchAll(/\b([A-Za-z0-9_.$-]+)!/g)) {
-      names.add(match[1].toLowerCase());
-    }
+    const site = stackCallSite(symbol) || '';
+    // `module!function+0xoff`, or `module+0xoff` for modules without symbols.
+    const match = site.match(/^([A-Za-z0-9_.$-]+)(?:!|\+0x[0-9a-fA-F]+\b)/);
+    if (match) names.add(match[1].toLowerCase());
   }
   return names;
 }
@@ -649,19 +750,51 @@ function removeEmpty(value) {
   return value;
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// The server signal is authoritative where it has a value, but it is a subset
+// of the local schema (no notableModules, debuggerWarnings, blackboxes, bug
+// check description/keyValues, crash readAddress/failureHash/stackCommand...),
+// so local keys fill the gaps. Nested objects (bugcheck, crash, ...) merge one
+// level deep; arrays and scalars are taken whole from the server.
+function mergeServerSignalOverLocal(serverSignal, localSignal) {
+  const merged = { ...localSignal };
+  for (const [key, value] of Object.entries(serverSignal)) {
+    merged[key] = isPlainObject(value) && isPlainObject(localSignal[key])
+      ? { ...localSignal[key], ...value }
+      : value;
+  }
+  return merged;
+}
+
 function extractRelevantWinDbgSignal(job) {
   const result = getResultObject(job);
+  const localSignal = extractLocalWinDbgSignal(result);
 
   // Prefer the authoritative signal computed server-side (Phase 3) when it is
-  // present and well-formed; otherwise fall back to local extraction below. This
-  // keeps older/partial server builds working and tolerates malformed payloads.
+  // present and well-formed, filling in the keys it omits from the local
+  // extraction; otherwise use the local extraction alone. This keeps
+  // older/partial server builds working and tolerates malformed payloads.
   const serverSignal = result.ai_signal;
-  if (serverSignal && typeof serverSignal === 'object' && !Array.isArray(serverSignal)
-      && serverSignal.schema === 'windbg_crash_signal_v1') {
-    const cleanedServer = removeEmpty(serverSignal) || {};
-    if (Object.keys(cleanedServer).length > 1) return cleanedServer;
+  if (isPlainObject(serverSignal) && serverSignal.schema === 'windbg_crash_signal_v1') {
+    const cleanedServer = removeEmpty({
+      ...serverSignal,
+      stackFrames: Array.isArray(serverSignal.stackFrames)
+        ? serverSignal.stackFrames.map(cleanParsedStackFrame).filter(Boolean)
+        : serverSignal.stackFrames
+    }) || {};
+    if (Object.keys(cleanedServer).length > 1) {
+      return Object.keys(localSignal).length > 0
+        ? mergeServerSignalOverLocal(cleanedServer, localSignal)
+        : cleanedServer;
+    }
   }
+  return localSignal;
+}
 
+function extractLocalWinDbgSignal(result) {
   const parsed = result.parsed && typeof result.parsed === 'object' ? result.parsed : {};
   const sections = getSectionsObject(result);
 
@@ -803,9 +936,18 @@ export {
   extractWinDbgAnalysisPackage,
   extractWinDbgAnalysisText,
   getWinDbgJob,
+  isQuotaRateLimit,
+  isTransientUpstreamStatus,
+  ORIGIN_NOT_REACHED_STATUS,
+  parseRetryAfterSeconds,
+  PRE_SEND_NETWORK_CODES,
   mapWinDbgJobStatus,
   markWinDbgJobsArchived,
   normalizeWinDbgApiBaseUrl,
+  stackCallSite,
   submitWinDbgJob,
-  toLegacyWinDbgStatusResponse
+  toLegacyWinDbgStatusResponse,
+  WINDBG_JOB_ERROR_GENERIC_MESSAGE,
+  WINDBG_JOB_ERROR_MESSAGES,
+  winDbgJobErrorLogFields
 };

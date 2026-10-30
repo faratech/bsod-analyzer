@@ -1,8 +1,8 @@
 // Proxy to match the original geminiService.ts exactly but route through backend
-import { DumpFile, AnalysisReportData, FileStatus } from '../types';
+import { DumpFile, AnalysisReportData, FileStatus, FileAnalysisResult, RetainedWinDbgResult } from '../types';
 import { dataUseHeaders } from '../utils/dataUse';
 import { sanitizeExtractedContent, validateProcessingTimeout } from '../utils/contentSanitizer';
-import { initializeSession, handleSessionError } from '../utils/sessionManager';
+import { initializeSession, handleSessionError, getSessionGeneration } from '../utils/sessionManager';
 import { getStructuredDumpInfo, extractBugCheckInfo, isLegitimateModuleName } from '../utils/dumpParser';
 import { parseDumpFile as parseKernelDump, KernelDumpResult } from '../utils/kernelDumpModuleParser';
 import { findMatchingPattern, getEnhancedRecommendations, analyzeCrashContext } from '../utils/knownPatterns';
@@ -11,7 +11,8 @@ import { FILE_SIZE_THRESHOLDS, PROCESSING_LIMITS } from '../constants';
 import { analyzeMemoryPatterns } from '../utils/memoryPatternAnalyzer';
 import { extractDriverVersions, identifyOutdatedDrivers } from '../utils/peParser';
 import { MinidumpParser } from '../utils/minidumpStreams.js';
-import { analyzeWithWinDBG, getCachedAnalysisByHash, getFileHandle, WinDBGAnalysisResult } from './windbgService';
+import { formatMachineType } from '../utils/machineType.js';
+import { analyzeWithWinDBG, describeWinDbgFailureForPrompt, getCachedAnalysisByHash, getFileHandle, WinDBGAnalysisResult } from './windbgService';
 import { LOCAL_DUMP_PREFIX, WINDBG_PREFIX, WINDBG_OUTPUT_MARKER, WINDBG_STRUCTURED_NOTE, WINDBG_RAW_NOTE, wrapWithEvidence } from '../shared/promptTemplates.js';
 import {
     mapStructuredSignalToReport,
@@ -19,6 +20,7 @@ import {
     parseWinDbgOutput
 } from '../shared/windbgReportFields.js';
 import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../shared/windbgFailoverPolicy.js';
+import { redactPersonalIdentifiers, redactPersonalBytes, collectPersonalNamesFromBytes } from '../shared/promptRedaction.js';
 import { isPremiumTier } from './tierState';
 import { SSO_ENABLED } from './featureFlags';
 // Define types to match original imports
@@ -49,6 +51,12 @@ interface GenerateContentParams {
     tools?: any[];
     fileHash?: string; // For cache key consistency
     fileHandle?: string; // Signed upload handle proving ownership of fileHash
+    signal?: AbortSignal; // The analysis run's signal; never sent in the body
+}
+
+// Same marker windbgService uses for a superseded/cancelled run.
+function createCancelledError(): Error & { code: string } {
+    return Object.assign(new Error('Analysis cancelled'), { name: 'AbortError', code: 'ABORTED' });
 }
 
 // Format a bug check code as 0x-prefixed uppercase hex (e.g., 0x0000007E)
@@ -71,10 +79,15 @@ const createGeminiProxy = () => {
         let retryCount = 0;
         const MAX_RETRIES = 2;
 
+        const { signal, ...body } = params;
+
         const makeRequest = async (): Promise<any> => {
             try {
+                // A cancelled run must not spend an AI call (issue #235).
+                if (signal?.aborted) throw createCancelledError();
+
                 // Log the request size for debugging
-                const requestBody = JSON.stringify(params);
+                const requestBody = JSON.stringify(body);
                 console.log('[GeminiProxy] Request size:', requestBody.length, 'bytes');
                 if (requestBody.length > 1000000) {
                     console.warn('[GeminiProxy] Large request size may cause issues');
@@ -87,24 +100,32 @@ const createGeminiProxy = () => {
                         ...dataUseHeaders(),
                     },
                     credentials: 'include', // Important: include cookies for session
-                    body: requestBody
+                    body: requestBody,
+                    signal
                 });
 
                 if (!response.ok) {
                     let errorMessage = `API request failed with status ${response.status}`;
                     let errorData: any = {};
 
+                    // Read the body once: a failed json() consumes the stream,
+                    // so an edge HTML page (Cloudflare 52x/403) could never be
+                    // read as text afterwards (issues #219, #230).
+                    let errorText = '';
                     try {
-                        errorData = await response.json();
+                        errorText = await response.text();
+                    } catch {
+                        console.error('[GeminiProxy] Could not read error response');
+                    }
+                    try {
+                        const parsed = JSON.parse(errorText);
+                        if (parsed && typeof parsed === 'object') errorData = parsed;
                         console.error('[GeminiProxy] Error response:', errorData);
                     } catch {
-                        // Response might not be JSON
-                        try {
-                            const errorText = await response.text();
-                            console.error('[GeminiProxy] Error response text:', errorText);
-                            errorMessage += `: ${errorText}`;
-                        } catch {
-                            console.error('[GeminiProxy] Could not read error response');
+                        console.error('[GeminiProxy] Error response text:', errorText.slice(0, 500));
+                        const plain = errorText.trim();
+                        if (plain && !/^</.test(plain)) {
+                            errorMessage += `: ${plain.slice(0, 200)}`;
                         }
                     }
 
@@ -127,7 +148,8 @@ const createGeminiProxy = () => {
                     // Check for specific error codes
                     if (response.status === 500) {
                         errorMessage = errorData?.error || 'Server error while analyzing - please try again shortly';
-                    } else if (response.status === 502 || response.status === 503 || response.status === 504) {
+                    } else if (response.status === 408 || response.status >= 501) {
+                        // 502-504 and the Cloudflare 520-524 origin errors
                         errorMessage = 'The analysis service is busy or temporarily unavailable - please try again shortly';
                     } else if (response.status === 413) {
                         errorMessage = 'Request too large - the dump file may be too big';
@@ -135,7 +157,10 @@ const createGeminiProxy = () => {
                         errorMessage = 'Rate limit exceeded - too many requests';
                     }
 
-                    throw new Error(errorData.error || errorMessage);
+                    throw Object.assign(new Error(errorData.error || errorMessage), {
+                        status: response.status,
+                        code: typeof errorData.code === 'string' ? errorData.code : undefined
+                    });
                 }
 
                 return response.json();
@@ -286,7 +311,11 @@ function normalizeAnalysisReportData(value: unknown): AnalysisReportData {
         const details = typeof hardware.details === 'string'
             ? [hardware.details]
             : normalizeTextArray(hardware.details);
-        const isHardwareError = Boolean(hardware.isHardwareError || hardware.errorType || hardware.type);
+        // An explicit boolean wins; infer from errorType/type only when absent (issue #247).
+        const isHardwareError = typeof hardware.isHardwareError === 'boolean'
+            ? hardware.isHardwareError
+            : Boolean(hardware.errorType || hardware.type);
+        delete report.hardwareError;
         if (isHardwareError) {
             report.hardwareError = {
                 isHardwareError: true,
@@ -671,8 +700,31 @@ function generateHexDump(buffer: ArrayBuffer, length = PROCESSING_LIMITS.HEX_DUM
     return result;
 }
 
+// Bytes past the excerpt that the redaction still reads, so a name crossing
+// the excerpt's end is matched whole: one MAX_PATH of UTF-16 text.
+const HEX_REDACTION_MARGIN = 520;
 
-const generateInitialAnalysis = async (fileName: string, prompt: string, fileHash?: string): Promise<AnalysisReportData> => {
+/**
+ * generateHexDump of the first `length` bytes with personal identifiers masked
+ * as bytes first (issue #359): a hex dump shows UTF-16 text as
+ * "C.:.\.U.s.e.r.s." and splits ASCII across lines, so the text redaction of
+ * the finished prompt cannot catch them there. Redacts a copy; `buffer` stays
+ * untouched for parsing and hashing. `startsMidMemory` marks an excerpt (the
+ * thread stack) that can begin inside a string, whose cut-off start is masked.
+ */
+function generateRedactedHexDump(
+    buffer: ArrayBuffer,
+    length: number,
+    names: ReturnType<typeof collectPersonalNamesFromBytes>,
+    startsMidMemory = false
+): string {
+    const window = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, length + HEX_REDACTION_MARGIN));
+    const redacted = redactPersonalBytes(window, { names, maskLeadingRun: startsMidMemory });
+    return generateHexDump(redacted.buffer as ArrayBuffer, length);
+}
+
+
+const generateInitialAnalysis = async (fileName: string, prompt: string, fileHash?: string, signal?: AbortSignal): Promise<AnalysisReportData> => {
     try {
         // Check prompt size and warn if too large
         const promptSize = new Blob([prompt]).size;
@@ -698,7 +750,8 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
                 // DeepSeek reasoning trace.
             },
             fileHash, // Pass fileHash for cache key consistency
-            fileHandle: getFileHandle(fileHash) // Proves this session uploaded it
+            fileHandle: getFileHandle(fileHash), // Proves this session uploaded it
+            signal
             // Note: Grounding with Google Search cannot be used with JSON response format
             // To use grounding, we would need to remove responseMimeType and responseSchema
         });
@@ -784,19 +837,18 @@ const generateInitialAnalysis = async (fileName: string, prompt: string, fileHas
         }
     } catch (error) {
         console.error(`Error analyzing ${fileName}:`, error);
-        
-        // Check if it's an API configuration error
-        if (error instanceof Error && error.message.includes('API request failed')) {
-            throw new Error(`API request failed for ${fileName}. Please ensure the Gemini API key is configured on the server.`);
-        }
-        
-        throw new Error(`Failed to generate analysis for ${fileName}. ${error instanceof Error ? error.message : 'Unknown error'}`);
+        if (signal?.aborted) throw createCancelledError();
+
+        // Keep the real cause: an unmapped status is not evidence of a missing
+        // API key (issue #230). The status/code travel on the wrapped error.
+        const { status, code } = (error ?? {}) as { status?: number; code?: string };
+        throw Object.assign(
+            new Error(`Failed to generate analysis for ${fileName}. ${error instanceof Error ? error.message : 'Unknown error'}`),
+            { status, code }
+        );
     }
 };
 
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error || 'Unknown WinDBG failure');
-}
 
 function formatSampleRanges(ranges: Array<{ label: string; start: number; end: number }>): string {
     return ranges
@@ -807,22 +859,26 @@ function formatSampleRanges(ranges: Array<{ label: string; start: number; end: n
 async function generateLargeDumpAiFailoverReport(
     dumpFile: DumpFile,
     fileLabel: string,
-    windbgFailure: unknown
+    windbgFailure: unknown,
+    signal?: AbortSignal
 ): Promise<AnalysisReportData> {
     console.log('[Analyzer] Using lightweight AI failover for large dump:', fileLabel);
     const { buffer: sampledBuffer, ranges } = await readSampledDumpBuffer(dumpFile.file);
     const rawExtractedStrings = extractPrintableStrings(sampledBuffer);
-    const extractedStrings = sanitizeExtractedContent(rawExtractedStrings)
-        .substring(0, PROCESSING_LIMITS.MAX_STRINGS_LENGTH);
+    const extractedStrings = sanitizeExtractedContent(rawExtractedStrings);
     const bugCheckCode = extractBugCheckCode(sampledBuffer);
     const windowsVersion = extractWindowsVersion(rawExtractedStrings);
-    const sampleHexDump = generateHexDump(sampledBuffer, PROCESSING_LIMITS.HEX_DUMP_LENGTH);
+    // Names the dump reveals (profile folders, USERNAME=, ...) are masked in
+    // the hex excerpt and the whole prompt, not only where they first appear.
+    // Read from the bytes: the extracted strings drop non-ASCII text (#365).
+    const personalNames = collectPersonalNamesFromBytes(new Uint8Array(sampledBuffer));
+    const sampleHexDump = generateRedactedHexDump(sampledBuffer, PROCESSING_LIMITS.HEX_DUMP_LENGTH, personalNames);
     const samplingSummary = formatSampleRanges(ranges);
 
     let evidence = `**File:** ${fileLabel} (${dumpFile.dumpType}, ${dumpFile.file.size} bytes)
 
 **Fallback Mode:** WinDBG server was unavailable, so this is a lightweight AI failover analysis using sampled dump bytes only.
-**WinDBG Failure:** ${errorMessage(windbgFailure).slice(0, 500)}
+**WinDBG Failure:** ${describeWinDbgFailureForPrompt(windbgFailure).slice(0, 500)}
 **Sampling:** ${samplingSummary || 'No bytes sampled'}
 **Sample Size:** ${sampledBuffer.byteLength} bytes
 
@@ -856,8 +912,10 @@ WinDBG was unavailable and the sampled bytes did not contain a validated bug che
 ### FAILOVER LIMITATION
 This is not a full WinDBG analysis. Do not invent missing stack frames, modules, parameters, or bug check codes. Prefer cautious recommendations that fit the sampled evidence.`;
 
-    const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, evidence);
-    const report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash);
+    // Dump strings go to the AI provider and are stored with the report:
+    // redact profile folder names and email addresses first (issue #345).
+    const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, redactPersonalIdentifiers(evidence, { names: personalNames }));
+    const report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash, signal);
 
     if (!report.summary.toLowerCase().includes('failover') && !report.summary.toLowerCase().includes('limited')) {
         report.summary = `Limited WinDBG failover analysis: ${report.summary}`;
@@ -902,6 +960,28 @@ function extractCrashSignal(raw: string, maxBytes = 16384): string {
     return slice;
 }
 
+// Fields parsed straight from the WinDBG output and its structured signal;
+// they take precedence over the AI's answer for structured data.
+function getWinDbgReportFields(windbgAnalysis: string, structured?: Record<string, unknown> | null) {
+    const parsedFields = parseWinDbgOutput(windbgAnalysis) as Partial<AnalysisReportData>;
+    const structuredFields = mapStructuredSignalToReport(structured || undefined, {
+        explainBugCheckParameter: (code: number, parameter: number, value: bigint) =>
+            getParameterExplanation(code, parameter as 1 | 2 | 3 | 4, value)
+    }) as Partial<AnalysisReportData>;
+    return { parsedFields, structuredFields };
+}
+
+// The post-AI merge every WinDBG-backed report gets, whether the AI answer is
+// fresh or comes from the analysis cache (issue #237).
+function mergeAiReportWithWinDbg(
+    aiReport: AnalysisReportData,
+    windbgAnalysis: string,
+    structured?: Record<string, unknown> | null
+): AnalysisReportData {
+    const { parsedFields, structuredFields } = getWinDbgReportFields(windbgAnalysis, structured);
+    return normalizeAnalysisReportData(mergeReportWithWinDbgFields(aiReport, structuredFields, parsedFields));
+}
+
 /**
  * Generate an AI report from WinDBG server analysis output.
  * This function takes the raw WinDBG analysis text and asks the AI to
@@ -916,17 +996,14 @@ async function generateReportFromWinDBG(
     options: {
         analysisSignalText?: string;
         structured?: Record<string, unknown>;
+        signal?: AbortSignal;
     } = {}
 ): Promise<AnalysisReportData> {
     console.log('[Analyzer] Generating AI report from WinDBG analysis...');
     console.log('[Analyzer] WinDBG analysis length:', windbgAnalysis.length, 'chars');
 
     // Parse structured fields directly from WinDBG output (more reliable than AI extraction)
-    const parsedFields = parseWinDbgOutput(windbgAnalysis) as Partial<AnalysisReportData>;
-    const structuredFields = mapStructuredSignalToReport(options.structured, {
-        explainBugCheckParameter: (code: number, parameter: number, value: bigint) =>
-            getParameterExplanation(code, parameter as 1 | 2 | 3 | 4, value)
-    }) as Partial<AnalysisReportData>;
+    const { parsedFields, structuredFields } = getWinDbgReportFields(windbgAnalysis, options.structured);
     console.log('[Analyzer] Parsed WinDBG fields:', {
         failureBucketId: parsedFields.failureBucketId ? 'present' : 'missing',
         symbolName: parsedFields.symbolName ? 'present' : 'missing',
@@ -969,7 +1046,8 @@ ${analysisForPrompt}
                 // default govern the output budget.
             },
             fileHash, // Pass fileHash for cache key consistency
-            fileHandle: getFileHandle(fileHash) // Proves this session uploaded it
+            fileHandle: getFileHandle(fileHash), // Proves this session uploaded it
+            signal: options.signal
         });
 
         const responseText = response.text;
@@ -980,7 +1058,7 @@ ${analysisForPrompt}
             const aiReport = normalizeAnalysisReportData(JSON.parse(responseText));
             console.log('[Analyzer] Successfully parsed WinDBG-based report');
             // Merge AI report with directly parsed fields (parsed fields take precedence for structured data)
-            const mergedReport = mergeReportWithWinDbgFields(aiReport, structuredFields, parsedFields);
+            const mergedReport = mergeAiReportWithWinDbg(aiReport, windbgAnalysis, options.structured);
             console.log('[Analyzer] Merged report has:', {
                 failureBucketId: mergedReport.failureBucketId || 'missing',
                 symbolName: mergedReport.symbolName || 'missing',
@@ -988,7 +1066,7 @@ ${analysisForPrompt}
                 rawWinDbgOutput: mergedReport.rawWinDbgOutput ? `${mergedReport.rawWinDbgOutput.length} chars` : 'missing',
                 callStack: mergedReport.callStack?.length || 0
             });
-            return normalizeAnalysisReportData(mergedReport);
+            return mergedReport;
         } catch (parseError) {
             console.error('[Analyzer] Failed to parse WinDBG AI response:', parseError);
 
@@ -998,9 +1076,7 @@ ${analysisForPrompt}
                 try {
                     const aiReport = normalizeAnalysisReportData(JSON.parse(jsonMatch[0]));
                     console.log('[Analyzer] Extracted JSON from WinDBG response');
-                    return normalizeAnalysisReportData(
-                        mergeReportWithWinDbgFields(aiReport, structuredFields, parsedFields)
-                    );
+                    return mergeAiReportWithWinDbg(aiReport, windbgAnalysis, options.structured);
                 } catch {
                     // Continue to fallback
                 }
@@ -1020,19 +1096,13 @@ ${analysisForPrompt}
             }, structuredFields, parsedFields) as AnalysisReportData;
         }
     } catch (error) {
+        // A failed AI request (429, 5xx, network, timeout, expired session)
+        // propagates so the file ends in ERROR with a Retry button instead of
+        // a "Completed" placeholder (issue #232). Only a delivered answer that
+        // cannot be parsed (above) falls back to the WinDBG-only report.
         console.error('[Analyzer] WinDBG AI analysis error:', error);
-
-        // Return a basic report if AI fails, still include parsed fields
-        return mergeReportWithWinDbgFields({
-            summary: `Windows crash in ${fileName} analyzed by WinDBG`,
-            probableCause: 'WinDBG analysis completed but AI interpretation failed.',
-            culprit: extractCulpritFromWinDBG(windbgAnalysis),
-            recommendations: [
-                'Review the raw WinDBG output manually',
-                'Update drivers mentioned in the analysis',
-                'Check Windows Event Viewer for related errors'
-            ]
-        }, structuredFields, parsedFields) as AnalysisReportData;
+        if (options.signal?.aborted) throw createCancelledError();
+        throw error;
     }
 }
 
@@ -1070,10 +1140,28 @@ function extractCulpritFromWinDBG(windbgOutput: string): string {
     return 'Unknown';
 }
 
+// How long a WinDBG result kept after an AI-only failure may be reused by
+// Retry (issue #331): below the server's one-hour ownership window, within
+// which the file handle still proves this session uploaded the dump and the
+// server rebuilds the prompt from the owned job's evidence.
+export const WINDBG_RESULT_REUSE_MS = 50 * 60 * 1000;
+
+function reusableWinDbgResult(dumpFile: DumpFile): RetainedWinDbgResult | null {
+    const kept = dumpFile.windbgResult;
+    if (!kept || typeof kept.analysisText !== 'string' || !kept.analysisText.trim()) return null;
+    if (!(Date.now() - kept.completedAt < WINDBG_RESULT_REUSE_MS)) return null;
+    if (kept.fileHash && !getFileHandle(kept.fileHash)) return null;
+    // The handle is signed for the session that uploaded the dump; after a new
+    // session (SSO re-verification, Turnstile) the server would no longer treat
+    // the job as owned, so upload again instead (#341).
+    if (kept.sessionGeneration !== getSessionGeneration()) return null;
+    return kept;
+}
+
 export const analyzeDumpFiles = async (
     files: DumpFile[],
     onProgress?: (stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete', message: string) => void,
-    onFileComplete?: (result: { id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }) => void,
+    onFileComplete?: (result: FileAnalysisResult) => void,
     onUploadProgress?: (percent: number) => void,
     options?: { signal?: AbortSignal }
 ) => {
@@ -1089,7 +1177,7 @@ export const analyzeDumpFiles = async (
     // WinDBG upload concurrency and force avoidable local-analysis fallbacks.
     // Each file's result is streamed to onFileComplete as it finishes
 
-    const analyzeFile = async (dumpFile: DumpFile): Promise<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' }> => {
+    const analyzeFile = async (dumpFile: DumpFile): Promise<FileAnalysisResult> => {
         const fileLabel = dumpFile.displayName || dumpFile.file.name;
         const result = await (async () => {
         try {
@@ -1109,58 +1197,154 @@ export const analyzeDumpFiles = async (
                 return cachedFileBuffer;
             };
 
+            // WinDBG-backed reports take the bug check from the dump's own header
+            // (accurate code and parameter meanings) on every path: fresh run,
+            // cached WinDBG analysis and hash fast path (issue #237).
+            const applyDumpBugCheck = async (report: AnalysisReportData): Promise<AnalysisReportData> => {
+                try {
+                    if (dumpFile.file.size <= 5 * 1024 * 1024) {
+                        const fileBuffer = await getFileBuffer();
+                        const bugCheckInfo = extractBugCheckInfo(fileBuffer);
+                        if (bugCheckInfo) {
+                            const bugCode = bugCheckInfo.code;
+                            const bugName = bugCheckInfo.name;
+                            const params = [
+                                bugCheckInfo.parameter1,
+                                bugCheckInfo.parameter2,
+                                bugCheckInfo.parameter3,
+                                bugCheckInfo.parameter4
+                            ];
+
+                            report.bugCheck = {
+                                code: formatBugCheckHex(bugCode),
+                                name: bugName,
+                                parameters: params.map((p, i) => ({
+                                    value: `0x${p.toString(16).toUpperCase()}`,
+                                    meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
+                                }))
+                            };
+                        }
+                    } else {
+                        console.log('[Analyzer] Skipping client-side bug check extraction for large WinDBG-analyzed dump');
+                    }
+                } catch (e) {
+                    console.error('[Analyzer] Failed to extract bug check info from binary buffer:', e);
+                }
+                return report;
+            };
+
+            // The AI step after a successful WinDBG run. An AI failure (not a
+            // cancellation) ends in ERROR carrying the WinDBG result, so Retry
+            // can run only this step again (issue #331).
+            const reportFromWinDbg = async (windbg: RetainedWinDbgResult): Promise<FileAnalysisResult> => {
+                onProgress?.('analyzing', 'AI is interpreting the crash analysis...');
+                let windbgReport: AnalysisReportData;
+                try {
+                    windbgReport = await generateReportFromWinDBG(
+                        fileLabel,
+                        dumpFile.dumpType,
+                        dumpFile.file.size,
+                        windbg.analysisText,
+                        windbg.fileHash,
+                        {
+                            analysisSignalText: windbg.analysisSignalText,
+                            structured: windbg.structured,
+                            signal: options?.signal
+                        }
+                    );
+                } catch (aiError) {
+                    if (options?.signal?.aborted) throw aiError;
+                    console.error(`Analysis failed for ${fileLabel}:`, aiError);
+                    return {
+                        id: dumpFile.id,
+                        error: `Failed to read or analyze file. ${(aiError as Error).message}`,
+                        status: FileStatus.ERROR,
+                        windbgResult: windbg
+                    };
+                }
+
+                // Populate bugCheck from binary buffer (guarantees accurate code and parameters meanings)
+                await applyDumpBugCheck(windbgReport);
+
+                return {
+                    id: dumpFile.id,
+                    report: windbgReport,
+                    status: FileStatus.ANALYZED,
+                    cached: windbg.cached || false,
+                    analysisMethod: 'windbg' as const
+                };
+            };
+
+            // Retry after an AI-only failure: reuse the kept WinDBG result
+            // instead of uploading the dump and queueing a second job (#331).
+            const kept = reusableWinDbgResult(dumpFile);
+            if (kept) {
+                console.log(`[Analyzer] Reusing the WinDBG result for ${fileLabel}; running only the AI step`);
+                return await reportFromWinDbg(kept);
+            }
+
             if (dumpFile.knownCached && dumpFile.fileHash) {
+                let cached: Awaited<ReturnType<typeof getCachedAnalysisByHash>> = null;
                 try {
                     onProgress?.('downloading', 'Loading cached analysis...');
-                    const cached = await getCachedAnalysisByHash(dumpFile.fileHash);
-                    throwIfAborted();
-
-                    if (cached?.cached) {
-                        const cachedReport = normalizeCachedAIReport(cached.aiReport);
-                        if (cachedReport) {
-                            console.log(`[Analyzer] Cache HIT - using cached AI report for ${fileLabel}`);
-                            return {
-                                id: dumpFile.id,
-                                report: cachedReport,
-                                status: FileStatus.ANALYZED,
-                                cached: true,
-                                analysisMethod: cached.windbgAnalysis ? 'windbg' as const : 'local' as const
-                            };
-                        }
-
-                        const cachedWinDbg = typeof cached.windbgAnalysis === 'string'
-                            ? cached.windbgAnalysis.trim()
-                            : '';
-                        if (cachedWinDbg) {
-                            console.log(`[Analyzer] Cache HIT - generating report from cached WinDBG analysis for ${fileLabel}`);
-                            onProgress?.('analyzing', 'AI is interpreting cached crash analysis...');
-                            const report = await generateReportFromWinDBG(
-                                fileLabel,
-                                dumpFile.dumpType,
-                                dumpFile.file.size,
-                                cachedWinDbg,
-                                dumpFile.fileHash,
-                                {
-                                    analysisSignalText: cached.analysisSignalText || undefined,
-                                    structured: cached.structured || undefined
-                                }
-                            );
-                            return {
-                                id: dumpFile.id,
-                                report,
-                                status: FileStatus.ANALYZED,
-                                cached: true,
-                                analysisMethod: 'windbg' as const
-                            };
-                        }
-
-                        console.warn(`[Analyzer] Cache entry for ${fileLabel} did not contain a usable AI report or WinDBG analysis`);
-                    } else {
-                        console.log(`[Analyzer] Cache MISS for ${fileLabel}; falling back to WinDBG upload`);
-                    }
+                    cached = await getCachedAnalysisByHash(dumpFile.fileHash);
                 } catch (cacheError) {
                     throwIfAborted();
                     console.warn('[Analyzer] Cached analysis retrieval failed; falling back to WinDBG upload:', cacheError);
+                }
+                throwIfAborted();
+
+                // Only the cache read falls back to the upload; an AI failure on
+                // a cached WinDBG analysis ends in ERROR (issue #232).
+                if (cached?.cached) {
+                    const cachedWinDbg = typeof cached.windbgAnalysis === 'string'
+                        ? cached.windbgAnalysis.trim()
+                        : '';
+                    const cachedReport = normalizeCachedAIReport(cached.aiReport);
+                    if (cachedReport) {
+                        console.log(`[Analyzer] Cache HIT - using cached AI report for ${fileLabel}`);
+                        // The cache stores the raw AI answer: give it the same
+                        // WinDBG merge and bug check a fresh run gets (#237).
+                        const report = cachedWinDbg
+                            ? await applyDumpBugCheck(mergeAiReportWithWinDbg(cachedReport, cachedWinDbg, cached.structured))
+                            : cachedReport;
+                        return {
+                            id: dumpFile.id,
+                            report,
+                            status: FileStatus.ANALYZED,
+                            cached: true,
+                            analysisMethod: cached.windbgAnalysis ? 'windbg' as const : 'local' as const
+                        };
+                    }
+
+                    if (cachedWinDbg) {
+                        console.log(`[Analyzer] Cache HIT - generating report from cached WinDBG analysis for ${fileLabel}`);
+                        onProgress?.('analyzing', 'AI is interpreting cached crash analysis...');
+                        const report = await generateReportFromWinDBG(
+                            fileLabel,
+                            dumpFile.dumpType,
+                            dumpFile.file.size,
+                            cachedWinDbg,
+                            dumpFile.fileHash,
+                            {
+                                analysisSignalText: cached.analysisSignalText || undefined,
+                                structured: cached.structured || undefined,
+                                signal: options?.signal
+                            }
+                        );
+                        await applyDumpBugCheck(report);
+                        return {
+                            id: dumpFile.id,
+                            report,
+                            status: FileStatus.ANALYZED,
+                            cached: true,
+                            analysisMethod: 'windbg' as const
+                        };
+                    }
+
+                    console.warn(`[Analyzer] Cache entry for ${fileLabel} did not contain a usable AI report or WinDBG analysis`);
+                } else {
+                    console.log(`[Analyzer] Cache MISS for ${fileLabel}; falling back to WinDBG upload`);
                 }
             }
 
@@ -1168,6 +1352,7 @@ export const analyzeDumpFiles = async (
             let windbgResult: WinDBGAnalysisResult | null = null;
             let useLightweightAiFailover = false;
             let windbgFailure: unknown = null;
+            let uploadSessionGeneration: number | undefined;
             try {
                 // Deep WinDBG kernel-dump analysis is a WindowsForum Premium Supporters
                 // feature. Non-premium tiers skip the upload (the backend would 403
@@ -1179,6 +1364,7 @@ export const analyzeDumpFiles = async (
                     throw Object.assign(new Error('Deep WinDBG analysis requires WindowsForum Premium'), { code: 'PREMIUM_REQUIRED' });
                 }
                 console.log('[Analyzer] Attempting WinDBG server analysis...');
+                uploadSessionGeneration = getSessionGeneration();
                 windbgResult = await analyzeWithWinDBG(dumpFile.file, (stage, message) => {
                     console.log(`[WinDBG] ${stage}: ${message}`);
                     // Forward WinDBG progress to the UI
@@ -1187,71 +1373,12 @@ export const analyzeDumpFiles = async (
                     }
                 }, onUploadProgress, options?.signal);
 
-                if (windbgResult.success) {
-                    console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
-
-                    // Signal that we're now in the AI analysis stage
-                    if (onProgress) {
-                        onProgress('analyzing', 'AI is interpreting the crash analysis...');
-                    }
-
-                    // Use WinDBG analysis to generate AI report
-                    const windbgReport = await generateReportFromWinDBG(
-                        fileLabel,
-                        dumpFile.dumpType,
-                        dumpFile.file.size,
-                        windbgResult.analysisText,
-                        windbgResult.fileHash,
-                        {
-                            analysisSignalText: windbgResult.analysisSignalText,
-                            structured: windbgResult.structured
-                        }
-                    );
-
-                    // Populate bugCheck from binary buffer (guarantees accurate code and parameters meanings)
-	                    try {
-	                        if (dumpFile.file.size <= 5 * 1024 * 1024) {
-	                            const fileBuffer = await getFileBuffer();
-	                            const bugCheckInfo = extractBugCheckInfo(fileBuffer);
-	                            if (bugCheckInfo) {
-	                                const bugCode = bugCheckInfo.code;
-	                                const bugName = bugCheckInfo.name;
-	                                const params = [
-	                                    bugCheckInfo.parameter1,
-	                                    bugCheckInfo.parameter2,
-	                                    bugCheckInfo.parameter3,
-	                                    bugCheckInfo.parameter4
-	                                ];
-
-	                                windbgReport.bugCheck = {
-	                                    code: formatBugCheckHex(bugCode),
-	                                    name: bugName,
-	                                    parameters: params.map((p, i) => ({
-	                                        value: `0x${p.toString(16).toUpperCase()}`,
-	                                        meaning: getParameterExplanation(bugCode, (i + 1) as 1 | 2 | 3 | 4, p)
-	                                    }))
-	                                };
-	                            }
-	                        } else {
-                            console.log('[Analyzer] Skipping client-side bug check extraction for large WinDBG-analyzed dump');
-                        }
-                    } catch (e) {
-                        console.error('[Analyzer] Failed to extract bug check info from binary buffer:', e);
-                    }
-
-                    return {
-                        id: dumpFile.id,
-                        report: windbgReport,
-                        status: FileStatus.ANALYZED,
-                        cached: windbgResult.cached || false,
-                        analysisMethod: 'windbg' as const
-                    };
-                } else {
+                if (!windbgResult.success) {
                     console.log('[Analyzer] WinDBG analysis failed:', windbgResult.error);
                     if (/turnstile verification required/i.test(windbgResult.error || '')) {
                         throw new Error(windbgResult.error);
                     }
-                    windbgFailure = windbgResult.error || 'WinDBG analysis failed';
+                    windbgFailure = Object.assign(new Error(windbgResult.error || 'WinDBG analysis failed'), { code: windbgResult.errorCode });
                     if (shouldUseLightweightAiFailover(dumpFile.file.size, FULL_LOCAL_ANALYSIS_LIMIT)) {
                         useLightweightAiFailover = true;
                         onProgress?.('analyzing', 'WinDBG server unavailable \u2014 using lightweight AI fallback for this large dump');
@@ -1281,8 +1408,24 @@ export const analyzeDumpFiles = async (
             // try/catch so the cancellation is not mistaken for a WinDBG failure.
             throwIfAborted();
 
+            // The AI step runs outside the WinDBG try/catch: an AI failure after a
+            // successful WinDBG run is not a WinDBG failure, so it must end in ERROR
+            // rather than fall back to local analysis (issue #232).
+            if (windbgResult?.success) {
+                console.log(`[Analyzer] WinDBG analysis successful (${windbgResult.processingTime}s)`);
+                return await reportFromWinDbg({
+                    analysisText: windbgResult.analysisText,
+                    analysisSignalText: windbgResult.analysisSignalText,
+                    structured: windbgResult.structured,
+                    fileHash: windbgResult.fileHash,
+                    cached: windbgResult.cached,
+                    completedAt: Date.now(),
+                    sessionGeneration: uploadSessionGeneration
+                });
+            }
+
             if (useLightweightAiFailover) {
-                const report = await generateLargeDumpAiFailoverReport(dumpFile, fileLabel, windbgFailure);
+                const report = await generateLargeDumpAiFailoverReport(dumpFile, fileLabel, windbgFailure, options?.signal);
                 return { id: dumpFile.id, report, status: FileStatus.ANALYZED, analysisMethod: 'local' as const };
             }
 
@@ -1290,12 +1433,17 @@ export const analyzeDumpFiles = async (
             // AdvancedDumpParser removed - using accurate kernelDumpModuleParser instead
             const fileBuffer = await getFileBuffer();
 
-            const MAX_STRINGS_LENGTH = PROCESSING_LIMITS.MAX_STRINGS_LENGTH;
             console.log('[Analyzer] Extracting printable strings...');
             const rawExtractedStrings = extractPrintableStrings(fileBuffer);
             console.log('[Analyzer] Extracted strings length:', rawExtractedStrings.length);
             
-            const extractedStrings = sanitizeExtractedContent(rawExtractedStrings).substring(0, MAX_STRINGS_LENGTH);
+            // Capped at PROCESSING_LIMITS.MAX_STRINGS_LENGTH by the sanitizer.
+            const extractedStrings = sanitizeExtractedContent(rawExtractedStrings);
+            // Names the dump reveals (profile folders, USERNAME=, ...) are
+            // masked in the hex excerpts and the whole prompt (issues #359,
+            // #360), read from the bytes: the extracted strings drop
+            // non-ASCII text (issue #365).
+            const personalNames = collectPersonalNamesFromBytes(new Uint8Array(fileBuffer));
 
             // Get structured dump information
             console.log('[Analyzer] Getting structured dump info...');
@@ -1384,7 +1532,7 @@ export const analyzeDumpFiles = async (
                         const stackMemory = parser.getThreadStack(thread.threadId);
                         
                         if (stackMemory && stackMemory.byteLength > 0) {
-                            const stackHex = generateHexDump(stackMemory, Math.min(stackMemory.byteLength, PROCESSING_LIMITS.MAX_STACK_MEMORY_SIZE));
+                            const stackHex = generateRedactedHexDump(stackMemory, Math.min(stackMemory.byteLength, PROCESSING_LIMITS.MAX_STACK_MEMORY_SIZE), personalNames, true);
                             stackData = `\n\n**Thread Stack Memory (Thread ID: ${thread.threadId}):**\n\`\`\`hex\n${stackHex}\n\`\`\``;
                         }
                         
@@ -1464,7 +1612,7 @@ ${structuredInfo.dumpHeader ? `
 Dump Header:
 - Signature: ${structuredInfo.dumpHeader.signature}
 - Version: ${structuredInfo.dumpHeader.majorVersion || 0}.${structuredInfo.dumpHeader.minorVersion || 0}
-${structuredInfo.dumpHeader.machineImageType ? `- Machine Type: ${structuredInfo.dumpHeader.machineImageType} (${structuredInfo.dumpHeader.machineImageType === 0x8664 ? 'x64' : 'x86'})` : ''}
+${structuredInfo.dumpHeader.machineImageType ? `- Machine Type: ${formatMachineType(structuredInfo.dumpHeader.machineImageType)}` : ''}
 ` : ''}
 
 ${structuredInfo.bugCheckInfo ? `
@@ -1487,7 +1635,7 @@ Bug Check Information:
                 PROCESSING_LIMITS.HEX_DUMP_LENGTH,
                 Math.floor(remainingTokens * 0.1 * 4) // Use up to 10% of remaining tokens
             );
-            let adjustedHexDump = generateHexDump(fileBuffer, hexDumpSize);
+            let adjustedHexDump = generateRedactedHexDump(fileBuffer, hexDumpSize, personalNames);
             
             // CRITICAL: Also sanitize hex dump to prevent confusion
             // Remove any occurrences of "65F4" in hex that might confuse the AI
@@ -1622,7 +1770,10 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
                 evidence += '\n\n### ⚠️ NO BUG CHECK CODE FOUND\nAnalyze crash based on exception data, stack trace, and string patterns.';
             }
             
-            const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, evidence);
+            // Dump strings go to the AI provider and are stored with the
+            // report: redact profile folder names and email addresses first
+            // (issue #345).
+            const prompt = wrapWithEvidence(LOCAL_DUMP_PREFIX, redactPersonalIdentifiers(evidence, { names: personalNames }));
             
             // Log final token usage
             const finalTokens = estimateTokens(prompt);
@@ -1631,7 +1782,8 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
             // Generate the analysis — pass the file hash so server-side caching
             // keys on dump content (enabling the hash fast path) instead of the
             // prompt text alone.
-            let report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash);
+            throwIfAborted();
+            let report = await generateInitialAnalysis(fileLabel, prompt, dumpFile.fileHash, options?.signal);
 
             // If AI failed but we have accurate structured data, generate a basic analysis
             if (report.summary.includes('malformed response') && (accurateModuleInfo || structuredInfo.bugCheckInfo)) {
@@ -1852,7 +2004,7 @@ ${getBugCheckParameterMeaning(structuredInfo.bugCheckInfo.code, [
         return result;
     };
 
-    const results: Array<{ id: string; report?: AnalysisReportData; error?: string; status: FileStatus; cached?: boolean; analysisMethod?: 'windbg' | 'local' } | undefined> = new Array(files.length);
+    const results: Array<FileAnalysisResult | undefined> = new Array(files.length);
     let nextIndex = 0;
 
     const workers = Array.from({ length: Math.min(MAX_CLIENT_ANALYSIS_CONCURRENCY, files.length) }, async () => {

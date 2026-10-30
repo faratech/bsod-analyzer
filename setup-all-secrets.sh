@@ -250,9 +250,11 @@ fi
 
 echo "🔓 Granting runtime access only to application runtime secrets..."
 
-# Grant access to each runtime secret. Cloudflare purge secrets are intentionally
-# not granted to the runtime service account.
-for SECRET in "gemini-api-key" "deepseek-api-key" "experiential-labs-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token" "redis-zstd-dictionary"; do
+# Grant access to each runtime secret (every secret cloudbuild.yaml and
+# deploy-with-secret.sh bind). Secrets that do not exist yet are skipped, so
+# re-run this script after creating one. Cloudflare purge secrets are
+# intentionally not granted to the runtime service account.
+for SECRET in "gemini-api-key" "deepseek-api-key" "experiential-labs-api-key" "turnstile-secret-key" "session-secret" "bsod-api-key" "windbg-api-key" "wf-sso-secret" "upstash-redis-url" "upstash-redis-token" "redis-zstd-dictionary" "openai-api-key" "openai-admin-key" "openrouter-api-key" "wf-crash-signal-key" "quota-redis-rest-url" "quota-redis-rest-token"; do
     if gcloud secrets describe ${SECRET} --project=${PROJECT_ID} >/dev/null 2>&1; then
         gcloud secrets add-iam-policy-binding ${SECRET} \
             --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \

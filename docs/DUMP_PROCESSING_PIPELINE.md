@@ -74,8 +74,9 @@ All in `JobEndpoints.SubmitAsync`; any failure is a 4xx before anything is queue
    (`SqliteRateLimitStore.TryLogSubmissionAsync`) so concurrent submissions cannot
    slip past; queue-full rejections do **not** consume quota.
 5. **Insert + enqueue** — `JobRecord` row inserted (`api_key` stored as digest,
-   `owner_user_id` for cookie users), job enqueued in memory. If a job is already
-   running and this submission is priority 1, preemption is triggered
+   `owner_user_id` for cookie users), job enqueued in memory. If this submission
+   is priority 1 and the running job has a lower priority (Normal or Pleb), that
+   job is preempted; a running Premo job is never preempted
    ([Stage 4](#stage-4--queueing-and-priority)).
 
 ## Stage 3 — Dump type detection
@@ -112,9 +113,14 @@ startup, running jobs are re-queued (`status='queued'`, `started_at=NULL`) and t
 queue is rehydrated — a reboot never loses a job. Exactly **one** cdb.exe runs at a
 time (atomic hand-off in `RunCoordinator`).
 
-- **Priority 1 — Premo**: kills the currently running cdb.exe process tree
-  (`KillProcessTree`), re-queues the interrupted job at its original
-  priority/submitted_at (it resumes later from the front), and starts immediately.
+- **Priority 1 — Premo**: preempts the running job only when it has a strictly
+  lower priority (Normal or Pleb): kills that cdb.exe process tree
+  (`Process.Kill(entireProcessTree: true)`), re-queues the interrupted job at its
+  original priority/submitted_at (it resumes later from the front), and starts
+  immediately. A running Premo job is never preempted: the new Premo job waits
+  its turn (FIFO within the tier), because the requeued victim's older
+  submitted_at would put it back ahead of the newcomer and preempting would only
+  discard work.
 - **Priority 2 — Normal**: FIFO.
 - **Priority 3 — Pleb**: if ≥ `Pleb:BusyThreshold` (10) jobs completed in the last
   hour, waits `Pleb:DelaySeconds` (60) — and yields to any higher-priority arrival

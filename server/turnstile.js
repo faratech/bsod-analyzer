@@ -39,6 +39,12 @@ export function createTurnstileReplayGuard() {
     return reserved.size;
   }
 
+  // The stored keys, for tests/turnstile.test.mjs to prove they are
+  // fingerprints and never raw tokens (issue #265).
+  function keys() {
+    return [...reserved.keys()];
+  }
+
   // Drops reservations older than maxAgeMs (server.js runs this periodically;
   // Turnstile tokens are only valid for 300 seconds).
   function prune(maxAgeMs, now = Date.now()) {
@@ -47,5 +53,5 @@ export function createTurnstileReplayGuard() {
     }
   }
 
-  return { reserve, release, size, prune };
+  return { reserve, release, size, keys, prune };
 }

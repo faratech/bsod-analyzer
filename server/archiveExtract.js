@@ -22,6 +22,25 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// Pick the dump /api/analyze submits from an archive's extracted dumps
+// (issue #275): extraction keeps 32-bit PAGEDUMP files for the browser's local
+// parser, so the first entry may be one WinDBG cannot analyze. Returns the
+// first dump that passes the strict upload validation, the entries skipped on
+// the way (with why), and, when none passes, the first dump's rejection.
+export function selectAnalyzableDump(dumps, validate = (buffer, fileName) =>
+  validateUploadedBuffer(buffer, fileName, { allowArchives: false })) {
+  const skipped = [];
+  let firstRejection = null;
+  for (const dump of dumps || []) {
+    const fileName = sanitizeUploadFileName(dump.fileName);
+    const validation = validate(dump.buffer, fileName);
+    if (validation.valid) return { dump, validation, skipped };
+    firstRejection ||= validation;
+    skipped.push({ fileName, code: validation.code || 'INVALID_DUMP', error: validation.error });
+  }
+  return { dump: null, validation: firstRejection, skipped };
+}
+
 // Wraps a 7z/bsdtar failure in a user-facing message while keeping a spawn
 // error's string code (ENOENT for a missing binary, EACCES, ...): callers
 // tell infrastructure faults (5xx) from bad archives (4xx) by that code, and
@@ -197,7 +216,9 @@ export function createArchiveDumpExtractor({
           dumpBytes += content.length;
           const sourcePath = path.relative(extractDir, fullPath).replace(/\\/g, '/');
           const fileName = sanitizeUploadFileName(entry.name);
-          const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
+          // Keep 32-bit dumps for the browser's local parser; /api/analyze
+          // re-validates the chosen dump against what WinDBG accepts.
+          const validation = validateUploadedBuffer(content, fileName, { allowArchives: false, allow32BitKernelDumps: true });
           if (!validation.valid) {
             console.warn('[Archive] Invalid dump skipped:', validation.error);
             continue;

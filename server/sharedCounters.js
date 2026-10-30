@@ -24,6 +24,10 @@ const DEFAULT_CALL_TIMEOUT_MS = 1500;
 const DEFAULT_COOLDOWN_MS = 30 * 1000;
 
 // Checks both caps before moving either counter, like the per-instance store.
+// KEYS: requests, tokens, refunds, window id. Every window gets a fresh random
+// id (ARGV[6]) when it opens, returned with the reservation, so a settlement
+// that lands after the window rolled over can tell it is not the live window
+// (issue #253). Opening a window also clears the previous window's refunds.
 export const QUOTA_RESERVE_SCRIPT = `
 local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
 local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
@@ -32,16 +36,27 @@ local add_tok = tonumber(ARGV[2])
 local ttl = tonumber(ARGV[5])
 if cur_req + add_req > tonumber(ARGV[3]) then return {0, 1, cur_req, cur_tok, redis.call('TTL', KEYS[1])} end
 if cur_tok + add_tok > tonumber(ARGV[4]) then return {0, 2, cur_req, cur_tok, redis.call('TTL', KEYS[2])} end
+local opening = redis.call('EXISTS', KEYS[1]) == 0
 redis.call('INCRBY', KEYS[1], add_req)
 redis.call('INCRBY', KEYS[2], add_tok)
 if redis.call('TTL', KEYS[1]) < 1 then redis.call('EXPIRE', KEYS[1], ttl) end
 if redis.call('TTL', KEYS[2]) < 1 then redis.call('EXPIRE', KEYS[2], ttl) end
-return {1, 0, cur_req + add_req, cur_tok + add_tok, redis.call('TTL', KEYS[1])}
+local win = redis.call('GET', KEYS[4])
+if opening or not win then
+  if opening then redis.call('DEL', KEYS[3]) end
+  win = ARGV[6]
+  redis.call('SET', KEYS[4], win)
+end
+redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[1]))
+return {1, 0, cur_req + add_req, cur_tok + add_tok, redis.call('TTL', KEYS[1]), win}
 `;
 
-// Moves live counters by a signed delta, floored at zero. A counter whose
-// window already expired is left alone rather than reopened.
+// Moves live counters by a signed delta, floored at zero. KEYS: requests,
+// tokens, window id. Applies only while the window that admitted the
+// reservation (ARGV[3]) is still live: an expired window is left alone rather
+// than reopened, and a newer window is never settled against (issue #253).
 export const QUOTA_ADJUST_SCRIPT = `
+if redis.call('GET', KEYS[3]) ~= ARGV[3] then return 0 end
 for i = 1, 2 do
   local delta = tonumber(ARGV[i])
   if delta ~= 0 and redis.call('EXISTS', KEYS[i]) == 1 then
@@ -54,7 +69,11 @@ return 1
 
 // Releases a reservation after a failure that was not the client's fault;
 // capped per window so failures cannot be farmed to shift accounting back.
+// KEYS: requests, tokens, refunds, window id. A refund for a window that is
+// no longer live (ARGV[5]) is not applied (issue #253); the refund counter
+// expires with its window.
 export const QUOTA_REFUND_SCRIPT = `
+if redis.call('GET', KEYS[4]) ~= ARGV[5] then return {0, 0} end
 local refunded = tonumber(redis.call('GET', KEYS[3]) or '0')
 if refunded >= tonumber(ARGV[3]) then return {0, refunded} end
 redis.call('INCRBY', KEYS[3], 1)
@@ -62,7 +81,12 @@ local cur_req = tonumber(redis.call('GET', KEYS[1]) or '0')
 local cur_tok = tonumber(redis.call('GET', KEYS[2]) or '0')
 if cur_req > 0 then redis.call('INCRBY', KEYS[1], -math.min(cur_req, tonumber(ARGV[1]))) end
 if cur_tok > 0 then redis.call('INCRBY', KEYS[2], -math.min(cur_tok, tonumber(ARGV[2]))) end
-for i = 1, 3 do if redis.call('TTL', KEYS[i]) < 1 then redis.call('EXPIRE', KEYS[i], ARGV[4]) end end
+local left = redis.call('PTTL', KEYS[4])
+for i = 1, 3 do
+  if redis.call('TTL', KEYS[i]) < 1 then
+    if left > 0 then redis.call('PEXPIRE', KEYS[i], left) else redis.call('EXPIRE', KEYS[i], ARGV[4]) end
+  end
+end
 return {1, refunded + 1}
 `;
 
@@ -85,7 +109,7 @@ function counterId(key) {
 
 function quotaKeys(key) {
   const id = counterId(key);
-  return [`${KEY_PREFIX}q:req:${id}`, `${KEY_PREFIX}q:tok:${id}`, `${KEY_PREFIX}q:ref:${id}`];
+  return [`${KEY_PREFIX}q:req:${id}`, `${KEY_PREFIX}q:tok:${id}`, `${KEY_PREFIX}q:ref:${id}`, `${KEY_PREFIX}q:win:${id}`];
 }
 
 const whole = value => String(Math.max(0, Math.ceil(Number(value) || 0)));
@@ -124,29 +148,35 @@ export function createSharedCounterStore({
   }
 
   async function reserveQuota(key, { requestCost = 1, tokenCost, requestLimit, tokenLimit, windowSeconds }) {
-    const [reqKey, tokKey] = quotaKeys(key);
-    const raw = await run(QUOTA_RESERVE_SCRIPT, [reqKey, tokKey], [
-      whole(requestCost), whole(tokenCost), whole(requestLimit), whole(tokenLimit), String(Math.max(1, Math.ceil(windowSeconds)))
+    const raw = await run(QUOTA_RESERVE_SCRIPT, quotaKeys(key), [
+      whole(requestCost), whole(tokenCost), whole(requestLimit), whole(tokenLimit), String(Math.max(1, Math.ceil(windowSeconds))),
+      // The 'w' prefix keeps the id a string through the client's reply
+      // deserialization (an all-digit id would otherwise come back a number).
+      `w${crypto.randomBytes(12).toString('base64url')}`
     ]);
     if (!raw) return null;
-    const [allowed, reason, requests, tokens, ttl] = raw.map(Number);
+    const [allowed, reason, requests, tokens, ttl] = raw.slice(0, 5).map(Number);
     return {
       allowed: allowed === 1,
       reason: allowed === 1 ? undefined : (reason === 1 ? 'requests' : 'tokens'),
       requests,
       tokens,
-      resetTime: new Date(now() + (ttl > 0 ? ttl : windowSeconds) * 1000)
+      resetTime: new Date(now() + (ttl > 0 ? ttl : windowSeconds) * 1000),
+      window: allowed === 1 ? String(raw[5]) : undefined
     };
   }
 
-  async function adjustQuota(key, { requestDelta = 0, tokenDelta = 0 }) {
-    const [reqKey, tokKey] = quotaKeys(key);
-    return (await run(QUOTA_ADJUST_SCRIPT, [reqKey, tokKey], [signed(requestDelta), signed(tokenDelta)])) !== null;
+  // `window` is the id reserveQuota returned: settlement applies only while
+  // that window is live (issue #253).
+  async function adjustQuota(key, { requestDelta = 0, tokenDelta = 0, window }) {
+    const [reqKey, tokKey, , winKey] = quotaKeys(key);
+    // True only when the delta was applied to the reservation's live window.
+    return Number(await run(QUOTA_ADJUST_SCRIPT, [reqKey, tokKey, winKey], [signed(requestDelta), signed(tokenDelta), String(window ?? '')])) === 1;
   }
 
-  async function refundQuota(key, { requestCost = 1, tokenCost, refundCap, windowSeconds }) {
+  async function refundQuota(key, { requestCost = 1, tokenCost, refundCap, windowSeconds, window }) {
     const raw = await run(QUOTA_REFUND_SCRIPT, quotaKeys(key), [
-      whole(requestCost), whole(tokenCost), whole(refundCap), String(Math.max(1, Math.ceil(windowSeconds)))
+      whole(requestCost), whole(tokenCost), whole(refundCap), String(Math.max(1, Math.ceil(windowSeconds))), String(window ?? '')
     ]);
     if (!raw) return null;
     const [refunded, refundsUsed] = raw.map(Number);
@@ -197,9 +227,9 @@ export function createQuotaLedger({ shared = null, local = createSessionQuotaSto
       // transient shared-store failure must not reroute the release onto the
       // local counters, where the same key may hold unrelated reservations.
       if (entry.shared) {
-        await shared.adjustQuota(entry.key, { requestDelta: -requestCost, tokenDelta: -tokenCost });
+        await shared.adjustQuota(entry.key, { requestDelta: -requestCost, tokenDelta: -tokenCost, window: entry.window });
       } else {
-        local.release(entry.key, { requestCost, tokenCost });
+        local.release(entry.key, { requestCost, tokenCost, window: entry.window });
       }
     }
   }
@@ -215,7 +245,9 @@ export function createQuotaLedger({ shared = null, local = createSessionQuotaSto
         await releaseEntries(entries, { requestCost, tokenCost: tokens });
         return { ...result, allowed: false, key: scope.key };
       }
-      entries.push({ key: scope.key, shared: Boolean(fromShared), result });
+      // `window` identifies the counting window that admitted the scope, so a
+      // settlement landing after it rolled over is skipped (issue #253).
+      entries.push({ key: scope.key, shared: Boolean(fromShared), window: result.window, result });
     }
     const tightest = entries.reduce((max, entry) => (entry.result.requests > max.requests ? entry.result : max), entries[0].result);
     return {
@@ -229,20 +261,26 @@ export function createQuotaLedger({ shared = null, local = createSessionQuotaSto
   }
 
   // Moves the reserved token estimate toward the provider-reported actuals.
+  // Each scope remembers the delta it actually applied, so a later refund
+  // returns everything the reservation was charged (issue #199).
   async function commit(reservation, { tokenDelta }) {
+    const delta = Math.trunc(Number(tokenDelta) || 0);
     for (const entry of reservation?.entries ?? []) {
-      if (entry.shared) {
-        await shared.adjustQuota(entry.key, { tokenDelta });
-      } else {
-        local.commit(entry.key, { tokenDelta });
-      }
+      const applied = entry.shared
+        ? await shared.adjustQuota(entry.key, { tokenDelta: delta, window: entry.window })
+        : local.commit(entry.key, { tokenDelta: delta, window: entry.window });
+      if (applied) entry.committedTokens = (entry.committedTokens || 0) + delta;
     }
   }
 
   async function refund(reservation, { requestCost = 1, tokenCost, refundCap, windowSeconds }) {
     const outcome = { refunded: true, refundsUsed: 0, refundCap };
     for (const entry of reservation?.entries ?? []) {
-      const args = { requestCost, tokenCost, refundCap, windowSeconds };
+      // `tokenCost` is the reserved estimate; add what commit already moved
+      // this scope by, so a refund after settlement (an invalid AI report)
+      // releases the settled charge, not just the estimate (issue #199).
+      const charged = Math.max(0, Math.ceil(Number(tokenCost) || 0) + (entry.committedTokens || 0));
+      const args = { requestCost, tokenCost: charged, refundCap, windowSeconds, window: entry.window };
       // Same admitting-backend rule as commit (issue #173): an unreachable
       // shared store means this scope is not refunded, never that the local
       // counters absorb the refund.

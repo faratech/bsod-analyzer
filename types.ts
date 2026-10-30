@@ -125,4 +125,29 @@ export interface DumpFile {
   fileHash?: string; // Pre-computed SHA-256 of file content
   knownCached?: boolean; // True if cache check detected this file before analysis
   analysisMethod?: 'windbg' | 'local'; // Which analysis method was used
+  // A successful WinDBG run whose AI step then failed, kept so Retry runs only
+  // the AI step (issue #331). Cleared once the file is analyzed; removed with
+  // the file.
+  windbgResult?: RetainedWinDbgResult;
+}
+
+export interface RetainedWinDbgResult {
+  analysisText: string;
+  analysisSignalText?: string;
+  structured?: Record<string, unknown>;
+  fileHash?: string; // the server's file identity (its file handle proves ownership)
+  cached?: boolean;
+  completedAt: number; // Date.now() when the WinDBG result arrived
+  sessionGeneration?: number; // session generation at upload: the file handle is signed for that session (#341)
+}
+
+// One file's outcome from analyzeDumpFiles.
+export interface FileAnalysisResult {
+  id: string;
+  report?: AnalysisReportData;
+  error?: string;
+  status: FileStatus;
+  cached?: boolean;
+  analysisMethod?: 'windbg' | 'local';
+  windbgResult?: RetainedWinDbgResult;
 }

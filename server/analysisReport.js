@@ -153,6 +153,7 @@ export function normalizeAnalysisReport(report) {
   if (Array.isArray(normalized.driverWarnings)) {
     // Filter out malformed driver warnings (AI sometimes returns entries with empty fields)
     normalized.driverWarnings = normalized.driverWarnings
+      .filter(w => w && typeof w === 'object' && !Array.isArray(w))
       .map(w => ({
         driverName: sanitizeString(w.driverName || w.name, 256),
         displayName: sanitizeString(w.displayName || w.name || w.driverName, 512),
@@ -187,7 +188,13 @@ export function normalizeAnalysisReport(report) {
     normalized.hardwareError.recommendations = sanitizeStringArray(normalized.hardwareError.recommendations, 10, 800) || [];
     normalized.hardwareError.component = sanitizeString(normalized.hardwareError.component, 256) || 'Unknown';
     normalized.hardwareError.severity = sanitizeString(normalized.hardwareError.severity, 128) || 'fatal';
-    normalized.hardwareError.isHardwareError = !!normalized.hardwareError.isHardwareError || !!normalized.hardwareError.errorType;
+    // An explicit boolean wins: models answer "no hardware error" as
+    // { isHardwareError: false, errorType: "None" } (issue #247). Infer from
+    // errorType/type only when the flag is absent.
+    const flag = normalized.hardwareError.isHardwareError;
+    normalized.hardwareError.isHardwareError = typeof flag === 'boolean'
+      ? flag
+      : !!normalized.hardwareError.errorType;
     if (!normalized.hardwareError.isHardwareError) {
       delete normalized.hardwareError; // Remove if not actually a hardware error
     }
@@ -205,7 +212,14 @@ export function parseAndValidateAnalysisReport(text) {
     return { valid: false, reason: 'AI response was not valid JSON' };
   }
 
-  const report = normalizeAnalysisReport(parsed);
+  // Any unexpected shape must fail validation (refundable INVALID_AI_RESPONSE),
+  // never throw out of the route after the quota commit (issue #254).
+  let report;
+  try {
+    report = normalizeAnalysisReport(parsed);
+  } catch {
+    report = null;
+  }
   if (!report) {
     return { valid: false, reason: 'AI response did not match the analysis report schema' };
   }

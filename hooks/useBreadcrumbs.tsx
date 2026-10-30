@@ -9,6 +9,7 @@ export const useBreadcrumbs = () => {
         '/about': 'About',
         '/documentation': 'Documentation',
         '/donate': 'Donate',
+        '/privacy': 'Privacy',
         '/stats': 'Crash Statistics',
         '/stats/embed': 'Crash Statistics Widget'
     };

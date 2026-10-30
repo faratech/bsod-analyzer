@@ -38,7 +38,7 @@ SELECT TO_JSON_STRING(STRUCT(
   (SELECT COUNT(*) FROM counted) AS total,
   (SELECT MIN(ts) FROM counted) AS tracking_since,
   (SELECT COUNT(*) FROM events WHERE DATE(ts) = CURRENT_DATE()) AS runs_today,
-  (SELECT COUNT(*) FROM events WHERE ts >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), HOUR)) AS last_hour,
+  (SELECT COUNT(*) FROM events WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)) AS last_hour,
   ARRAY(SELECT AS STRUCT source AS k, COUNT(*) AS n FROM counted GROUP BY k) AS sources,
   ARRAY(SELECT AS STRUCT IFNULL(dump_type, 'unknown') AS k, COUNT(*) AS n FROM counted GROUP BY k) AS dump_types,
   ARRAY(SELECT AS STRUCT os_version AS k, COUNT(*) AS n FROM counted

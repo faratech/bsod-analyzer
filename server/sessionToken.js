@@ -116,10 +116,12 @@ export function createFileHandleCodec({ secret, previousSecret, ttlMs }) {
   const signer = createSigner({ secret, previousSecret, purpose: 'windbg-handle-v1' });
 
   return {
-    issue({ fileHash, jobId = null, dumpType = null, sessionId }, now = Date.now()) {
+    issue({ fileHash, jobId = null, dumpType = null, size = null, sessionId }, now = Date.now()) {
       const claims = { v: 1, fh: fileHash, st: sessionTag(sessionId), exp: now + ttlMs };
       if (jobId) claims.jid = String(jobId);
       if (dumpType) claims.dt = String(dumpType);
+      // Upload size for the corpus row (#270): the upstream job status has none.
+      if (Number.isSafeInteger(size) && size >= 0) claims.sz = size;
       return signer.sign(claims);
     },
 

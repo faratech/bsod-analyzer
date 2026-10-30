@@ -123,7 +123,8 @@ export function createUpstashBinaryClient({
   url,
   token,
   fetchImpl = globalThis.fetch,
-  retries = 5,
+  retries = 1,
+  timeoutMs = 3000,
   backoff = attempt => Math.exp(attempt) * 50,
   delayImpl = ms => new Promise(resolve => setTimeout(resolve, ms)),
 } = {}) {
@@ -136,6 +137,10 @@ export function createUpstashBinaryClient({
   }
   if (!Number.isInteger(retries) || retries < 0) {
     throw new TypeError('retries must be a non-negative integer');
+  }
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('timeoutMs must be a positive number');
   }
 
   let syncToken = '';
@@ -151,7 +156,7 @@ export function createUpstashBinaryClient({
       if (syncToken) headers.set('Upstash-Sync-Token', syncToken);
 
       try {
-        const response = await fetchImpl(requestUrl, { ...init, headers });
+        const response = await fetchImpl(requestUrl, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
         if (!response.ok) {
           throw await createHttpTransportError(response);
         }

@@ -126,9 +126,9 @@ const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
     name: 'PAGE_FAULT_IN_NONPAGED_AREA',
     parameterDescriptions: [
       'Address referenced',
-      'Page protection (0=Read, 1=Write, 8=Execute, 10=ExecuteRead)',
+      'Access type (x64/x86 since Windows 10 1507: 0=Read, 2=Write, 0x10=Execute; Arm: 0=Read, 1=Write, 8=Execute; before 1507: 0=Read, 1=Write)',
       'Address of instruction (if known)',
-      'Reserved'
+      'Type of page fault (0x0 freed PTE, 0x2 not-present page table, 0x3 wrong session, 0x4 non-canonical VA, 0xF user VA access inconsistent)'
     ],
     validate: (params) => {
       const errors: string[] = [];
@@ -137,10 +137,10 @@ const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
         errors.push(`Invalid referenced address: 0x${params[0].toString(16)}`);
       }
       
-      const protection = params[1];
-      const validProtections = [0n, 1n, 8n, 0x10n];
-      if (!validProtections.includes(protection)) {
-        errors.push(`Invalid page protection: ${protection}`);
+      const accessType = params[1];
+      const validAccessTypes = [0n, 1n, 2n, 8n, 0x10n];
+      if (!validAccessTypes.includes(accessType)) {
+        errors.push(`Invalid access type: ${accessType}`);
       }
       
       // Parameter 2 can be 0 if address is unknown
@@ -301,47 +301,33 @@ const BUG_CHECK_VALIDATIONS: Map<number, BugCheckValidation> = new Map([
     code: 0x139,
     name: 'KERNEL_SECURITY_CHECK_FAILURE',
     parameterDescriptions: [
-      'Security check type',
-      'Address of failure',
-      'Exception record (if applicable)',
-      'Context record (if applicable)'
+      'Security check type (FAST_FAIL_* code)',
+      'Address of the trap frame for the exception that caused the bug check',
+      'Address of the exception record for the exception that caused the bug check',
+      'Reserved'
     ],
     validate: (params) => {
       const errors: string[] = [];
       
-      // Known security check types
+      // FAST_FAIL_* codes documented for 0x139 (winnt.h values)
       const checkType = params[0];
       const knownTypes = [
-        0x0n,  // Stack buffer overrun
-        0x1n,  // Stack cookie check failure
-        0x2n,  // Corrupt list entry
-        0x3n,  // Kernel stack overflow
-        0x4n,  // Invalid kernel stack address
-        0x5n,  // Invalid IRQL
-        0x6n,  // Critical structure corruption
-        0x8n,  // Fast fail
-        0xAn,  // Invalid buffer access
+        0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n,
+        18n, 19n, 20n, 21n, 22n, 23n, 24n, 25n, 26n, 27n, 28n, 29n,
+        37n, 38n, 39n
       ];
       
       if (!knownTypes.includes(checkType)) {
         errors.push(`Unknown security check type: 0x${checkType.toString(16)}`);
       }
       
-      // Validate based on check type
-      if (checkType === 0x0n || checkType === 0x1n) {
-        // Stack-related checks should have valid stack address
-        if (!validators.isValidAddress(params[1])) {
-          errors.push(`Invalid stack address: 0x${params[1].toString(16)}`);
-        }
+      if (params[1] !== 0n && !validators.isValidAddress(params[1])) {
+        errors.push(`Invalid trap frame: 0x${params[1].toString(16)}`);
       }
       
-      // Exception and context records (if present)
+      // Exception record (if present); Parameter 4 is reserved
       if (params[2] !== 0n && !validators.isValidAddress(params[2])) {
         errors.push(`Invalid exception record: 0x${params[2].toString(16)}`);
-      }
-      
-      if (params[3] !== 0n && !validators.isValidAddress(params[3])) {
-        errors.push(`Invalid context record: 0x${params[3].toString(16)}`);
       }
       
       return { valid: errors.length === 0, errors };
@@ -576,7 +562,8 @@ export function analyzeBugCheckParameters(
       
     case 0x50: // PAGE_FAULT_IN_NONPAGED_AREA
       analysis += `Failed to access: 0x${params[0].toString(16)}\n`;
-      analysis += `Operation: ${params[1] === 0n ? 'Read' : params[1] === 1n ? 'Write' : 'Execute'}`;
+      // x64/x86 since 1507: 2 write, 0x10 execute; Arm / pre-1507: 1 write, 8 execute (Arm)
+      analysis += `Operation: ${params[1] === 0n ? 'Read' : params[1] === 2n || params[1] === 1n ? 'Write' : params[1] === 0x10n || params[1] === 8n ? 'Execute' : 'Unknown'}`;
       
       if (params[0] >= 0xFFFF800000000000n) {
         likelyCauses.push('System memory corruption');

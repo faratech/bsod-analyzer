@@ -2,10 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import JSZip from 'jszip';
 
-import { createArchiveDumpExtractor } from '../server/archiveExtract.js';
+import { createArchiveDumpExtractor, selectAnalyzableDump } from '../server/archiveExtract.js';
 
 const LIMITS = {
   maxRawFileSize: 100 * 1024 * 1024,
@@ -175,3 +178,53 @@ test('a bad archive (non-zero tool exit) carries no infrastructure code', async 
     error => error.code === undefined && /Failed to read archive/.test(error.message)
   );
 });
+
+// Issue #275: extraction keeps 32-bit PAGEDUMP files for the browser, and
+// /api/analyze took extractedDumps[0] and rejected the whole archive when that
+// one was 32-bit even if a later dump was analyzable.
+function make32BitPageDump(size = 64 * 1024) {
+  const buffer = randomBytes(size);
+  buffer.write('PAGEDUMP', 0, 'ascii');
+  return buffer;
+}
+
+test('selectAnalyzableDump picks the first dump that passes strict validation (#275)', () => {
+  const dumps = [
+    { fileName: 'a_old32.dmp', buffer: make32BitPageDump() },
+    { fileName: 'b_mini.dmp', buffer: makeDump() }
+  ];
+  const selection = selectAnalyzableDump(dumps);
+  assert.equal(selection.dump?.fileName, 'b_mini.dmp');
+  assert.equal(selection.skipped.length, 1);
+  assert.equal(selection.skipped[0].fileName, 'a_old32.dmp');
+  assert.equal(selection.skipped[0].code, 'UNSUPPORTED_DUMP_TYPE');
+});
+
+test('selectAnalyzableDump returns the first dump\'s rejection when none passes (#275)', () => {
+  const selection = selectAnalyzableDump([
+    { fileName: 'one32.dmp', buffer: make32BitPageDump() },
+    { fileName: 'two32.dmp', buffer: make32BitPageDump() }
+  ]);
+  assert.equal(selection.dump, null);
+  assert.equal(selection.validation.valid, false);
+  assert.equal(selection.validation.code, 'UNSUPPORTED_DUMP_TYPE');
+  assert.equal(selection.skipped.length, 2);
+});
+
+for (const archiveType of ['zip', '7z']) {
+  test(`a ${archiveType} with a 32-bit dump before a minidump selects the minidump (#275)`, { skip: !sevenZipAvailable() }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bsod-mixed-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'a_old32.dmp'), make32BitPageDump());
+      fs.writeFileSync(path.join(dir, 'b_mini.dmp'), makeDump());
+      const archivePath = path.join(dir, `mixed.${archiveType}`);
+      execFileSync('7z', ['a', `-t${archiveType}`, archivePath, 'a_old32.dmp', 'b_mini.dmp'], { cwd: dir, stdio: 'ignore' });
+      const dumps = await makeExtractor().extractDumps(fs.readFileSync(archivePath), `mixed.${archiveType}`, archiveType);
+      assert.equal(dumps.length, 2, 'extraction keeps the 32-bit dump for the browser path');
+      const selection = selectAnalyzableDump(dumps);
+      assert.equal(selection.dump?.fileName, 'b_mini.dmp');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

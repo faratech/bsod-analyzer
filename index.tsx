@@ -2,7 +2,12 @@ import React from 'react';
 import { hydrateRoot, createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import AppShell from './AppRouter';
+import { installChunkPreloadRecovery } from './utils/chunkReload';
 import './styles.css';
+
+// A lazy chunk's JS or CSS that fails to preload (stale hashes after a deploy)
+// reloads the page once instead of surfacing an error.
+installChunkPreloadRecovery(window);
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

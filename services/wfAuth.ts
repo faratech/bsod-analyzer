@@ -9,6 +9,7 @@
 // identity itself — it only relays the signed token.
 
 import type { Tier } from './tierState';
+import { noteNewSession } from '../utils/sessionManager';
 
 export interface WfUser {
   userId: number;
@@ -123,7 +124,12 @@ export async function exchangeToken(token: string): Promise<WfUser | null> {
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.success ? (data.user as WfUser) : null;
+    if (!data?.success) return null;
+    // A new session id invalidates the tab's file handles (#341). The server
+    // keeps the id only when it re-verified this session's own user and says
+    // so (#354); an answer without the flag is treated as a new session.
+    if (data.sessionKept !== true) noteNewSession();
+    return data.user as WfUser;
   } catch {
     return null;
   }

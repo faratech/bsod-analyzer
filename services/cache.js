@@ -34,6 +34,7 @@ const CACHE_PREFIX = {
 const CACHE_ZSTD_DICTIONARY_PATH =
   process.env.CACHE_ZSTD_DICTIONARY_PATH || '/secrets/redis-zstd/dictionary';
 const DEFAULT_CACHE_ZSTD_WRITES_ENABLED = process.env.CACHE_ZSTD_WRITES_ENABLED === 'true';
+const UPSTASH_REQUEST_TIMEOUT_MS = 3000;
 const CACHE_ZSTD_DICTIONARY_REFRESH_MS_DEFAULT = 5 * 60 * 1000;
 // How often publishes re-probe the registry through SETNX to detect an
 // externally initiated whole-database flush.
@@ -191,11 +192,15 @@ export function initCache({ redisClient, analysisClient } = {}) {
   }
 
   try {
+    // Bounded like the shared counter store: a hung or failing Upstash must
+    // not hold a request (and its Cloud Run concurrency slot) for long.
     redis = withFailureTap(new Redis({
       url,
       token,
+      retry: { retries: 1 },
+      signal: () => AbortSignal.timeout(UPSTASH_REQUEST_TIMEOUT_MS),
     }));
-    analysisRedis = withFailureTap(createUpstashBinaryClient({ url, token }));
+    analysisRedis = withFailureTap(createUpstashBinaryClient({ url, token, timeoutMs: UPSTASH_REQUEST_TIMEOUT_MS }));
     cacheEnabled = true;
     console.log('[Cache] Upstash Redis initialized successfully');
     return true;
@@ -467,6 +472,26 @@ export async function getCachedAnalysis(fileHash) {
   }
 }
 
+// Hashes known to be cached (fileHash -> when confirmed), so repeated
+// pre-upload checks cost nothing. Entries are written with usable data only,
+// so key existence stands in for "usable" without downloading the value.
+const KNOWN_CACHED_TTL_MS = 10 * 60 * 1000;
+const KNOWN_CACHED_MAX = 5000;
+const knownCached = new Map();
+
+// Record a confirmed-cached hash, keeping the map bounded on every write path.
+// Insertion order is confirmation order, so expired entries sit at the front:
+// sweep those first, then drop the oldest until there is room.
+function rememberCached(fileHash, now = Date.now()) {
+  knownCached.delete(fileHash);
+  for (const [hash, confirmedAt] of knownCached) {
+    if (now - confirmedAt < KNOWN_CACHED_TTL_MS) break;
+    knownCached.delete(hash);
+  }
+  while (knownCached.size >= KNOWN_CACHED_MAX) knownCached.delete(knownCached.keys().next().value);
+  knownCached.set(fileHash, now);
+}
+
 /**
  * Merge and cache complete analysis (WinDBG + AI report)
  * @param {string} fileHash - The file or prompt content hash
@@ -520,7 +545,7 @@ export async function setCachedAnalysis(fileHash, data) {
       await registerCurrentDictionary({ ensurePresent: true });
     }
     await analysisRedis.set(key, storedValue, { ex: CACHE_TTL_SECONDS });
-    knownCached.set(fileHash, Date.now());
+    rememberCached(fileHash);
     console.log(
       `[Cache] Analysis cached with hash ${fileHash.substring(0, 12)}... (TTL: 7d, storage: ${isZstdEnvelope(storedValue) ? 'zstd' : 'json'}, bytes: ${storedValue.length})`
     );
@@ -530,13 +555,6 @@ export async function setCachedAnalysis(fileHash, data) {
     return false;
   }
 }
-
-// Hashes known to be cached (fileHash -> when confirmed), so repeated
-// pre-upload checks cost nothing. Entries are written with usable data only,
-// so key existence stands in for "usable" without downloading the value.
-const KNOWN_CACHED_TTL_MS = 10 * 60 * 1000;
-const KNOWN_CACHED_MAX = 5000;
-const knownCached = new Map();
 
 /**
  * Check whether an analysis is cached (EXISTS; never downloads the value).
@@ -551,8 +569,7 @@ export async function isAnalysisCached(fileHash) {
   try {
     const exists = Number(await redis.exists(getAnalysisKey(fileHash))) > 0;
     if (exists) {
-      if (knownCached.size >= KNOWN_CACHED_MAX) knownCached.delete(knownCached.keys().next().value);
-      knownCached.set(fileHash, Date.now());
+      rememberCached(fileHash);
     }
     return exists;
   } catch (error) {

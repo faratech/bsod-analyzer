@@ -37,6 +37,9 @@ export function classifyRequestPath(rawPath) {
     return 'invalid';
   }
   if (decoded.includes('\0')) return 'invalid';
+  // Dot segments (also behind %2F, which req.path keeps encoded) would be
+  // resolved by static serving after the prefix checks below (issue #350).
+  if (decoded.split('/').some(segment => segment === '.' || segment === '..')) return 'invalid';
   const pathname = decoded.toLowerCase();
   if (BLOCKED_PREFIXES.some(prefix => pathname.startsWith(prefix))) return 'blocked';
   if (BLOCKED_SUFFIXES.some(suffix => pathname.endsWith(suffix))) return 'blocked';

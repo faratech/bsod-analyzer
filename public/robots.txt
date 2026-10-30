@@ -6,6 +6,8 @@ Allow: /analyzer
 Allow: /about
 Allow: /documentation
 Allow: /donate
+Allow: /stats
+Allow: /privacy
 
 # Block direct access to public directory
 Disallow: /public/

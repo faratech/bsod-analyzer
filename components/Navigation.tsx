@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo';
 import ThemeToggle from './ThemeToggle';
@@ -9,6 +9,8 @@ import { SSO_ENABLED } from '../services/featureFlags';
 const Navigation: React.FC = () => {
     const location = useLocation();
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+    const toggleRef = useRef<HTMLButtonElement>(null);
+    const mobileNavRef = useRef<HTMLElement>(null);
     
     const isActive = (path: string) => location.pathname === path;
     
@@ -34,6 +36,32 @@ const Navigation: React.FC = () => {
         };
     }, [isMobileMenuOpen]);
     
+    // The open menu is modal: the overlay covers the page, so the page behind
+    // it (every sibling but the header, which holds the close toggle) is inert,
+    // focus moves into the menu, and Escape closes it back onto the toggle.
+    useEffect(() => {
+        const menu = mobileNavRef.current;
+        if (!isMobileMenuOpen || !menu) return;
+        const header = toggleRef.current?.closest('header');
+        const background = Array.from(menu.parentElement?.children ?? []).filter(
+            el => el !== menu && el !== header && !el.hasAttribute('inert')
+        );
+        background.forEach(el => el.setAttribute('inert', ''));
+        menu.querySelector<HTMLElement>('a[href], button')?.focus();
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsMobileMenuOpen(false);
+                toggleRef.current?.focus();
+            }
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+            background.forEach(el => el.removeAttribute('inert'));
+        };
+    }, [isMobileMenuOpen]);
+
     // Close mobile menu when route changes
     useEffect(() => {
         closeMobileMenu();
@@ -94,11 +122,13 @@ const Navigation: React.FC = () => {
                         </nav>
 
                         {/* Mobile Menu Button */}
-                        <button 
+                        <button
+                            ref={toggleRef}
                             className="mobile-menu-toggle"
                             onClick={toggleMobileMenu}
-                            aria-label="Toggle mobile menu"
+                            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
                             aria-expanded={isMobileMenuOpen}
+                            aria-controls="mobile-nav"
                         >
                             <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
                             <span className={`hamburger-line ${isMobileMenuOpen ? 'open' : ''}`}></span>
@@ -109,7 +139,12 @@ const Navigation: React.FC = () => {
             </header>
             
             {/* Mobile Navigation - Outside of header */}
-            <nav className={`mobile-nav ${isMobileMenuOpen ? 'open' : ''}`}>
+            <nav
+                id="mobile-nav"
+                ref={mobileNavRef}
+                aria-label="Site menu"
+                className={`mobile-nav ${isMobileMenuOpen ? 'open' : ''}`}
+            >
                 <div className="mobile-nav-content">
                     <Link 
                         to="/" 
@@ -162,6 +197,11 @@ const Navigation: React.FC = () => {
                     >
                         Support Us
                     </Link>
+                    {/* The desktop nav (and its toggle) is hidden at <= 1024 px. */}
+                    <div className="mobile-nav-theme">
+                        <span>Theme</span>
+                        <ThemeToggle />
+                    </div>
                     {SSO_ENABLED && (
                         <ClientOnly>
                             <AccountWidget mobile />

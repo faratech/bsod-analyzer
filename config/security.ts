@@ -4,7 +4,6 @@ export const SECURITY_CONFIG = {
   file: SECURITY.file,
   zip: SECURITY.zip,
   processing: {
-    maxStringLength: 25000,
     maxHexDumpSize: 1024,
     maxConcurrentFiles: 5,
     processingTimeout: 30000

@@ -78,3 +78,47 @@ test('onRequestSettled fires only after the async handler has finished', async (
     await app.fastify.close();
   }
 });
+
+test('onRequestSettled fires when an error middleware ends the response without next (issue #177)', async () => {
+  const app = createFastifyCompatApp();
+  const events = [];
+  app.get('/boom', (req, _res, next) => {
+    onRequestSettled(req, () => events.push('settled'));
+    next();
+  }, async () => {
+    throw new Error('handler failed');
+  });
+  // Like server.js's final error middleware: answers JSON and never calls next.
+  app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
+  try {
+    const response = await app.fastify.inject({ method: 'GET', url: '/boom' });
+    assert.equal(response.statusCode, 500);
+    assert.deepEqual(JSON.parse(response.body), { error: 'handler failed' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(events, ['settled'], 'the handler chain settled, so its slot callbacks must run');
+  } finally {
+    await app.fastify.close();
+  }
+});
+
+test('onRequestSettled waits for an async error middleware that ends the response later (issue #177)', async () => {
+  const app = createFastifyCompatApp();
+  const events = [];
+  app.get('/boom', (req, _res, next) => {
+    onRequestSettled(req, () => events.push('settled'));
+    next(new Error('early failure'));
+  });
+  app.use(async (_err, _req, res, _next) => {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    events.push('error-handler-done');
+    res.status(503).json({ error: 'busy' });
+  });
+  try {
+    const response = await app.fastify.inject({ method: 'GET', url: '/boom' });
+    assert.equal(response.statusCode, 503);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(events, ['error-handler-done', 'settled']);
+  } finally {
+    await app.fastify.close();
+  }
+});

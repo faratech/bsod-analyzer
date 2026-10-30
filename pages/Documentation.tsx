@@ -6,6 +6,7 @@ import { InArticleAd, HorizontalAd } from '../components/AdSense';
 import { useActiveSection } from '../hooks/useActiveSection';
 import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
 import { BSOD_FORUM_URL } from '../shared/forumLinks.js';
+import { FILE_LIMITS, formatBytes } from '../shared/ingestPolicy.js';
 
 const Documentation: React.FC = () => {
     const location = useLocation();
@@ -256,6 +257,14 @@ const Documentation: React.FC = () => {
                                     <li>Minidumps: <code>C:\Windows\Minidump\</code></li>
                                     <li>Kernel/Complete dumps: <code>C:\Windows\MEMORY.DMP</code></li>
                                 </ul>
+
+                                <div className="alert alert-info">
+                                    <strong>File size limit:</strong> each file can be up to {formatBytes(FILE_LIMITS.maxFileSize)}{' '}
+                                    (archives too, once extracted). A MEMORY.DMP is usually larger, so upload the
+                                    minidump for the same crash from <code>C:\Windows\Minidump\</code> instead; Windows
+                                    normally saves one alongside it. If there is none, set "Write debugging
+                                    information" to "Small memory dump" (below) and wait for the next crash.
+                                </div>
                                 
                                 <h3>Checking Dump Settings</h3>
                                 <ol className="step-list">
@@ -282,6 +291,7 @@ const Documentation: React.FC = () => {
                                 <ul>
                                     <li>.dmp, .mdmp, .hdmp, and .kdmp files (any type of Windows dump)</li>
                                     <li>.zip, .7z, and .rar archives containing .dmp files</li>
+                                    <li>Up to {formatBytes(FILE_LIMITS.maxFileSize)} per file</li>
                                     <li>Multiple files can be analyzed in one session</li>
                                 </ul>
                                 
@@ -291,7 +301,7 @@ const Documentation: React.FC = () => {
                                     <li>Drag and drop your files or click to browse</li>
                                     <li>Click "Analyze" to start the analysis</li>
                                     <li>The backend uses WinDBG when available, or validated AI fallback when it is not</li>
-                                    <li>Wait for results (typically 30-60 seconds for first analysis, instant for cached files)</li>
+                                    <li>Wait for results (typically 30-60 seconds)</li>
                                 </ol>
                                 
                                 <div className="alert alert-success">
@@ -544,14 +554,14 @@ const Documentation: React.FC = () => {
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>BOOT_INITIALIZATION_FAILED (0x0000006B)</h4>
+                                        <h4>PROCESS1_INITIALIZATION_FAILED (0x0000006B)</h4>
                                         <p>Windows failed to initialize during boot process. Often caused by corrupted system files.</p>
                                         <p><strong>Common fixes:</strong> Use System Restore, run startup repair, check for disk corruption</p>
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>STATUS_SYSTEM_PROCESS_TERMINATED (0x000000C00002E2)</h4>
-                                        <p>Critical system process terminated during boot. Severe system file corruption.</p>
+                                        <h4>WINLOGON_FATAL_ERROR (0xC000021A)</h4>
+                                        <p>A critical user-mode subsystem (Winlogon or CSRSS) failed. Usually mismatched or corrupted system files, or third-party software interfering with them.</p>
                                         <p><strong>Common fixes:</strong> Boot from installation media and repair, restore from backup</p>
                                     </div>
                                 </div>
@@ -559,8 +569,8 @@ const Documentation: React.FC = () => {
                                 <h3>Memory and Resource Errors</h3>
                                 <div className="error-codes">
                                     <div className="error-code">
-                                        <h4>OUT_OF_MEMORY (0x0000002D)</h4>
-                                        <p>System ran out of memory resources. Can occur with memory leaks or insufficient RAM.</p>
+                                        <h4>NO_PAGES_AVAILABLE (0x0000004D)</h4>
+                                        <p>The system ran out of free physical memory pages. Usually a driver leaking or locking memory, sometimes insufficient RAM.</p>
                                         <p><strong>Common fixes:</strong> Add more RAM, check for memory leaks, increase pagefile size</p>
                                     </div>
                                     
@@ -586,20 +596,20 @@ const Documentation: React.FC = () => {
                                 <h3>Network and Communication Errors</h3>
                                 <div className="error-codes">
                                     <div className="error-code">
-                                        <h4>TCPIP_AOAC_NIC_ACTIVE_REFERENCE_LEAK (0x00000165)</h4>
+                                        <h4>TCPIP_AOAC_NIC_ACTIVE_REFERENCE_LEAK (0x00000150)</h4>
                                         <p>Network adapter driver leaked an active reference. Power management issue with network card.</p>
                                         <p><strong>Common fixes:</strong> Update network drivers, disable power saving for network adapter</p>
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>NETWORK_BOOT_INITIALIZATION_FAILED (0x0000006C)</h4>
+                                        <h4>NETWORK_BOOT_INITIALIZATION_FAILED (0x000000BB)</h4>
                                         <p>Network boot failed to initialize. Common in diskless workstation environments.</p>
                                         <p><strong>Common fixes:</strong> Check network boot settings, verify PXE configuration</p>
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>NDIS_INTERNAL_ERROR (0x0000007C)</h4>
-                                        <p>Internal error in Network Driver Interface Specification. Network driver problem.</p>
+                                        <h4>BUGCODE_NDIS_DRIVER (0x0000007C)</h4>
+                                        <p>The Network Driver Interface Specification (NDIS) library detected an error in a network driver.</p>
                                         <p><strong>Common fixes:</strong> Update or reinstall network drivers, check for driver conflicts</p>
                                     </div>
                                 </div>
@@ -613,15 +623,15 @@ const Documentation: React.FC = () => {
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>USB_DRIPS_BLOCKER_SURPRISE_REMOVAL_LIVEDUMP (0x00000180)</h4>
-                                        <p>USB device was surprise-removed while blocking system sleep. Power management issue.</p>
+                                        <h4>USB_DRIPS_BLOCKER_SURPRISE_REMOVAL_LIVEDUMP (0x000001A5)</h4>
+                                        <p>Live dump, not a crash: a USB device kept the controller from powering down during modern standby and was surprise-removed.</p>
                                         <p><strong>Common fixes:</strong> Safely remove USB devices, update USB controller drivers</p>
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>INVALID_USB_DESCRIPTOR (0x00000166)</h4>
-                                        <p>USB device provided invalid descriptor. Faulty or incompatible USB device.</p>
-                                        <p><strong>Common fixes:</strong> Remove the problematic USB device, update device firmware</p>
+                                        <h4>BUGCODE_USB3_DRIVER (0x00000144)</h4>
+                                        <p>The USB 3 driver stack detected a fatal error. Often a faulty device, its firmware, or the USB controller driver.</p>
+                                        <p><strong>Common fixes:</strong> Remove the problematic USB device, update USB controller drivers and device firmware</p>
                                     </div>
                                 </div>
                                 
@@ -646,8 +656,8 @@ const Documentation: React.FC = () => {
                                     </div>
                                     
                                     <div className="error-code">
-                                        <h4>DISPLAY_DRIVER_STOPPED_RESPONDING (0x00000117)</h4>
-                                        <p>Display driver stopped responding. Similar to VIDEO_TDR_FAILURE but more severe.</p>
+                                        <h4>VIDEO_TDR_TIMEOUT_DETECTED (0x00000117)</h4>
+                                        <p>The display driver failed to respond in time and was reset (timeout detection and recovery). Usually a live dump: when recovery fails, the crash is VIDEO_TDR_FAILURE.</p>
                                         <p><strong>Common fixes:</strong> Clean install graphics drivers, check display cable connections</p>
                                     </div>
                                 </div>
@@ -658,12 +668,6 @@ const Documentation: React.FC = () => {
                                         <h4>HYPERVISOR_ERROR (0x00020001)</h4>
                                         <p>Hyper-V hypervisor encountered fatal error. Virtualization platform issue.</p>
                                         <p><strong>Common fixes:</strong> Update Hyper-V, check virtualization settings in BIOS</p>
-                                    </div>
-                                    
-                                    <div className="error-code">
-                                        <h4>VMBUS_VIRTUAL_PROCESSOR_LIMIT_EXCEEDED (0x00000151)</h4>
-                                        <p>Virtual machine exceeded processor limit. Hyper-V configuration issue.</p>
-                                        <p><strong>Common fixes:</strong> Reduce virtual processors, check Hyper-V limits</p>
                                     </div>
                                 </div>
                                 
@@ -746,9 +750,8 @@ const Documentation: React.FC = () => {
                                 </ul>
 
                                 <div className="alert alert-info">
-                                    <strong>Pro Tip:</strong> First-time analysis of a dump may take 30-60 seconds
-                                    while WinDBG processes the file. Fallback reports may return different detail levels,
-                                    and repeated analyses of the same file are returned instantly from cache.
+                                    <strong>Pro Tip:</strong> Analysis of a dump may take 30-60 seconds
+                                    while WinDBG processes the file. Fallback reports may return different detail levels.
                                 </div>
                                 
                                 <h3>Reading Stack Traces</h3>

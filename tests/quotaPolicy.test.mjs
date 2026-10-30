@@ -109,6 +109,35 @@ test('session windows reset and expired entries are pruned', () => {
   assert.equal(quota.size(), 0);
 });
 
+test('a late commit, refund or release never touches the window that replaced the reservation (issue #253)', () => {
+  const quota = createSessionQuotaStore();
+  const t0 = 1_000_000;
+  const args = { requestCost: 1, tokenCost: 100, requestLimit: 10, tokenLimit: 10_000, windowSeconds: 60 };
+  const first = quota.reserve('k', { ...args, now: t0 });
+  assert.equal(first.allowed, true);
+
+  // The window rolls over and another request opens the next one.
+  const later = t0 + 61_000;
+  const second = quota.reserve('k', { ...args, now: later });
+  assert.equal(second.allowed, true);
+  assert.notEqual(second.window, first.window, 'each window has its own identity');
+
+  quota.commit('k', { tokenDelta: 500, window: first.window, now: later });
+  assert.equal(quota.refund('k', { tokenCost: 100, refundCap: 5, window: first.window, now: later }).refunded, false);
+  quota.release('k', { tokenCost: 100, window: first.window, now: later });
+
+  const snap = quota.reserve('k', { ...args, tokenCost: 0, requestCost: 0, now: later });
+  assert.equal(snap.requests, 1, 'the new window keeps its own request count');
+  assert.equal(snap.tokens, 100, 'the new window keeps its own token count');
+  // Its refund allowance was not spent by the late refund either.
+  assert.equal(quota.refund('k', { tokenCost: 100, refundCap: 1, window: second.window, now: later }).refunded, true);
+
+  // Settlement within the admitting window still applies.
+  const third = quota.reserve('k', { ...args, now: later });
+  quota.commit('k', { tokenDelta: 50, window: third.window, now: later });
+  assert.equal(quota.reserve('k', { ...args, tokenCost: 0, requestCost: 0, now: later }).tokens, 150);
+});
+
 const PROVIDER_LIMITS = { dailyInputLimit: 1000, dailyOutputLimit: 1000, hourlyInputLimit: 400, hourlyOutputLimit: 400 };
 
 test('provider budgets keep separate day and hour buckets', () => {

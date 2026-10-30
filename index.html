@@ -78,7 +78,7 @@
       --bg-hover: #222222;
       --text-primary: #ffffff;
       --text-secondary: #a0a0a0;
-      --text-tertiary: #666666;
+      --text-tertiary: #8a8a8a;
       --border-primary: #2a2a2a;
       --border-secondary: #333333;
       --status-success: #10b981;
@@ -98,11 +98,11 @@
       --bg-hover: #e9ecef;
       --text-primary: #1a1a1a;
       --text-secondary: #495057;
-      --text-tertiary: #868e96;
+      --text-tertiary: #5f6770;
       --border-primary: #dee2e6;
       --border-secondary: #ced4da;
-      --status-success: #059669;
-      --status-warning: #d97706;
+      --status-success: #047857;
+      --status-warning: #92400e;
       --status-error: #dc2626;
       --status-info: #2563eb;
     }
@@ -313,7 +313,9 @@
             window.dataLayer = window.dataLayer || [];
             window.gtag = function () { window.dataLayer.push(arguments); };
             window.gtag('js', new Date());
-            window.gtag('config', window.__GA_ID__);
+            // No automatic page view: AppRouter sends one page_view per
+            // pathname, the first on load (issue #347).
+            window.gtag('config', window.__GA_ID__, { send_page_view: false });
         }
 
         // Idle-fallback delay (ms) for sessions that never interact. A value past

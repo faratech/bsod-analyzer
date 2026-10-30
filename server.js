@@ -29,7 +29,8 @@ import {
   mapWinDbgJobStatus,
   normalizeWinDbgApiBaseUrl,
   submitWinDbgJob,
-  toLegacyWinDbgStatusResponse
+  toLegacyWinDbgStatusResponse,
+  winDbgJobErrorLogFields
 } from './shared/windbgApiClient.js';
 import {
   mapStructuredSignalToReport,
@@ -37,13 +38,18 @@ import {
   parseWinDbgOutput
 } from './shared/windbgReportFields.js';
 import { isForumIdentityEnabled, resolveForumIdentityFromCookies } from './services/forumIdentity.js';
-import { createExternalJobCodec, createExternalJobResolver, isExternalJobUid } from './server/externalJobs.js';
+import { winDbgUpstreamFailureCode, winDbgUpstreamHttpStatus, windbgUploadFailureResponse } from './server/windbgUploadFailure.js';
+import { isUnconfirmedSubmitFailure } from './server/windbgSubmitFailure.js';
+import { classifyRequestError } from './server/requestErrors.js';
+import { analyzeHeldSubmissionResponse, analyzeSubmitFailureResponse, createExternalJobCodec, createExternalJobResolver, createExternalSubmissionReuse, isExternalJobUid } from './server/externalJobs.js';
 import {
   createFastifyCompatApp,
   jsonParser,
   staticMiddleware
 } from './server/fastifyCompat.js';
 import { createMaintenanceMiddleware } from './server/maintenance.js';
+import { createShutdownCoordinator } from './server/shutdown.js';
+import { createPathShapeMiddleware } from './server/requestPath.js';
 import {
   createRateLimiterFactory,
   jsonRateLimitHandler,
@@ -69,10 +75,19 @@ import { createGcsJsonReader } from './server/gcsJson.js';
 import { createGcsStatsSource } from './server/statsGcsSource.js';
 import { createWinDbgCorpusRecorder } from './server/windbgCorpus.js';
 import { windbgFailureLogFields } from './server/windbgFailureLog.js';
+import {
+  createExternalWinDbgSubmit,
+  createExternalWinDbgSubmitter,
+  createWinDbgUploadCapGate,
+  createWinDbgUploadSubmitter,
+  DEFAULT_WINDBG_UPLOAD_RESPONSE_BUDGET_MS,
+  resolveUploadResponseBudgetMs
+} from './server/windbgUploadSubmit.js';
 import { createCrashPriors, extractPromptSignal } from './server/crashPriors.js';
 import { createCrashSignalRecorder } from './server/crashSignal.js';
 import { createConcurrencyLimiter } from './server/concurrency.js';
 import { classifyRequestPath } from './server/blockedPaths.js';
+import { MIME_TYPES as STATIC_MIME_TYPES, staticHeadersFor, createStaticRedirectMiddleware } from './server/staticPolicy.js';
 import { createCorsOriginCheck } from './server/corsPolicy.js';
 import { ALL_SESSION_COOKIES, LEGACY_SESSION_COOKIES, presentedSessionCookies } from './server/sessionCookies.js';
 import {
@@ -82,6 +97,7 @@ import {
   registerForumRelatedRoute
 } from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
+import { createHtmlDocuments, normalizeRoutePath, prerenderedRouteKey } from './server/htmlDocuments.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
 import {
   SERVER_PROMPT_FILE_NAME,
@@ -96,6 +112,7 @@ import { registerStatsRoute } from './server/statsRoute.js';
 import { createPeerIpResolver } from './server/peerIp.js';
 import { createTurnstileReplayGuard } from './server/turnstile.js';
 import { createFileHandleCodec, createSessionCodec } from './server/sessionToken.js';
+import { exchangeSession } from './server/ssoSession.js';
 import {
   createProviderQuotaStore,
   createSessionQuotaStore,
@@ -104,7 +121,10 @@ import {
   settleProviderTokenReservation
 } from './server/quotaStore.js';
 import { createQuotaLedger, createSharedCounterStoreFromEnv } from './server/sharedCounters.js';
-import { createArchiveDumpExtractor } from './server/archiveExtract.js';
+import { createOpenAIFreeBudget, openAIFreeUsage } from './server/openaiFreeTier.js';
+import { createAIDeadline, aiRequestDeadlineMs } from './server/aiDeadline.js';
+import { parsePositiveIntEnv, parseTrustProxyHops, readEnvSwitches, warnRetiredEnv } from './server/envConfig.js';
+import { createArchiveDumpExtractor, selectAnalyzableDump } from './server/archiveExtract.js';
 import { shouldRefund, refundCapFor, classifyQuotaFailure } from './server/quotaPolicy.js';
 import {
   createStatsInsightService,
@@ -124,8 +144,6 @@ import {
   DEFAULT_OPENROUTER_FREE_MODEL,
   DEFAULT_OPENAI_FREE_MODEL,
   DEFAULT_EXPERIENTIAL_MODEL,
-  ARGON_FREE_MODEL,
-  ARGON_PAID_MODEL,
   getAIProviderForModel,
   getCachedAIReportForModel,
   isSupportedAIModel
@@ -181,23 +199,40 @@ const log = {
   error: (event, fields = {}) => emitJsonLog('ERROR',   event, fields),
 };
 
+const envWarn = ({ event, ...fields }) => log.warn(event, fields);
+// On/off switches, parsed once (1/true/yes/on, 0/false/no/off; unknown values
+// warn and keep the safe side).
+const ENV_SWITCHES = readEnvSwitches(process.env, { warn: envWarn });
+// Leftover variables of retired provider legs (issue #323) are ignored; one
+// `env.ignored` warning names them.
+warnRetiredEnv(process.env, { warn: envWarn });
+
 const PORT = process.env.PORT || 8080;
 const ENABLE_H2C = String(process.env.ENABLE_H2C || 'false').toLowerCase() === 'true';
-const HTTP2_SESSION_TIMEOUT_MS = readPositiveInt(process.env.HTTP2_SESSION_TIMEOUT_MS, 72_000);
+const HTTP2_SESSION_TIMEOUT_MS = readPositiveInt('HTTP2_SESSION_TIMEOUT_MS', 72_000);
 
 // Trust proxy headers (required for Cloud Run). With Cloudflare in front of
 // Cloud Run, the X-Forwarded-For chain is [user-ip, cloudflare-edge-ip] as the
 // platform appends its view of the connecting peer. TRUST_PROXY_HOPS defaults
 // to 2 to walk past both hops.
-const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '2', 10);
-const TRUST_PROXY_VALUE = Number.isFinite(TRUST_PROXY_HOPS) ? TRUST_PROXY_HOPS : 2;
+// Validated once (integer >= 1) and the same value goes to Fastify and the
+// peer resolver (issue #292).
+const TRUST_PROXY_HOPS = parseTrustProxyHops(process.env, { warn: envWarn });
+const TRUST_PROXY_VALUE = TRUST_PROXY_HOPS;
 const app = createFastifyCompatApp({
   // External API job ids are signed tokens carrying the job metadata (~300-500 chars).
   maxParamLength: 1024,
   http2: ENABLE_H2C,
   http2SessionTimeout: HTTP2_SESSION_TIMEOUT_MS,
   trustProxy: TRUST_PROXY_VALUE,
-  bodyLimit: SECURITY_CONFIG.api.maxUploadRequestSize,
+  // Small global limit; only the multipart upload routes accept the upload
+  // cap (issue #288). No body is buffered before the middleware stack anyway.
+  bodyLimit: SECURITY_CONFIG.api.maxRequestSize,
+  routeBodyLimits: {
+    '/api/windbg/upload': SECURITY_CONFIG.api.maxUploadRequestSize,
+    '/api/extract-archive': SECURITY_CONFIG.api.maxUploadRequestSize,
+    '/api/analyze': SECURITY_CONFIG.api.maxUploadRequestSize
+  },
   compression: {
     enabled: true,
     threshold: 1024,
@@ -215,18 +250,22 @@ const MAX_ARCHIVE_COMPRESSION_RATIO = FILE_LIMITS.maxCompressionRatio;
 // SHA-256 file identity (shared/hash.js, issue #146).
 const HASH_RE = /^[a-f0-9]{64}$/i;
 const TURNSTILE_ACTION = process.env.TURNSTILE_ACTION || 'file-upload';
-const AI_MAX_PROMPT_CHARS = readPositiveInt(process.env.AI_MAX_PROMPT_CHARS, 250_000);
+const AI_MAX_PROMPT_CHARS = readPositiveInt('AI_MAX_PROMPT_CHARS', 250_000);
 // Output budget for an analysis response. On a reasoning model the reasoning trace
 // is charged against the same budget as the answer, so a cap sized for the JSON
 // alone gets consumed by the reasoning and the object is cut off mid-string —
 // surfacing as finishReason "LENGTH" and "AI response was not valid JSON". This is
 // a ceiling, not a target: a model that finishes early is billed for what it used.
-const AI_MAX_OUTPUT_TOKENS = readPositiveInt(process.env.AI_MAX_OUTPUT_TOKENS, 16_384);
-const GEMINI_TIMEOUT_MS = readPositiveInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
+const AI_MAX_OUTPUT_TOKENS = readPositiveInt('AI_MAX_OUTPUT_TOKENS', 16_384);
+const GEMINI_TIMEOUT_MS = readPositiveInt('GEMINI_TIMEOUT_MS', 60_000);
 // DeepSeek runs with a reasoning trace, so it is materially slower than a
 // straight completion and gets its own budget rather than inheriting Gemini's.
-// Cloud Run's request timeout (300s by default) is the real ceiling.
-const DEEPSEEK_TIMEOUT_MS = readPositiveInt(process.env.DEEPSEEK_TIMEOUT_MS, 120_000);
+// AI_REQUEST_DEADLINE_MS below caps it, and the chain, per request.
+const DEEPSEEK_TIMEOUT_MS = readPositiveInt('DEEPSEEK_TIMEOUT_MS', 120_000);
+// Budget for the whole provider chain of one request (default 90 s, under
+// Cloudflare's 100 s origin timeout): every leg above is capped by what
+// remains of it (server/aiDeadline.js, issue #255).
+const AI_REQUEST_DEADLINE_MS = aiRequestDeadlineMs(process.env, { warn: envWarn });
 const DEEPSEEK_API_BASE_URL = process.env.DEEPSEEK_API_BASE_URL || DEFAULT_DEEPSEEK_API_BASE_URL;
 // OpenRouter free-tier failover: used when the DeepSeek account cannot serve
 // requests (out of credits, auth revoked). Unset key = failover disabled.
@@ -240,51 +279,26 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_ADMIN_KEY = process.env.OPENAI_ADMIN_KEY;
 const OPENAI_FREE_MODEL = process.env.OPENAI_FREE_MODEL || DEFAULT_OPENAI_FREE_MODEL;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt(process.env.OPENAI_FREE_DAILY_TOKEN_CAP, 10_000_000);
-const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt(process.env.OPENAI_FREE_SAFETY_BUFFER, 250_000);
+const OPENAI_FREE_DAILY_TOKEN_CAP = readPositiveInt('OPENAI_FREE_DAILY_TOKEN_CAP', 10_000_000);
+const OPENAI_FREE_SAFETY_BUFFER = readPositiveInt('OPENAI_FREE_SAFETY_BUFFER', 250_000);
 // Experiential Cloud is used only for the BSOD analyzer's OpenAI-compatible
 // Luna leg. It is enabled when the Secret Manager key is present; the token
 // budget is tracked per instance (server/quotaStore.js).
 const EXPERIENTIAL_API_KEY = process.env.EXPLABS_API_KEY;
 const EXPERIENTIAL_BASE_URL = process.env.EXPLABS_BASE_URL || 'https://api.experientiallabs.ai/v1';
 const EXPERIENTIAL_MODEL = process.env.EXPLABS_MODEL || DEFAULT_EXPERIENTIAL_MODEL;
-const EXPERIENTIAL_DAILY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_INPUT_LIMIT, 15_000_000);
-const EXPERIENTIAL_DAILY_OUTPUT_LIMIT = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_LIMIT, 3_000_000);
-const EXPERIENTIAL_HOURLY_INPUT_LIMIT = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_LIMIT, 3_000_000);
-const EXPERIENTIAL_HOURLY_OUTPUT_LIMIT = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_LIMIT, 750_000);
-const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_INPUT_BUFFER, 250_000);
-const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_DAILY_OUTPUT_BUFFER, 50_000);
-const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_INPUT_BUFFER, 50_000);
-const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt(process.env.EXPLABS_HOURLY_OUTPUT_BUFFER, 12_500);
-// Gemini 4 Argon legs (operator rule 2026-10-13: the go-to model for medium/
-// complex work while free on Experiential, then paid from its credits). Off
-// unless EXPLABS_ARGON_ENABLED; the paid leg is capped per UTC day in tokens
-// (defaults ~= $3 input + $2 output at $2/$10 per 1M) and is tried only when
-// the free leg refused a request it never processed.
-const EXPERIENTIAL_ARGON_ENABLED = /^(1|true|yes|on)$/i.test(process.env.EXPLABS_ARGON_ENABLED || '');
-const EXPERIENTIAL_ARGON_TIMEOUT_MS = readPositiveInt(process.env.EXPLABS_ARGON_TIMEOUT_MS, 90_000);
-const ARGON_LEGS = Object.freeze([
-  Object.freeze({
-    key: 'experiential-argon-free',
-    model: ARGON_FREE_MODEL,
-    dailyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_DAILY_INPUT_LIMIT, 15_000_000),
-    dailyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_DAILY_OUTPUT_LIMIT, 3_000_000),
-    hourlyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_HOURLY_INPUT_LIMIT, 3_000_000),
-    hourlyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_HOURLY_OUTPUT_LIMIT, 750_000)
-  }),
-  Object.freeze({
-    key: 'experiential-argon-paid',
-    model: ARGON_PAID_MODEL,
-    dailyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT, 1_500_000),
-    dailyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_OUTPUT_LIMIT, 200_000),
-    hourlyInputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT, 1_500_000),
-    hourlyOutputLimit: readPositiveInt(process.env.EXPLABS_ARGON_PAID_DAILY_OUTPUT_LIMIT, 200_000)
-  })
-]);
+const EXPERIENTIAL_DAILY_INPUT_LIMIT = readPositiveInt('EXPLABS_DAILY_INPUT_LIMIT', 15_000_000);
+const EXPERIENTIAL_DAILY_OUTPUT_LIMIT = readPositiveInt('EXPLABS_DAILY_OUTPUT_LIMIT', 3_000_000);
+const EXPERIENTIAL_HOURLY_INPUT_LIMIT = readPositiveInt('EXPLABS_HOURLY_INPUT_LIMIT', 3_000_000);
+const EXPERIENTIAL_HOURLY_OUTPUT_LIMIT = readPositiveInt('EXPLABS_HOURLY_OUTPUT_LIMIT', 750_000);
+const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt('EXPLABS_DAILY_INPUT_BUFFER', 250_000);
+const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt('EXPLABS_DAILY_OUTPUT_BUFFER', 50_000);
+const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt('EXPLABS_HOURLY_INPUT_BUFFER', 50_000);
+const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt('EXPLABS_HOURLY_OUTPUT_BUFFER', 12_500);
 // Cloud Run --max-instances. deploy-with-secret.sh and cloudbuild.yaml pass the
 // value they deploy with (the GitHub trigger's inline build does not, so the
 // default must match the service's --max-instances).
-const MAX_INSTANCES = readPositiveInt(process.env.MAX_INSTANCES, 10);
+const MAX_INSTANCES = readPositiveInt('MAX_INSTANCES', 10);
 // Free-tier budgets are split into this many per-instance shares; each
 // provider's own quota errors still latch its route off (402 / quota 429).
 // The default stays 2 until the provider budget itself counts in the shared
@@ -292,7 +306,7 @@ const MAX_INSTANCES = readPositiveInt(process.env.MAX_INSTANCES, 10);
 // budgets, and 1/MAX_INSTANCES shares would cut the free tier each running
 // instance can use five-fold and push peak traffic to the paid legs. Set
 // PROVIDER_QUOTA_SHARDS=<max instances> to opt into the hard per-instance bound.
-const PROVIDER_QUOTA_SHARDS = readPositiveInt(process.env.PROVIDER_QUOTA_SHARDS, 2);
+const PROVIDER_QUOTA_SHARDS = readPositiveInt('PROVIDER_QUOTA_SHARDS', 2);
 // Effort below 'high' is selectable now, but the default is unchanged: the vendor's
 // accepted values are not verified here beyond 'high'/'max', which is all this code
 // has ever sent, so a lower setting is opt-in and instantly revertible via env
@@ -304,17 +318,26 @@ const DEEPSEEK_REASONING_EFFORT = DEEPSEEK_REASONING_EFFORTS.includes(process.en
 const DEEPSEEK_THINKING_ENABLED = !['0', 'false', 'disabled'].includes(
   String(process.env.DEEPSEEK_THINKING || 'enabled').toLowerCase()
 );
-const TURNSTILE_TIMEOUT_MS = readPositiveInt(process.env.TURNSTILE_TIMEOUT_MS, 10_000);
-const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_UPLOAD_TIMEOUT_MS, 240_000);
-const WINDBG_POLL_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_POLL_TIMEOUT_MS, 20_000);
-const WINDBG_DOWNLOAD_TIMEOUT_MS = readPositiveInt(process.env.WINDBG_DOWNLOAD_TIMEOUT_MS, 60_000);
+const TURNSTILE_TIMEOUT_MS = readPositiveInt('TURNSTILE_TIMEOUT_MS', 10_000);
+// Upstream submit cap. On the browser upload route the response is answered
+// within WINDBG_UPLOAD_RESPONSE_BUDGET_MS (default 90 s, clamped below
+// Cloudflare's 100 s origin timeout) while the submit itself may run on to
+// this cap so a retry can adopt the job it creates (issue #276).
+const WINDBG_UPLOAD_TIMEOUT_MS = readPositiveInt('WINDBG_UPLOAD_TIMEOUT_MS', 240_000);
+// Parsed strictly like every other integer env (issue #292), then clamped.
+const WINDBG_UPLOAD_RESPONSE_BUDGET_MS = resolveUploadResponseBudgetMs(
+  readPositiveInt('WINDBG_UPLOAD_RESPONSE_BUDGET_MS', DEFAULT_WINDBG_UPLOAD_RESPONSE_BUDGET_MS)
+);
+const WINDBG_POLL_TIMEOUT_MS = readPositiveInt('WINDBG_POLL_TIMEOUT_MS', 20_000);
+const WINDBG_DOWNLOAD_TIMEOUT_MS = readPositiveInt('WINDBG_DOWNLOAD_TIMEOUT_MS', 60_000);
 // The JSON output contract is now part of the cache-stable prefixes in
 // shared/promptTemplates.js (LOCAL_DUMP_PREFIX / WINDBG_PREFIX), so it no
 // longer needs to be appended after the dynamic evidence.
 
-function readPositiveInt(value, fallback) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+// Strict: digits (optional underscores) only; a malformed value logs
+// env.invalid and keeps the default (server/envConfig.js, issue #292).
+function readPositiveInt(name, fallback) {
+  return parsePositiveIntEnv(process.env, name, fallback, { warn: envWarn });
 }
 
 function timeoutSignal(ms) {
@@ -370,8 +393,7 @@ app.use(securityHeadersMiddleware);
 // Combined with --no-default-url on the Cloud Run service, this closes both
 // the default *.run.app URL and any direct-Cloud-Run path. /health is exempt
 // so Cloud Run's own probes (which arrive without X-Forwarded-For) still pass.
-const CLOUDFLARE_ONLY_INGRESS =
-  (process.env.CLOUDFLARE_ONLY_INGRESS ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true';
+const CLOUDFLARE_ONLY_INGRESS = ENV_SWITCHES.cloudflareOnlyIngress;
 if (CLOUDFLARE_ONLY_INGRESS) {
   console.log(`Ingress gate: requiring a Cloudflare edge peer and an XFF chain of >= ${TRUST_PROXY_HOPS} entries`);
   app.use((req, res, next) => {
@@ -397,6 +419,12 @@ if (CLOUDFLARE_ONLY_INGRESS) {
 //   gcloud run services update bsod-analyzer --region=us-east1 \
 //     --update-env-vars MAINTENANCE_MODE=true|false
 app.use(createMaintenanceMiddleware());
+
+// Path shape (issue #350): req.path is the raw request target, so "//about"
+// is not the home page and "..\\health" is not /health. Duplicate slashes
+// redirect to the collapsed path; backslashes and dot segments are rejected.
+// Registered before every route so their stacks include it.
+app.use(createPathShapeMiddleware());
 
 function rateLimitKey(req) {
   return normalizeRateLimitIp(getClientIp(req));
@@ -564,9 +592,8 @@ const OWNERSHIP_EXPIRY = SESSION_EXPIRY;
 
 // External API jobs are stateless signed tokens (server/externalJobs.js): any
 // instance answers a status poll by asking the upstream WinDBG service.
-const EXTERNAL_JOB_TTL_MS = readPositiveInt(process.env.EXTERNAL_JOB_TTL_SECONDS, 2 * 60 * 60) * 1000;
-const EXTERNAL_JOB_DEADLINE_SECONDS = readPositiveInt(
-  process.env.EXTERNAL_JOB_DEADLINE_SECONDS,
+const EXTERNAL_JOB_TTL_MS = readPositiveInt('EXTERNAL_JOB_TTL_SECONDS', 2 * 60 * 60) * 1000;
+const EXTERNAL_JOB_DEADLINE_SECONDS = readPositiveInt('EXTERNAL_JOB_DEADLINE_SECONDS',
   15 * 60
 );
 // A forum worker that loses the 202 and resubmits the same dump gets the same
@@ -601,20 +628,66 @@ function sessionOwnsHash(sessionId, hash, handle) {
   return timestamp !== undefined && Date.now() - timestamp <= OWNERSHIP_EXPIRY;
 }
 
-function markWinDbgJob(sessionId, uid, upstreamJobId, dumpType) {
+function markWinDbgJob(sessionId, uid, upstreamJobId, dumpType, fileSizeBytes) {
   if (!sessionId || !uid) return;
   const existing = winDbgJobOwnership.get(uid);
   const sessions = new Set(existing?.sessions || []);
   sessions.add(sessionId);
-  winDbgJobOwnership.set(uid, { sessions: [...sessions], upstreamJobId, dumpType, timestamp: Date.now() });
+  winDbgJobOwnership.set(uid, { sessions: [...sessions], upstreamJobId, dumpType, fileSizeBytes, timestamp: Date.now() });
   markSessionHash(sessionId, uid);
 }
+
+// Browser upload submits answer within the response budget (issue #276).
+// Submits still running after their 504 hold the dump in memory, so they
+// count against the same per-instance cap as the route slots (issue #314).
+const WINDBG_UPLOAD_MAX_CONCURRENT = 2;
+const windbgUploadSubmitter = createWinDbgUploadSubmitter({
+  responseBudgetMs: WINDBG_UPLOAD_RESPONSE_BUDGET_MS,
+  retainMs: OWNERSHIP_EXPIRY,
+  maxInFlight: WINDBG_UPLOAD_MAX_CONCURRENT,
+  // An ambiguous submit failure holds the dump for the window (issue #328).
+  isUnconfirmedFailure: isUnconfirmedSubmitFailure,
+  onLateResult: (uid, result) => log.warn('windbg.upload.late_job', {
+    uid: uid.substring(0, 12),
+    jobId: String(result?.job_id || '').slice(0, 100)
+  }),
+  onLateError: (uid, error) => log.warn('windbg.upload.late_fail', {
+    uid: uid.substring(0, 12),
+    ...windbgFailureLogFields(error)
+  })
+});
+
+// Refuses a new dump at the submit cap before its body is read or a limiter
+// slot is spent; a retry joining its own submit passes (issue #338).
+const windbgUploadCapGate = createWinDbgUploadCapGate({ submitter: windbgUploadSubmitter });
+
+// /api/analyze submits answer within the same budget; the reuse entry is
+// written when the submit settles, even after the timeout answer (issue #315).
+const EXTERNAL_ANALYZE_MAX_CONCURRENT = 2;
+// An ambiguous submit failure holds the dump for 10 minutes (issue #336).
+const externalDumpSubmitter = createExternalWinDbgSubmitter({
+  responseBudgetMs: WINDBG_UPLOAD_RESPONSE_BUDGET_MS,
+  maxInFlight: EXTERNAL_ANALYZE_MAX_CONCURRENT,
+  onLateResult: (fileHash, result) => log.warn('analyze.late_job', {
+    fileHash: fileHash.substring(0, 12),
+    upstreamJobId: String(result?.upstreamJobId || '').slice(0, 100)
+  }),
+  onLateError: (fileHash, error) => log.warn('analyze.late_fail', {
+    fileHash: fileHash.substring(0, 12),
+    ...windbgFailureLogFields(error)
+  })
+});
+const submitExternalDump = createExternalWinDbgSubmit({
+  submitter: externalDumpSubmitter,
+  recent: recentExternalSubmissions,
+  ttlMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000
+});
 
 // Resolves the upstream WinDBG job for a poll/download: from the signed handle
 // on any instance, else from this instance's upload record.
 function getOwnedWinDbgJob(sessionId, uid, handle) {
   const claims = handle ? fileHandleCodec.verify(handle, { fileHash: uid, sessionId }) : null;
-  if (claims?.jid) return { upstreamJobId: claims.jid, dumpType: claims.dt };
+  if (claims?.jid) return { upstreamJobId: claims.jid, dumpType: claims.dt, fileSizeBytes: claims.sz };
   const job = winDbgJobOwnership.get(uid);
   if (!job?.sessions.includes(sessionId) || Date.now() - job.timestamp > OWNERSHIP_EXPIRY) return null;
   return job;
@@ -746,24 +819,33 @@ function normalizeAIResponse(response, cacheModel) {
 // ---------------------------------------------------------------------------
 
 const providerQuota = createProviderQuotaStore({ shards: PROVIDER_QUOTA_SHARDS });
-const openAILocalTally = { day: '', used: 0 };
-
-function openAIFreeDateKey(now = new Date()) {
-  return now.toISOString().slice(0, 10).replace(/-/g, '');
-}
+// Local tally, in-flight estimates and the last Usage API read (issue #291).
+const openAIFreeBudget = createOpenAIFreeBudget({
+  dailyCap: OPENAI_FREE_DAILY_TOKEN_CAP,
+  safetyBuffer: OPENAI_FREE_SAFETY_BUFFER,
+  shards: PROVIDER_QUOTA_SHARDS
+});
 
 function recordOpenAIFreeTokens(tokens) {
-  const day = openAIFreeDateKey();
-  if (openAILocalTally.day !== day) {
-    openAILocalTally.day = day;
-    openAILocalTally.used = 0;
-  }
-  openAILocalTally.used += tokens;
+  openAIFreeBudget.recordTokens(tokens);
 }
 
 // Latch the free route off until UTC midnight.
 function markOpenAIExhausted() {
   providerQuota.markExhausted('openai-free', 'day');
+}
+
+// Tally an OpenAI free-tier attempt (returned response or thrown error) and,
+// when billed-tier traffic was served, latch the route off: the org quota was
+// consumed elsewhere today.
+function recordOpenAIFreeAttempt(responseOrError) {
+  const usage = openAIFreeUsage(responseOrError);
+  if (usage.used > 0) recordOpenAIFreeTokens(usage.used);
+  if (usage.billed) {
+    markOpenAIExhausted();
+    log.warn('ai.openai.free.billed', { serviceTier: usage.serviceTier });
+  }
+  return usage;
 }
 
 let openaiUsageApi = { attemptedAt: 0, used: null };
@@ -776,6 +858,8 @@ async function fetchOpenAIIncentiveTokensUsed() {
   const now = Date.now();
   if (now - openaiUsageApi.attemptedAt < 5 * 60 * 1000) return openaiUsageApi.used;
   openaiUsageApi.attemptedAt = now;
+  // Local spend from here on is not in the total this read returns.
+  const localAtRefresh = openAIFreeBudget.localUsed();
 
   try {
     const startSeconds = Math.floor(Date.UTC(
@@ -803,23 +887,25 @@ async function fetchOpenAIIncentiveTokensUsed() {
       }
     }
     openaiUsageApi = { attemptedAt: now, used: Number.isFinite(used) ? used : null };
+    openAIFreeBudget.setOrgUsage(openaiUsageApi.used, localAtRefresh);
     return openaiUsageApi.used;
   } catch (error) {
     log.warn('ai.openai.free.usage_api_failed', { message: error.message?.slice(0, 120) });
     openaiUsageApi.used = null;
+    openAIFreeBudget.setOrgUsage(null);
     return null;
   }
 }
 
-// Returns true when the free-tier path should be attempted for a request with
-// the given projected token usage.
+// Returns a reservation (release it with openAIFreeBudget.release once the
+// attempt's usage is recorded) when the free-tier path should be attempted for
+// a request with the given projected token usage, else null. The projection
+// adds local spend since the last Usage API read and in-flight estimates to
+// the cached org total (issue #291).
 async function openAIFreeGate(estimatedTokens) {
-  if (!OPENAI_API_KEY || providerQuota.isExhausted('openai-free')) return false;
-  const threshold = OPENAI_FREE_DAILY_TOKEN_CAP - OPENAI_FREE_SAFETY_BUFFER;
-  const orgUsed = await fetchOpenAIIncentiveTokensUsed();
-  if (orgUsed !== null) return orgUsed + estimatedTokens <= threshold;
-  const localUsed = openAILocalTally.day === openAIFreeDateKey() ? openAILocalTally.used : 0;
-  return localUsed + estimatedTokens <= threshold / PROVIDER_QUOTA_SHARDS;
+  if (!OPENAI_API_KEY || providerQuota.isExhausted('openai-free')) return null;
+  await fetchOpenAIIncentiveTokensUsed();
+  return openAIFreeBudget.tryReserve(estimatedTokens);
 }
 
 // Latch the Experiential route off until the end of the UTC hour or day.
@@ -862,68 +948,14 @@ function requestTokenEstimate(request) {
   };
 }
 
-// Gemini 4 Argon first (free, then paid within its budget). Returns the
-// normalized response, or null to continue with the existing chain. A free
-// refusal the provider never processed (quota, rate limit, model) moves on to
-// the paid leg; any other failure (timeout, 5xx, empty or invalid answer)
-// falls straight through to the existing chain so a request is never billed
-// twice on Argon.
-async function generateArgonContent(request, estimate) {
-  if (!EXPERIENTIAL_ARGON_ENABLED || !EXPERIENTIAL_API_KEY) return null;
-  for (const leg of ARGON_LEGS) {
-    const reservation = providerQuota.reserve(leg.key, {
-      inputCost: estimate.experientialInputReservation,
-      outputCost: estimate.outputTokens,
-      dailyInputLimit: leg.dailyInputLimit,
-      dailyOutputLimit: leg.dailyOutputLimit,
-      hourlyInputLimit: leg.hourlyInputLimit,
-      hourlyOutputLimit: leg.hourlyOutputLimit
-    });
-    if (!reservation?.allowed) continue;
-    try {
-      const response = await withTimeout(
-        () => generateExperientialContent(request, {
-          apiKey: EXPERIENTIAL_API_KEY,
-          baseUrl: EXPERIENTIAL_BASE_URL,
-          model: leg.model,
-          signal: timeoutSignal(EXPERIENTIAL_ARGON_TIMEOUT_MS)
-        }),
-        EXPERIENTIAL_ARGON_TIMEOUT_MS,
-        'Experiential Argon request timed out'
-      );
-      const settlement = settleProviderTokenReservation(reservation, {
-        inputTokens: response.usageMetadata?.promptTokenCount,
-        outputTokens: response.usageMetadata?.candidatesTokenCount
-      });
-      providerQuota.adjust(reservation, { inputDelta: settlement.inputDelta, outputDelta: settlement.outputDelta });
-      log.info('ai.experiential.argon', {
-        leg: leg.key,
-        model: leg.model,
-        inputTokens: settlement.actualInput,
-        outputTokens: settlement.actualOutput,
-        usageEstimated: settlement.usageEstimated
-      });
-      return normalizeAIResponse(response, `experiential:${leg.model}`);
-    } catch (error) {
-      const settlement = settleFailedProviderReservation(reservation, error);
-      providerQuota.adjust(reservation, settlement);
-      const backoff = error instanceof AIProviderError ? providerBackoffFor(error) : null;
-      if (backoff?.latch) providerQuota.markExhausted(leg.key, backoff.latch);
-      if (backoff?.pauseMs) providerQuota.pause(leg.key, backoff.pauseMs);
-      log.warn(backoff?.latch ? 'ai.experiential.argon.exhausted' : 'ai.experiential.argon.error', {
-        leg: leg.key,
-        code: error.code,
-        released: settlement?.released,
-        pauseMs: backoff?.pauseMs,
-        message: error.message?.slice(0, 140)
-      });
-      if (!(error instanceof AIProviderError && error.notProcessed === true)) return null;
-    }
-  }
-  return null;
-}
-
-async function generateAIContent(request) {
+// `deadline` bounds the whole chain (server/aiDeadline.js, issue #255): each
+// leg runs for min(its own timeout, the remaining budget), legs are skipped
+// once too little remains, and running out throws a refundable AI_TIMEOUT.
+// The legs before DeepSeek are non-final (#272): they never use the reserve
+// kept for the final leg, so a stalled early provider still falls through.
+async function generateAIContent(request, {
+  deadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS })
+} = {}) {
   const provider = getAIProviderForModel(request.model);
   if (!provider) {
     throw new AIProviderError(`Unsupported AI model: ${request.model}`, {
@@ -933,31 +965,31 @@ async function generateAIContent(request) {
   }
 
   if (provider === 'deepseek') {
-    // Free-tier-first: try the metered Experiential Cloud Luna route before
-    // the existing OpenAI data-sharing incentive route. Both routes preserve
+    // Free-tier-first: Experiential Cloud gpt-6-luna is the first leg (the
+    // earlier legs were retired, issue #323), then the OpenAI data-sharing
+    // incentive route. Both routes preserve
     // the same model contract; only the provider endpoint changes.
     const estimate = requestTokenEstimate(request);
-    const argon = await generateArgonContent(request, estimate);
-    if (argon) return argon;
-    const experientialReservation = reserveExperientialQuota(
-      estimate.experientialInputReservation,
-      estimate.outputTokens
-    );
+    const experientialReservation = deadline.canStart({ nonFinal: true })
+      ? reserveExperientialQuota(estimate.experientialInputReservation, estimate.outputTokens)
+      : null;
     if (experientialReservation?.allowed) {
       try {
-        const response = await withTimeout(
-          () => generateExperientialContent(request, {
+        const response = await deadline.runLeg(
+          DEEPSEEK_TIMEOUT_MS,
+          signal => generateExperientialContent(request, {
             apiKey: EXPERIENTIAL_API_KEY,
             baseUrl: EXPERIENTIAL_BASE_URL,
             model: EXPERIENTIAL_MODEL,
-            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+            signal
           }),
-          DEEPSEEK_TIMEOUT_MS,
-          'Experiential request timed out'
+          'Experiential request timed out',
+          { nonFinal: true }
         );
         const settlement = settleProviderTokenReservation(experientialReservation, {
           inputTokens: response.usageMetadata?.promptTokenCount,
-          outputTokens: response.usageMetadata?.candidatesTokenCount
+          outputTokens: response.usageMetadata?.candidatesTokenCount,
+          unmeteredAttempts: response.unmeteredAttempts
         });
         providerQuota.adjust(experientialReservation, {
           inputDelta: settlement.inputDelta,
@@ -990,34 +1022,26 @@ async function generateAIContent(request) {
     }
 
     const projectedTokens = estimate.inputTokens + estimate.outputTokens;
-    if (await openAIFreeGate(projectedTokens)) {
+    const openAIReservation = deadline.canStart({ nonFinal: true }) ? await openAIFreeGate(projectedTokens) : null;
+    if (openAIReservation) {
       try {
-        const response = await withTimeout(
-          () => generateOpenAIContent(request, {
+        const response = await deadline.runLeg(
+          DEEPSEEK_TIMEOUT_MS,
+          signal => generateOpenAIContent(request, {
             apiKey: OPENAI_API_KEY,
             baseUrl: OPENAI_BASE_URL,
             model: OPENAI_FREE_MODEL,
-            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+            signal
           }),
-          DEEPSEEK_TIMEOUT_MS,
-          'OpenAI free request timed out'
+          'OpenAI free request timed out',
+          { nonFinal: true }
         );
-        const used = response.usageMetadata?.totalTokenCount || 0;
-        if (used > 0) recordOpenAIFreeTokens(used);
-        log.info('ai.openai.free', {
-          model: OPENAI_FREE_MODEL,
-          used,
-          serviceTier: response.serviceTier || null,
-          free: isOpenAIFreeTier(response.serviceTier)
-        });
-        if (response.serviceTier && !isOpenAIFreeTier(response.serviceTier)) {
-          // We expected complimentary tokens but got billed-tier traffic: the
-          // org quota was consumed elsewhere today. Stop routing here.
-          markOpenAIExhausted();
-          log.warn('ai.openai.free.billed', { serviceTier: response.serviceTier });
-        }
+        const { used, serviceTier, free } = recordOpenAIFreeAttempt(response);
+        log.info('ai.openai.free', { model: OPENAI_FREE_MODEL, used, serviceTier, free });
         return normalizeAIResponse(response, `openai:${OPENAI_FREE_MODEL}`);
       } catch (error) {
+        // An empty completion was still served and billed (issue #258).
+        recordOpenAIFreeAttempt(error);
         const exhausted = error instanceof AIProviderError
           && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
         if (exhausted) markOpenAIExhausted();
@@ -1025,21 +1049,24 @@ async function generateAIContent(request) {
           message: error.message?.slice(0, 140)
         });
         // Fall through to DeepSeek -> OpenRouter.
+      } finally {
+        // Usage is recorded (or there was none): drop the in-flight estimate.
+        openAIFreeBudget.release(openAIReservation);
       }
     }
   }
 
   if (provider === 'deepseek') {
     try {
-      const response = await withTimeout(
-        () => generateDeepSeekContent(request, {
+      const response = await deadline.runLeg(
+        DEEPSEEK_TIMEOUT_MS,
+        signal => generateDeepSeekContent(request, {
           apiKey: process.env.DEEPSEEK_API_KEY,
           baseUrl: DEEPSEEK_API_BASE_URL,
           reasoningEffort: DEEPSEEK_REASONING_EFFORT,
           thinkingEnabled: DEEPSEEK_THINKING_ENABLED,
-          signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+          signal
         }),
-        DEEPSEEK_TIMEOUT_MS,
         'DeepSeek request timed out'
       );
       return normalizeAIResponse(response, request.model);
@@ -1067,14 +1094,14 @@ async function generateAIContent(request) {
           to: OPENROUTER_FREE_MODEL,
           reason: error.message?.slice(0, 160)
         });
-        const response = await withTimeout(
-          () => generateOpenRouterContent(request, {
+        const response = await deadline.runLeg(
+          DEEPSEEK_TIMEOUT_MS,
+          signal => generateOpenRouterContent(request, {
             apiKey: OPENROUTER_API_KEY,
             baseUrl: OPENROUTER_BASE_URL,
             model: OPENROUTER_FREE_MODEL,
-            signal: timeoutSignal(DEEPSEEK_TIMEOUT_MS)
+            signal
           }),
-          DEEPSEEK_TIMEOUT_MS,
           'OpenRouter fallback request timed out'
         );
         return normalizeAIResponse(response, `openrouter:${OPENROUTER_FREE_MODEL}`);
@@ -1091,9 +1118,9 @@ async function generateAIContent(request) {
   }
 
   try {
-    const response = await withTimeout(
-      () => genAI.models.generateContent(request),
+    const response = await deadline.runLeg(
       GEMINI_TIMEOUT_MS,
+      abortSignal => genAI.models.generateContent({ ...request, config: { ...request.config, abortSignal } }),
       'Gemini request timed out'
     );
     return normalizeAIResponse(response, request.model);
@@ -1104,9 +1131,13 @@ async function generateAIContent(request) {
       fallback: FALLBACK_MODEL,
       reason: err.message?.slice(0, 200)
     });
-    const response = await withTimeout(
-      () => genAI.models.generateContent({ ...request, model: FALLBACK_MODEL }),
+    const response = await deadline.runLeg(
       GEMINI_TIMEOUT_MS,
+      abortSignal => genAI.models.generateContent({
+        ...request,
+        model: FALLBACK_MODEL,
+        config: { ...request.config, abortSignal }
+      }),
       'Gemini fallback request timed out'
     );
     return normalizeAIResponse(response, FALLBACK_MODEL);
@@ -1167,12 +1198,12 @@ const apiLimiter = makeLimiter({
 // reloading the page a few times.
 const authLimiter = makeLimiter({
   windowMs: 10 * 60 * 1000,
-  max: readPositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 100),
+  max: readPositiveInt('AUTH_RATE_LIMIT_MAX', 100),
   name: 'auth'
 });
 const cacheLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
-  max: readPositiveInt(process.env.CACHE_RATE_LIMIT_MAX, 300),
+  max: readPositiveInt('CACHE_RATE_LIMIT_MAX', 300),
   name: 'cache'
 });
 // The cost-bearing limiters count in the shared store (issue #134), so a
@@ -1184,22 +1215,22 @@ function sharedLimiter(options) {
 }
 const geminiLimiter = sharedLimiter({
   windowMs: 15 * 60 * 1000,
-  max: readPositiveInt(process.env.GEMINI_RATE_LIMIT_MAX, 80),
+  max: readPositiveInt('GEMINI_RATE_LIMIT_MAX', 80),
   name: 'gemini'
 });
 const windbgUploadLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
-  max: readPositiveInt(process.env.WINDBG_UPLOAD_RATE_LIMIT_MAX, 50),
+  max: readPositiveInt('WINDBG_UPLOAD_RATE_LIMIT_MAX', 50),
   name: 'windbg-upload'
 });
 const windbgPollLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
-  max: readPositiveInt(process.env.WINDBG_POLL_RATE_LIMIT_MAX, 600),
+  max: readPositiveInt('WINDBG_POLL_RATE_LIMIT_MAX', 600),
   name: 'windbg-poll'
 });
 const archiveLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
-  max: readPositiveInt(process.env.ARCHIVE_RATE_LIMIT_MAX, 30),
+  max: readPositiveInt('ARCHIVE_RATE_LIMIT_MAX', 30),
   name: 'archive'
 });
 // Session-scoped twins of the upload/archive limits (issue #135). A session
@@ -1208,13 +1239,13 @@ const archiveLimiter = sharedLimiter({
 const sessionRateLimitKey = req => `sess:${req.sessionId}`;
 const windbgUploadSessionLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
-  max: readPositiveInt(process.env.WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX, 50),
+  max: readPositiveInt('WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX', 50),
   name: 'windbg-upload-session',
   keyGenerator: sessionRateLimitKey
 });
 const archiveSessionLimiter = sharedLimiter({
   windowMs: 60 * 60 * 1000,
-  max: readPositiveInt(process.env.ARCHIVE_SESSION_RATE_LIMIT_MAX, 30),
+  max: readPositiveInt('ARCHIVE_SESSION_RATE_LIMIT_MAX', 30),
   name: 'archive-session',
   keyGenerator: sessionRateLimitKey
 });
@@ -1253,36 +1284,25 @@ const statsLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: 300, name: 'st
 // Related forum threads for a finished report (session-gated, cached per key).
 const forumRelatedLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
-  max: readPositiveInt(process.env.FORUM_RELATED_RATE_LIMIT_MAX, 120),
+  max: readPositiveInt('FORUM_RELATED_RATE_LIMIT_MAX', 120),
   name: 'forum-related'
 });
 
 const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
-const windbgUploadConcurrency = createConcurrencyLimiter(2, 'WINDBG_UPLOAD_BUSY');
+const windbgUploadConcurrency = createConcurrencyLimiter(WINDBG_UPLOAD_MAX_CONCURRENT, 'WINDBG_UPLOAD_BUSY');
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
-const externalAnalyzeConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
+const externalAnalyzeConcurrency = createConcurrencyLimiter(EXTERNAL_ANALYZE_MAX_CONCURRENT, 'ANALYSIS_BUSY');
 
 // Default JSON parser applied per-route, after rate limit and requireSession,
 // so unauthenticated requests are rejected before allocating a parse buffer.
 const defaultJsonParser = jsonParser({ limit: `${Math.ceil(SECURITY_CONFIG.api.maxRequestSize / 1024 / 1024)}mb` });
-
-// MIME type lookup for static assets
-const MIME_TYPES = {
-  '.js': 'application/javascript', '.mjs': 'application/javascript',
-  '.css': 'text/css', '.html': 'text/html', '.json': 'application/json',
-  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
-  '.otf': 'font/otf', '.eot': 'application/vnd.ms-fontobject',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-};
 
 // Set MIME types for assets BEFORE any other middleware
 // Ensures Cloud Run serves files with correct Content-Type
 app.use((req, res, next) => {
   if (req.path.startsWith('/assets/')) {
     const ext = path.extname(req.path).toLowerCase();
-    const mime = MIME_TYPES[ext];
-    if (mime) res.type(mime);
+    if (STATIC_MIME_TYPES[ext]) res.type(STATIC_MIME_TYPES[ext]);
   }
   next();
 });
@@ -1295,43 +1315,24 @@ app.use((req, res, next) => {
   next();
 });
 
-// Static file serving with MIME types and caching via shared lookup
-const TEXT_EXTS = new Set(['.js', '.mjs', '.css', '.html', '.json']);
-const NOSNIFF_EXTS = new Set(['.js', '.mjs', '.css', '.html']);
-const FONT_EXTS = new Set(['.woff2', '.woff', '.ttf', '.otf', '.eot']);
+// Legacy static locations (/security.txt) and raw build documents
+// (/index.html, /prerendered/<route>.html; issue #349) redirect to their
+// canonical URLs before static serving (server/staticPolicy.js, issue #357).
+app.use(createStaticRedirectMiddleware());
 
-app.use(staticMiddleware(path.join(__dirname, 'dist'), {
+// Static file serving: Content-Type and cache policy per file live in
+// server/staticPolicy.js (issue #348) — every file gets an explicit type and
+// Cache-Control, and only hashed /assets/ output is cached immutable.
+const STATIC_ROOT = path.join(__dirname, 'dist');
+app.use(staticMiddleware(STATIC_ROOT, {
   maxAge: '1y',
+  skipExtensions: ['.html'],
   etag: true,
   lastModified: true,
   setHeaders: (res, filePath) => {
-    const ext = path.extname(filePath).toLowerCase();
-    const mime = MIME_TYPES[ext];
-
-    if (mime) {
-      res.setHeader('Content-Type', TEXT_EXTS.has(ext) ? `${mime}; charset=utf-8` : mime);
-    }
-    if (NOSNIFF_EXTS.has(ext)) {
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-
-    // Cache strategy
-    if (filePath.endsWith('sw.js')) {
-      res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=0');
-    } else if (ext === '.html') {
-      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=86400');
-    } else if (ext === '.json') {
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      if (filePath.includes('/symbols/')) {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-      }
-    } else if (mime) {
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    }
-
-    // CORS for fonts
-    if (FONT_EXTS.has(ext)) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+    const rel = path.relative(STATIC_ROOT, filePath).split(path.sep).join('/');
+    for (const [name, value] of Object.entries(staticHeadersFor(rel))) {
+      res.setHeader(name, value);
     }
   }
 }));
@@ -1710,15 +1711,15 @@ app.use('/api/', apiLimiter);
 // logs one `stats.analysis` line (see recordStats); the Cloud Logging sink
 // `bsod-stats-events` streams them into BigQuery, where the snapshot is
 // aggregated (server/statsBigQuery.js). Nothing here touches Upstash.
-const STATS_ENABLED = process.env.STATS_ENABLED !== 'false';
+const STATS_ENABLED = ENV_SWITCHES.statsEnabled;
 // Exported stats/insights/priors JSON (bigquery/*.sql scheduled queries).
 const statsFilesReader = createGcsJsonReader({ bucket: process.env.STATS_BUCKET || 'project-bigfoot-bsod-stats' });
 const statsStore = createStatsStore({
   source: createGcsStatsSource({ reader: statsFilesReader }),
   emit: (event, fields) => log.info(event, fields),
   isEnabled: () => STATS_ENABLED,
-  snapshotTtlSeconds: readPositiveInt(process.env.STATS_SNAPSHOT_TTL_SECONDS, DEFAULT_SNAPSHOT_TTL_SECONDS),
-  dailyWindowDays: readPositiveInt(process.env.STATS_DAILY_WINDOW_DAYS, DEFAULT_DAILY_WINDOW_DAYS)
+  snapshotTtlSeconds: readPositiveInt('STATS_SNAPSHOT_TTL_SECONDS', DEFAULT_SNAPSHOT_TTL_SECONDS),
+  dailyWindowDays: readPositiveInt('STATS_DAILY_WINDOW_DAYS', DEFAULT_DAILY_WINDOW_DAYS)
 });
 registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
 
@@ -1726,14 +1727,14 @@ registerStatsRoute(app, { store: statsStore, limiter: statsLimiter });
 // The service resolves its model list itself (OPENROUTER_STATS_MODEL, then
 // OPENROUTER_FREE_MODEL) — it takes a `models` option, never `model`.
 const statsInsightService = createStatsInsightService({
-  isEnabled: () => STATS_ENABLED && process.env.STATS_INSIGHT_ENABLED !== 'false',
+  isEnabled: () => STATS_ENABLED && ENV_SWITCHES.statsInsightEnabled,
   getSnapshot: async () => (await statsStore.getSnapshot()) ?? statsStore.buildSnapshot()
 });
 registerStatsInsightRoute(app, { service: statsInsightService, limiter: statsLimiter });
 
 // Corpus priors (per stop code / per driver statistics from the daily BigQuery
 // build, read from Cloud Storage) appended to the end of WinDBG prompts.
-const crashPriors = process.env.CORPUS_PRIORS_ENABLED === 'false'
+const crashPriors = !ENV_SWITCHES.corpusPriorsEnabled
   ? null
   : createCrashPriors({ reader: statsFilesReader });
 
@@ -1745,10 +1746,10 @@ async function priorContextFor(signal) {
 // MCP search, queried with only the stop code, its name and the faulting
 // module. Best-effort and cached per instance; never blocks an analysis.
 const forumRelated = createForumRelatedService({
-  isEnabled: () => process.env.FORUM_RELATED_ENABLED !== 'false',
+  isEnabled: () => ENV_SWITCHES.forumRelatedEnabled,
   client: createForumMcpClient({
     url: process.env.FORUM_MCP_URL || DEFAULT_FORUM_MCP_URL,
-    timeoutMs: readPositiveInt(process.env.FORUM_RELATED_TIMEOUT_MS, 3000)
+    timeoutMs: readPositiveInt('FORUM_RELATED_TIMEOUT_MS', 3000)
   }),
   logger: log
 });
@@ -1759,7 +1760,7 @@ registerForumRelatedRoute(app, { service: forumRelated, middlewares: [forumRelat
 const windbgCorpus = createWinDbgCorpusRecorder({
   dataset: process.env.CORPUS_BIGQUERY_DATASET || undefined,
   table: process.env.CORPUS_BIGQUERY_TABLE || undefined,
-  isEnabled: () => process.env.CORPUS_ENABLED !== 'false' && Boolean(WINDBG_API_KEY),
+  isEnabled: () => ENV_SWITCHES.corpusEnabled && Boolean(WINDBG_API_KEY),
   markArchived: ids => markWinDbgJobsArchived({
     baseUrl: WINDBG_API_BASE_URL,
     apiKey: WINDBG_API_KEY,
@@ -1790,7 +1791,7 @@ function recordAiReport(entry) {
 const crashSignal = createCrashSignalRecorder({
   url: process.env.WF_CRASH_SIGNAL_URL,
   key: process.env.WF_CRASH_SIGNAL_KEY,
-  timeoutMs: readPositiveInt(process.env.WF_CRASH_SIGNAL_TIMEOUT_MS, 5_000),
+  timeoutMs: readPositiveInt('WF_CRASH_SIGNAL_TIMEOUT_MS', 5_000),
   logger: log
 });
 
@@ -2079,8 +2080,8 @@ function clearForumIdentity(sessionData) {
 
 // Exchange a WindowsForum SSO identity token (from /sso/whoami) for a tiered
 // BSOD session. The forum established identity from its own session cookie and
-// signed it; here we verify signature + freshness + single-use, then mint our
-// own session. SSO is a stronger signal than Turnstile, so the session is also
+// signed it; here we verify signature + freshness + single-use, then issue our
+// own session (a new id unless it re-verifies this session's own user, #354). SSO is a stronger signal than Turnstile, so the session is also
 // marked turnstile-verified — logged-in members skip the bot check entirely.
 app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, res) => {
   try {
@@ -2101,14 +2102,16 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
       return res.status(403).json({ success: false, error: 'Not available', code: 'SSO_NOT_ALLOWED' });
     }
 
-    const { sessionId, sessionData } = createSession();
-    sessionData.tier = identity.tier; // 'premium' | 'forum'
-    sessionData.wfUserId = identity.uid;
-    sessionData.wfUsername = identity.username;
-    sessionData.wfAvatar = identity.avatar;
-    sessionData.wfVerifiedAt = Date.now();
-    // The elevated tier is only honored until this; the client re-verifies before it.
-    sessionData.tierExpiresAt = Date.now() + PREMIUM_REVERIFY_MS;
+    // A re-verification of the identity this session already holds keeps its
+    // id, so the tab's WinDBG file handles keep proving ownership; any other
+    // exchange mints a new one (issue #354, server/ssoSession.js).
+    const presentedSession = req.cookies?.bsod_session ? validateSession(req.cookies.bsod_session) : null;
+    const { sessionId, sessionData, kept } = exchangeSession({
+      presented: presentedSession,
+      identity,
+      createSession,
+      reverifyMs: PREMIUM_REVERIFY_MS
+    });
 
     const cookieOptions = setSessionCookies(res, sessionId, sessionData);
     res.cookie('bsod_turnstile_verified', 'true', {
@@ -2117,8 +2120,8 @@ app.post('/api/auth/wf/exchange', authLimiter, defaultJsonParser, async (req, re
       maxAge: 2 * 60 * 60 * 1000
     });
 
-    log.info('sso.exchange', { uid: identity.uid, tier: identity.tier });
-    res.json({ success: true, ...sessionIdentity(sessionData) });
+    log.info('sso.exchange', { uid: identity.uid, tier: identity.tier, sessionKept: kept });
+    res.json({ success: true, sessionKept: kept, ...sessionIdentity(sessionData) });
   } catch (error) {
     console.error('SSO exchange error:', error);
     res.status(500).json({ success: false, error: 'SSO exchange failed' });
@@ -2231,6 +2234,9 @@ const SERVER_REPORT_RESPONSE_SCHEMA = Object.freeze({
 
 // Browser compatibility endpoint. Provider/model selection remains server-owned.
 app.post('/api/gemini/generateContent', requireSession, geminiLimiter, geminiConcurrency, requireDataUseTerms, defaultJsonParser, async (req, res) => {
+  // The AI deadline starts on arrival, so the evidence, quota and prior-context
+  // awaits below are spent from the same budget as the chain (issue #305).
+  const aiDeadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS });
   // Declared in the handler scope, not inside the try: the catch below reads them
   // to refund the quota reservation, and a catch block is a sibling of its try, not
   // a child of it. Declaring them inside the try made every failure path throw
@@ -2252,6 +2258,8 @@ app.post('/api/gemini/generateContent', requireSession, geminiLimiter, geminiCon
   const refundReservation = async (error) => {
     if (!quotaReservation?.allowed || !shouldRefund(error)) return;
     try {
+      // The ledger adds whatever commit() already settled this reservation by,
+      // so a refund after an invalid report returns the full charge (issue #199).
       const refund = await quotaLedger.refund(quotaReservation, {
         requestCost: 1,
         tokenCost: estimatedInputTokens,
@@ -2493,7 +2501,7 @@ app.post('/api/gemini/generateContent', requireSession, geminiLimiter, geminiCon
       model: modelName,
       contents: promptForModel,
       config: sdkConfig
-    });
+    }, { deadline: aiDeadline });
 
     // Track real input + output tokens using the provider-normalized metadata;
     // fall back to char/4 only when the API did not report counts. The
@@ -2643,20 +2651,6 @@ if (!WINDBG_API_KEY) {
   console.warn('WARNING: WINDBG_API_KEY not configured - WinDBG analysis will fall back to local parsing');
 }
 
-// Map a WinDBG upstream error to an HTTP status: an invalid/garbled or failing
-// upstream response is a bad-gateway (502), not an internal error (500), so the
-// browser can retry the poll instead of treating it as a hard local failure.
-function winDbgUpstreamHttpStatus(error) {
-  const code = error?.code;
-  if (error?.name === 'TimeoutError' || error?.name === 'AbortError' || /aborted due to timeout|timed out/i.test(error?.message || '')) {
-    return 504;
-  }
-  if (code === 'WINDBG_UPSTREAM_INVALID_JSON' || code === 'WINDBG_UPSTREAM_ERROR') {
-    return 502;
-  }
-  return 500;
-}
-
 // Get cached analysis by file hash (skip upload for known-cached files)
 // Returns combined WinDBG analysis and AI report from single cache key
 app.get('/api/cache/get', cacheLimiter, requireSession, async (req, res) => {
@@ -2785,7 +2779,7 @@ app.post('/api/cache/check', cacheLimiter, requireSession, defaultJsonParser, as
 });
 
 // Upload dump file to WinDBG server
-app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), requireSession, windbgUploadLimiter, windbgUploadSessionLimiter, windbgUploadConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
+app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), requireSession, windbgUploadCapGate, windbgUploadLimiter, windbgUploadSessionLimiter, windbgUploadConcurrency, requireDataUseTerms, upload.single('file'), async (req, res) => {
   try {
     // Deep WinDBG kernel-dump analysis is a Premium Supporters feature. Non-premium
     // tiers (anonymous + logged-in members) fall back client-side to the local
@@ -2806,16 +2800,15 @@ app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), require
       });
     }
 
-    let { uid } = req.body;
+    // The client-supplied uid is advisory: the server recomputes the hash
+    // below and always uses its own. A missing or malformed uid (e.g. a
+    // trailing multipart field that was lost) is treated as not supplied
+    // rather than failing a valid upload (#244).
+    const suppliedUid = typeof req.body?.uid === 'string' && HASH_RE.test(req.body.uid)
+      ? req.body.uid
+      : null;
     let fileName = sanitizeUploadFileName(req.file.originalname || 'upload.dmp');
     const fileBuffer = req.file.buffer;
-
-    if (!uid || typeof uid !== 'string' || !HASH_RE.test(uid)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid or missing uid field'
-      });
-    }
 
     const validation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: false });
     if (!validation.valid) {
@@ -2839,14 +2832,14 @@ app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), require
     }
 
     const serverHash = hashContent(fileBuffer);
-    if (uid !== serverHash) {
+    if (suppliedUid && suppliedUid !== serverHash) {
       log.warn('windbg.uid_mismatch', {
-        supplied: uid.substring(0, 12),
+        supplied: suppliedUid.substring(0, 12),
         computed: serverHash.substring(0, 12),
         sessionId: req.sessionId?.substring(0, 10) + '...'
       });
     }
-    uid = serverHash;
+    const uid = serverHash;
     markSessionHash(req.sessionId, uid);
 
     // UID is now the file hash (computed client-side), use it directly for caching
@@ -2886,19 +2879,52 @@ app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), require
 
     console.log('[WinDBG] Cache MISS - uploading file:', fileName, 'UID:', uid);
 
-    const submitResult = await submitWinDbgJob({
+    // Answer before Cloudflare's 100 s origin timeout cuts the response: a
+    // slower submit keeps running and a retry of the same dump joins or
+    // adopts it on this instance (issue #276, server/windbgUploadSubmit.js).
+    const submitted = await windbgUploadSubmitter.submitWithinBudget(uid, () => submitWinDbgJob({
       baseUrl: WINDBG_API_BASE_URL,
       apiKey: WINDBG_API_KEY,
       fileBuffer,
       fileName,
       signal: timeoutSignal(WINDBG_UPLOAD_TIMEOUT_MS)
-    });
+    }));
+    if (submitted.outcome === 'busy') {
+      res.set('Retry-After', '15');
+      return res.status(429).json({
+        success: false,
+        error: 'Server is busy. Please retry shortly.',
+        code: 'WINDBG_UPLOAD_BUSY'
+      });
+    }
+    if (submitted.outcome === 'unconfirmed') {
+      // An earlier submit of this dump failed after WinDbg-API may have
+      // queued it; submitting again could queue a second job (issue #328).
+      log.warn('windbg.upload.held_unconfirmed', { uid: uid.substring(0, 12) });
+      return res.status(409).json({
+        success: false,
+        error: 'This dump was sent to the debugging server recently and may still be processing there, so it was not sent again. Please try again later.',
+        code: 'WINDBG_UPLOAD_PENDING',
+        retryable: false
+      });
+    }
+    if (submitted.outcome === 'timeout') {
+      log.warn('windbg.upload.slow_submit', { uid: uid.substring(0, 12), budgetMs: WINDBG_UPLOAD_RESPONSE_BUDGET_MS });
+      res.set('Retry-After', '15');
+      return res.status(504).json({
+        success: false,
+        error: 'The debugging server is slow to accept the upload. Please retry in a moment.',
+        code: 'WINDBG_UPLOAD_TIMEOUT',
+        retryable: true
+      });
+    }
+    const submitResult = submitted.result;
     // The dump type rides along to the download hook's stats record (the
     // buffer only exists here, and download may land on another instance).
     const dumpType = detectDumpType(fileBuffer);
-    markWinDbgJob(req.sessionId, uid, submitResult.job_id, dumpType);
+    markWinDbgJob(req.sessionId, uid, submitResult.job_id, dumpType, fileBuffer.length);
 
-    console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id);
+    console.log('[WinDBG] Upload accepted. Upstream job:', submitResult.job_id, submitted.reused ? '(adopted from an earlier slow submit)' : '');
     res.json({
       success: true,
       message: 'WinDBG analysis queued',
@@ -2907,19 +2933,20 @@ app.post('/api/windbg/upload', rejectLargeBody(MAX_UPLOAD_REQUEST_SIZE), require
         filename: fileName,
         size: fileBuffer.length,
         status: 'pending',
-        queue_position: submitResult.queue_position ?? 0,
+        // Omitted when upstream reports none (its submit 202 has no queue
+        // position); 0 would read as "next in line" (#271).
+        queue_position: submitResult.queue_position ?? undefined,
         total_pending: undefined,
         // Signed proof of ownership + upstream job id: poll/download/cache
         // reads carry it so any instance can serve them.
-        handle: fileHandleCodec.issue({ fileHash: uid, jobId: submitResult.job_id, dumpType, sessionId: req.sessionId })
+        handle: fileHandleCodec.issue({ fileHash: uid, jobId: submitResult.job_id, dumpType, size: fileBuffer.length, sessionId: req.sessionId })
       }
     });
   } catch (error) {
     log.error('windbg.upload.fail', windbgFailureLogFields(error));
-    res.status(winDbgUpstreamHttpStatus(error)).json({
-      success: false,
-      error: 'Failed to upload file to the debugging server. Please try again later.'
-    });
+    const failure = windbgUploadFailureResponse(error);
+    if (failure.headers) res.set(failure.headers);
+    res.status(failure.status).json(failure.body);
   }
 });
 
@@ -2961,6 +2988,10 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
     });
     const result = toLegacyWinDbgStatusResponse(job, uid);
     console.log('[WinDBG] Status response:', result.data?.status, 'for UID:', uid);
+    // The browser gets a fixed message per error_category; keep the raw
+    // upstream job error (cdb stderr, storage text) in the logs, bounded.
+    const jobErrorFields = winDbgJobErrorLogFields(job);
+    if (jobErrorFields) log.warn('windbg.job.error', { uid, ...jobErrorFields });
 
     // CRITICAL: Set no-cache headers on response to prevent browser/CDN caching
     res.set({
@@ -2976,7 +3007,7 @@ app.get('/api/windbg/status', windbgPollLimiter, requireSession, async (req, res
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to check WinDBG status. Please try again later.',
-      code: error.code
+      code: winDbgUpstreamFailureCode(error)
     });
   }
 });
@@ -3053,7 +3084,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
       analysisText,
       dumpType: ownership.dumpType
     });
-    recordCorpus(job, { fileHash: uid, dataUseTerms: DATA_USE_TERMS_VERSION });
+    recordCorpus(job, { fileHash: uid, fileSizeBytes: ownership.fileSizeBytes, dataUseTerms: DATA_USE_TERMS_VERSION });
 
     res.json({
       success: true,
@@ -3066,7 +3097,7 @@ app.get('/api/windbg/download', windbgPollLimiter, requireSession, async (req, r
     res.status(winDbgUpstreamHttpStatus(error)).json({
       success: false,
       error: 'Failed to download the WinDBG analysis. Please try again later.',
-      code: error.code
+      code: winDbgUpstreamFailureCode(error)
     });
   }
 });
@@ -3245,6 +3276,9 @@ function extractCrashSignal(raw, maxBytes = 16384) {
 }
 
 async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAnalysis, fileHash, options = {}) {
+  // The caller's deadline when it has one (the status poll's, issue #305),
+  // else one started before the cache and prior-context awaits.
+  const deadline = options.deadline || createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS });
   const modelName = getPrimaryModel();
   const parsedFields = parseWinDbgOutput(windbgAnalysis);
   const structuredFields = mapStructuredSignalToReport(options.structured);
@@ -3321,7 +3355,7 @@ async function generateAIReportFromWinDBG(fileName, dumpType, fileSize, windbgAn
         maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
         systemInstruction: SYSTEM_INSTRUCTION_ANALYSIS
       }
-    });
+    }, { deadline });
     const responseText = response.text ?? '';
 
     const reportValidation = parseAndValidateAnalysisReport(responseText);
@@ -3387,13 +3421,17 @@ const externalJobCodec = createExternalJobCodec({
   // less than the processing deadline (issue #136).
   maxAgeMs: Math.max(EXTERNAL_JOB_TTL_MS, EXTERNAL_JOB_DEADLINE_SECONDS * 1000)
 });
+const externalSubmissionReuse = createExternalSubmissionReuse({
+  recent: recentExternalSubmissions,
+  codec: externalJobCodec
+});
 // Report generation reached from a status poll runs inside the poll, after
 // the client may have gone (server/concurrency.js), so it takes its own slot
 // like the submit route does; a busy instance answers "processing" and the
 // next poll retries (issue #136).
 const externalReportConcurrency = createConcurrencyLimiter(2, 'ANALYSIS_BUSY');
 
-async function generateExternalReport(job, analysis) {
+async function generateExternalReport(job, analysis, { deadline } = {}) {
   const release = externalReportConcurrency.tryAcquire();
   if (!release) throw Object.assign(new Error('report generation busy'), { code: 'ANALYSIS_BUSY' });
   try {
@@ -3406,7 +3444,8 @@ async function generateExternalReport(job, analysis) {
       {
         analysisSignalText: analysis.analysisSignalText,
         structured: analysis.structured,
-        jobId: job.upstreamJobId
+        jobId: job.upstreamJobId,
+        deadline
       }
     );
   } finally {
@@ -3435,6 +3474,14 @@ const externalJobResolver = createExternalJobResolver({
   }),
   recordCorpus: (job, upstream) => recordCorpus(upstream, { fileHash: job.fileHash, fileSizeBytes: job.fileSize, dataUseTerms: `api-${DATA_USE_TERMS_VERSION}` }),
   findRelated: (_job, analysis, report) => forumRelated.findForAnalysis({ structured: analysis.structured, report }),
+  // A degraded report must not be handed back to a resubmission of the same
+  // dump: drop the reuse entry so it starts a fresh run (issue #256).
+  // One upstream job can have several uids (#330), so the entry is matched by
+  // upstream job, not uid text.
+  onDegraded: job => externalSubmissionReuse.forget(job),
+  // Likewise a failure a fresh submission may fix: the resubmission starts a
+  // new upstream job instead of getting the failed uid back (issue #329).
+  onFailed: job => externalSubmissionReuse.forget(job),
   deadlineMs: EXTERNAL_JOB_DEADLINE_SECONDS * 1000,
   resultTtlMs: EXTERNAL_JOB_TTL_MS,
   logger: log
@@ -3507,7 +3554,8 @@ async function extractDumpsFromZip(zipBuffer, originalName) {
           throw new Error(`ZIP extraction size exceeds ${(MAX_EXTRACTED_ARCHIVE_SIZE / 1024 / 1024).toFixed(0)}MB.`);
         }
         const fileName = sanitizeUploadFileName(path.split('/').pop());
-        const validation = validateUploadedBuffer(content, fileName, { allowArchives: false });
+        // /api/analyze re-validates the chosen dump (32-bit refused there).
+        const validation = validateUploadedBuffer(content, fileName, { allowArchives: false, allow32BitKernelDumps: true });
         if (!validation.valid) {
           throw new Error(`Invalid dump inside ZIP: ${validation.error}`);
         }
@@ -3578,7 +3626,7 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
       return res.status(400).json({
         success: false,
         error: initialValidation.error,
-        code: 'INVALID_FILE'
+        code: initialValidation.code || 'INVALID_FILE'
       });
     }
 
@@ -3619,12 +3667,30 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
         });
       }
 
-      // Use the first dump found (could enhance to analyze all)
-      const firstDump = extractedDumps[0];
-      console.log(`[API/Analyze] Found ${extractedDumps.length} dump(s), analyzing: ${firstDump.fileName}`);
+      // Analyze the first dump WinDBG accepts: extraction keeps 32-bit
+      // PAGEDUMP files for the browser path, so skip past them (issue #275).
+      const selection = selectAnalyzableDump(extractedDumps);
+      if (selection.skipped.length > 0) {
+        log.warn('analyze.archive_dumps_skipped', {
+          archiveType,
+          skipped: selection.skipped.slice(0, 10).map(entry => ({
+            fileName: String(entry.fileName).slice(0, 120),
+            code: entry.code
+          }))
+        });
+      }
+      if (!selection.dump) {
+        return res.status(400).json({
+          success: false,
+          error: selection.validation?.error || 'No supported dump file found in archive',
+          code: selection.validation?.code || 'INVALID_DUMP'
+        });
+      }
+      const chosenDump = selection.dump;
+      console.log(`[API/Analyze] Found ${extractedDumps.length} dump(s), analyzing: ${chosenDump.fileName}`);
       originalZip = fileName;
-      fileName = sanitizeUploadFileName(firstDump.fileName);
-      fileBuffer = firstDump.buffer;
+      fileName = sanitizeUploadFileName(chosenDump.fileName);
+      fileBuffer = chosenDump.buffer;
     }
 
     const dumpValidation = validateUploadedBuffer(fileBuffer, fileName, { allowArchives: false });
@@ -3632,7 +3698,7 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
       return res.status(400).json({
         success: false,
         error: dumpValidation.error,
-        code: 'INVALID_DUMP'
+        code: dumpValidation.code || 'INVALID_DUMP'
       });
     }
 
@@ -3647,11 +3713,13 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
     console.log(`[API/Analyze] File hash: ${fileHash.substring(0, 12)}...`);
 
     // A forum worker may lose the original 202 response and submit the same
-    // dump again while it is still being analyzed: hand back the same uid.
-    const recent = recentExternalSubmissions.get(fileHash);
-    if (recent && recent.expiresAt > Date.now()) {
+    // dump again while it is still being analyzed: hand back a uid for the
+    // same upstream job, carrying this submission's file metadata (#330).
+    const submissionMeta = { fileName, fileSize, dumpType, originalZip };
+    const reusedUid = externalSubmissionReuse.lookup(fileHash, submissionMeta);
+    if (reusedUid) {
       log.info('analyze.job_reused', { fileHash: fileHash.substring(0, 12) });
-      return res.status(202).json(acceptedExternalJob(recent.uid, 'processing'));
+      return res.status(202).json(acceptedExternalJob(reusedUid, 'processing'));
     }
 
     // Previous WinDBG analysis of this exact file (optional analysis cache):
@@ -3696,44 +3764,76 @@ app.post('/api/analyze', requireApiKey, externalAnalyzeSubmitLimiter, rejectLarg
 
     // A 202 is returned only after the upstream service has accepted the
     // dump; its job id travels inside the signed uid, so no job state is kept.
-    const upload = await uploadBufferToWinDBG(fileBuffer, fileName);
-    if (!upload?.jobId) {
-      throw new Error(upload?.error || 'WinDBG upload failed');
+    // A slower submit answers a retryable 504 before Cloudflare's 100 s and
+    // keeps running; a resubmission joins it or gets its uid (issue #315).
+    const submitted = await submitExternalDump(fileHash, async () => {
+      const upload = await uploadBufferToWinDBG(fileBuffer, fileName);
+      if (!upload?.jobId) {
+        throw new Error(upload?.error || 'WinDBG upload failed');
+      }
+      const uid = externalJobCodec.issue({
+        fileHash,
+        upstreamJobId: upload.jobId,
+        fileName,
+        fileSize,
+        dumpType,
+        originalZip
+      });
+      return { uid, upstreamJobId: upload.jobId };
+    });
+    if (submitted.outcome === 'busy') {
+      res.set('Retry-After', '15');
+      return res.status(429).json({
+        success: false,
+        error: 'Server is busy. Please retry shortly.',
+        code: 'ANALYSIS_BUSY'
+      });
     }
-    const uid = externalJobCodec.issue({
-      fileHash,
-      upstreamJobId: upload.jobId,
-      fileName,
-      fileSize,
-      dumpType,
-      originalZip
-    });
-    recentExternalSubmissions.set(fileHash, {
-      uid,
-      expiresAt: Date.now() + EXTERNAL_JOB_DEADLINE_SECONDS * 1000
-    });
-    log.info('analyze.accepted', { dumpType, fileSize, upstreamJobId: upload.jobId });
+    if (submitted.outcome === 'unconfirmed') {
+      // An earlier submit of this dump failed after WinDbg-API may have
+      // queued it; submitting again could queue a second job (issue #336).
+      log.warn('analyze.held_unconfirmed', { fileHash: fileHash.substring(0, 12) });
+      const held = analyzeHeldSubmissionResponse(externalDumpSubmitter.holdRemainingMs(fileHash), (Date.now() - startTime) / 1000);
+      res.set(held.headers);
+      return res.status(held.status).json(held.body);
+    }
+    if (submitted.outcome === 'timeout') {
+      log.warn('analyze.slow_submit', { fileHash: fileHash.substring(0, 12), budgetMs: WINDBG_UPLOAD_RESPONSE_BUDGET_MS });
+      res.set('Retry-After', '15');
+      return res.status(504).json({
+        success: false,
+        error: 'The analysis service is slow to accept the dump. Please retry in a moment.',
+        code: 'WINDBG_UPLOAD_TIMEOUT',
+        retryable: true
+      });
+    }
+    const { upstreamJobId } = submitted.result;
+    // A resubmission that joined a running submit gets its own uid for it.
+    const uid = (submitted.reused && externalSubmissionReuse.reissue(submitted.result.uid, submissionMeta))
+      || submitted.result.uid;
+    log.info('analyze.accepted', { dumpType, fileSize, upstreamJobId, joined: submitted.reused });
 
     return res.status(202).json(acceptedExternalJob(uid, 'processing'));
 
   } catch (error) {
     const processingTime = (Date.now() - startTime) / 1000;
-    log.error('analyze.fail', {
+    const { status, body, headers } = analyzeSubmitFailureResponse(error, processingTime);
+    (status >= 500 && status !== 503 ? log.error : log.warn)('analyze.fail', {
       message: error.message,
+      upstreamStatus: error?.upstreamStatus,
       processingTime
     });
 
-    res.status(500).json({
-      success: false,
-      error: 'An internal error occurred while initiating the analysis. Please try again later.',
-      code: 'ANALYSIS_INIT_FAILED',
-      processingTime
-    });
+    if (headers) res.set(headers);
+    res.status(status).json(body);
   }
 });
 
 // Poll status of external API analyze jobs
 app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKey, externalAnalyzeStatusLimiter, async (req, res) => {
+  // A poll may generate the report after a cache read and upstream fetch; its
+  // AI deadline starts on arrival (issue #305).
+  const aiDeadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS });
   const { uid } = req.params;
   // Job state changes between polls. Prevent browsers and intermediary CDNs
   // from pinning the first `processing` response after WinDBG has completed.
@@ -3754,7 +3854,7 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
 
   let result;
   try {
-    result = await externalJobResolver.resolve(job);
+    result = await externalJobResolver.resolve(job, { deadline: aiDeadline });
   } catch (error) {
     // Transient upstream/cache trouble: keep the polling contract and let the
     // client's next status request retry.
@@ -3794,49 +3894,17 @@ app.get('/api/analyze/status/:uid', externalAnalyzeStatusIpLimiter, requireApiKe
   });
 });
 
-// Normalize parser/upload/rate-limit store failures before the SPA catch-all.
+// Normalize parser/upload/rate-limit store failures before the SPA catch-all
+// (server/requestErrors.js). A client error (4xx: malformed multipart, bad
+// JSON, too large) is logged as a warning, not request.error (issue #333).
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
 
-  let status = error.status || error.statusCode || 500;
-  let code = 'INTERNAL_ERROR';
-  let message = 'An internal server error occurred';
+  const { status, code, message, clientError } = classifyRequestError(error, {
+    maxFileSizeMb: (MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)
+  });
 
-  if (error.code === 'FST_REQ_FILE_TOO_LARGE' || error.code === 'LIMIT_FILE_SIZE') {
-    status = 413;
-    code = error.code;
-    message = error.code === 'LIMIT_FILE_SIZE'
-      ? `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB`
-      : `File is too large. Maximum size is ${(MAX_RAW_FILE_SIZE / 1024 / 1024).toFixed(0)}MB`;
-  } else if (['FST_FILES_LIMIT', 'FST_FIELDS_LIMIT', 'FST_PARTS_LIMIT'].includes(error.code)) {
-    status = 413;
-    code = error.code;
-    message = 'Multipart upload contains too many parts';
-  } else if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-    status = 400;
-    code = error.code;
-    message = error.message;
-  } else if (error.type === 'entity.too.large') {
-    status = 413;
-    code = 'REQUEST_TOO_LARGE';
-    message = 'Request body is too large';
-  } else if (error.type === 'entity.parse.failed' || error instanceof SyntaxError) {
-    status = 400;
-    code = 'INVALID_JSON';
-    message = 'Request body is not valid JSON';
-  } else if (/Invalid file type/i.test(error.message || '')) {
-    status = 400;
-    code = 'INVALID_FILE_TYPE';
-    message = error.message;
-  } else if (/Runtime store unavailable|Runtime store required/i.test(error.message || '')) {
-    status = 503;
-    code = 'RUNTIME_STORE_UNAVAILABLE';
-    message = 'Service state store is temporarily unavailable';
-  } else if (status < 500) {
-    message = error.message || message;
-  }
-
-  log.error('request.error', {
+  (clientError ? log.warn : log.error)(clientError ? 'request.rejected' : 'request.error', {
     path: req.path,
     status,
     code,
@@ -3866,7 +3934,7 @@ const KNOWN_SPA_ROUTES = new Set([
 ]);
 
 function getSpaStatus(pathname) {
-  const normalized = pathname.replace(/\/+$/, '') || '/';
+  const normalized = normalizeRoutePath(pathname);
   return KNOWN_SPA_ROUTES.has(normalized) ? 200 : 404;
 }
 
@@ -3887,7 +3955,7 @@ app.use((req, res) => {
   // document itself — max-age>0 here let browsers pair a cached prerendered
   // page (with its baked build-stamp text) against a newer JS bundle, causing
   // React hydration text mismatches (#418) after every deploy.
-  const normalized = pathname.replace(/\/+$/, '') || '/';
+  const normalized = normalizeRoutePath(pathname);
   const isHome = normalized === '/';
   res.status(getSpaStatus(pathname));
   res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate, s-maxage=86400');
@@ -3930,36 +3998,24 @@ app.use((req, res) => {
   // client-rendered shell for dynamic/unknown routes. If-None-Match gets a 304
   // so navigations cost ~200 bytes when the document is unchanged, while a new
   // deploy always delivers fresh markup for hydration.
-  const html = isHome ? cachedHomeHtml : (cachedRouteHtml[normalized] || cachedIndexHtml);
-  const etag = isHome
-    ? htmlEtags['/']
-    : (htmlEtags[normalized] ?? htmlEtags.__fallback);
-  // htmlEtags is only populated when dist/index.html exists, so a missing build
-  // leaves etag undefined — setting that header throws ERR_HTTP_INVALID_HEADER_VALUE
-  // and would turn the "Build not found" fallback page into a 500.
-  if (etag) {
-    res.setHeader('ETag', etag);
-    const ifNoneMatch = req.headers['if-none-match'];
-    if (ifNoneMatch && String(ifNoneMatch).split(',').map(s => s.trim()).includes(etag)) {
-      return res.status(304).end();
-    }
-  }
-  res.send(html);
+  // Selection and validators live in server/htmlDocuments.js (issue #264).
+  const document = htmlDocuments.resolve(pathname, req.headers['if-none-match']);
+  // A missing build has no ETags — setting an undefined header throws
+  // ERR_HTTP_INVALID_HEADER_VALUE and would turn the "Build not found" page
+  // into a 500.
+  if (document.etag) res.setHeader('ETag', document.etag);
+  if (document.status === 304) return res.status(304).end();
+  res.send(document.html);
 });
 
-// Cache index.html in memory before accepting requests
-let cachedIndexHtml;
-// Prerendered homepage HTML served for the "/" route (falls back to index.html)
-let cachedHomeHtml;
-// Prerendered per-route HTML keyed by route ("/about" -> markup); populated from
-// dist/prerendered/*.html at startup. Unknown routes fall back to cachedIndexHtml.
-let cachedRouteHtml = {};
+// In-memory HTML documents, loaded before accepting requests: dist/index.html
+// (the client-rendered shell for unknown routes), the prerendered homepage for
+// "/" and dist/prerendered/*.html per route, each with a strong ETag so
+// browsers revalidate every navigation and an unchanged document answers with
+// a ~200-byte 304 (server/htmlDocuments.js).
+let htmlDocuments = createHtmlDocuments({ withEtags: false });
 // Precomputed Link header for Early Hints / Cloudflare preloading
 let earlyHintsLinkHeader = '';
-// Strong ETags per served HTML document: browsers revalidate each navigation,
-// unchanged documents answer with a ~200-byte 304 instead of the full page,
-// and a stale cached document can never pair with a newer bundle unnoticed.
-const htmlEtags = {};
 
 async function startServer() {
   // Refuse to boot when a production deployment would silently disable auth:
@@ -3994,55 +4050,45 @@ async function startServer() {
   // Cache index.html in memory (~9KB, avoids disk read on every request)
   const indexPath = path.join(__dirname, 'dist', 'index.html');
   if (fs.existsSync(indexPath)) {
-    cachedIndexHtml = fs.readFileSync(indexPath, 'utf-8');
-    console.log(`Cached index.html in memory (${Buffer.byteLength(cachedIndexHtml)} bytes)`);
+    const indexHtml = fs.readFileSync(indexPath, 'utf-8');
+    console.log(`Cached index.html in memory (${Buffer.byteLength(indexHtml)} bytes)`);
 
     // Prerendered homepage (served for "/"); fall back to index.html if absent.
     const prerenderedPath = path.join(__dirname, 'dist', 'index.prerendered.html');
+    let homeHtml;
     if (fs.existsSync(prerenderedPath)) {
-      cachedHomeHtml = fs.readFileSync(prerenderedPath, 'utf-8');
-      console.log(`Cached prerendered homepage in memory (${Buffer.byteLength(cachedHomeHtml)} bytes)`);
+      homeHtml = fs.readFileSync(prerenderedPath, 'utf-8');
+      console.log(`Cached prerendered homepage in memory (${Buffer.byteLength(homeHtml)} bytes)`);
     } else {
-      cachedHomeHtml = cachedIndexHtml;
       console.warn('dist/index.prerendered.html not found - serving client-rendered homepage for "/"');
     }
-
-    // Inject the runtime SSO feature flags into the cached HTML (the client reads
-    // window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__) so the feature toggles by env
-    // without a rebuild.
-    cachedIndexHtml = injectSsoFlags(cachedIndexHtml);
-    cachedHomeHtml = injectSsoFlags(cachedHomeHtml);
 
     // Per-route prerendered HTML (scripts/prerender.mjs writes dist/prerendered/<route>.html).
     // Served for each exact route so Auto-ads + crawlers see a fully laid-out page; an
     // empty #root shell makes Auto-ads pin viewport-fixed rails over content. Unknown /
-    // dynamic routes still fall back to the client-rendered shell (cachedIndexHtml).
+    // dynamic routes still fall back to the client-rendered shell (index.html).
+    const routeHtml = {};
     const prerenderedDir = path.join(__dirname, 'dist', 'prerendered');
     if (fs.existsSync(prerenderedDir)) {
       for (const file of fs.readdirSync(prerenderedDir)) {
-        if (!file.endsWith('.html')) continue;
-        const route = '/' + file.slice(0, -5);
-        cachedRouteHtml[route] = injectSsoFlags(fs.readFileSync(path.join(prerenderedDir, file), 'utf-8'));
-        console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(cachedRouteHtml[route])} bytes)`);
+        const route = prerenderedRouteKey(file);
+        if (!route) continue;
+        routeHtml[route] = fs.readFileSync(path.join(prerenderedDir, file), 'utf-8');
+        console.log(`Cached prerendered route ${route} in memory (${Buffer.byteLength(routeHtml[route])} bytes)`);
       }
     }
 
-    // Compute strong ETags after SSO-flag injection so they cover the exact
-    // bytes served. Revalidation answers with 304 when the deploy is unchanged.
-    const etagOf = (html) => '"'
-      + crypto.createHash('sha256').update(html).digest('base64url').slice(0, 27)
-      + '"';
-    htmlEtags['/'] = etagOf(cachedHomeHtml);
-    htmlEtags.__fallback = etagOf(cachedIndexHtml);
-    for (const [route, html] of Object.entries(cachedRouteHtml)) {
-      htmlEtags[route] = etagOf(html);
-    }
+    // Inject the runtime SSO feature flags into every cached document (the
+    // client reads window.__WF_SSO_ENABLED__/__WF_SSO_PREVIEW__) so the feature
+    // toggles by env without a rebuild; the strong ETags are computed after the
+    // injection so they cover the exact bytes served.
+    htmlDocuments = createHtmlDocuments({ indexHtml, homeHtml, routeHtml, transform: injectSsoFlags });
 
     // CSP inline-script hashes (issue #74) are computed from the exact served
     // bytes — injectSsoFlags above rewrites script contents, so build-time
     // hashes would drift. Union every HTML variant the server can serve.
     const sha256B64 = (content) => crypto.createHash('sha256').update(content).digest('base64');
-    const servedHtmlVariants = [cachedIndexHtml, cachedHomeHtml, ...Object.values(cachedRouteHtml)];
+    const servedHtmlVariants = htmlDocuments.variants();
     const inlineScriptHashes = new Set();
     for (const html of servedHtmlVariants) {
       for (const source of computeInlineScriptSources(html, { sha256: sha256B64 })) {
@@ -4097,9 +4143,19 @@ async function startServer() {
     }
   } else {
     console.warn('dist/index.html not found - run npm run build first');
-    cachedIndexHtml = '<html><body>Build not found. Run npm run build.</body></html>';
-    cachedHomeHtml = cachedIndexHtml;
+    htmlDocuments = createHtmlDocuments({
+      indexHtml: '<html><body>Build not found. Run npm run build.</body></html>',
+      withEtags: false
+    });
   }
+
+  // SIGTERM/SIGINT: stop accepting, let in-flight requests finish within
+  // Cloud Run's 10 s grace, then exit (issue #368).
+  createShutdownCoordinator({
+    close: () => app.close(),
+    server: app.fastify.server,
+    log
+  }).install();
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

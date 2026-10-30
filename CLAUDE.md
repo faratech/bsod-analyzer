@@ -17,7 +17,7 @@ npm run prerender        # Re-run per-route prerender from dist-ssr
 npm run verify-hydration # SSR/hydration consistency check
 
 # Test (Node built-in runner, tests/*.test.mjs)
-npm test                          # Full suite (~198 tests, no DB/Redis needed)
+npm test                          # Full suite (no DB/Redis/network needed)
 node --test tests/statsStore.test.mjs   # Single file
 node --test tests/foo.test.mjs -t "name pattern"  # Single test by name
 
@@ -62,9 +62,13 @@ npm run optimize-css     # Apply CSS purging
   modules (`statsStore`, `stats`, `quotaPolicy`, `quotaStore`, `sharedCounters`, `sessionToken`,
   `rateLimit`, `archiveExtract`, `peerIp`, `turnstile`, `securityHeaders`,
   `bugcheckKnowledge`, `fastifyCompat`, `concurrency`, `blockedPaths`,
-  `crashSignal`), which the monolith imports. Per-route concurrency slots are
+  `crashSignal`, `ssoSession`), which the monolith imports. Per-route concurrency slots are
   held until the handler chain settles (`onRequestSettled` in `fastifyCompat`),
   not released on client disconnect.
+- **Shutdown**: SIGTERM/SIGINT run `server/shutdown.js` once: `app.close()`
+  stops accepting (requests on open keep-alive sockets get Fastify's 503),
+  in-flight requests get up to 8 s (Cloud Run's SIGTERM grace is 10 s), then
+  exit; a hard exit fires at 9 s. Work still running then is cut.
 - **`services/cache.js`** is the analysis-cache Redis/Upstash boundary. Upstash is
   optional (`redis.cfg`/`REDIS_ENABLED`, plus a breaker that drops it on
   quota/auth errors or repeated failures). The AI quota and the cost-bearing
@@ -79,8 +83,11 @@ npm run optimize-css     # Apply CSS purging
 - **Dump parsers** (`utils/`): `dumpParser.ts` orchestrates format dispatch and
   imports `minidumpStreams.ts`, `dumpValidator.ts`,
   `kernelDumpModuleParser.ts`. The import direction never reverses —
-  `minidumpStreams.ts` cannot import from `dumpParser.ts` (circular), so gates
-  that need `BUG_CHECK_CODES` live in dumpParser. Extraction must be
+  `minidumpStreams.ts` cannot import from `dumpParser.ts` (circular); the
+  name table `BUG_CHECK_CODES` lives in the leaf `utils/bugCheckCodes.ts`,
+  which every parser may import. Every table entry needs a Microsoft source
+  (Learn bug check / live dump references or SDK `bugcodes.h`;
+  `tests/bugCheckCodes.test.mjs`). Extraction must be
   evidence-based: bug check codes come from structured dump headers
   (PAGEDU64 @0x38, PAGEDUMP BugCheckCode @0x28 + ULONG params @0x2C-0x38) or
   the 0x80000003 BREAKPOINT exception-stream convention — never from
@@ -94,22 +101,13 @@ npm run optimize-css     # Apply CSS purging
 
 1. `model.cfg` names the primary model (re-read with a 30s cache; currently
    `deepseek-v4-flash`). Gemini models fall back to `gemini-2.5-flash-lite`.
-2. When `EXPLABS_ARGON_ENABLED` is on, DeepSeek requests first try **Gemini 4
-   Argon on Experiential** (operator rule 2026-10-13: the go-to model for
-   medium/complex work while free there): `google/gemini-4-argon:free`, then
-   the paid `google/gemini-4-argon` only after the free id refused a request
-   it never processed (quota, rate limit, model), within a per-UTC-day token
-   budget (`EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT` 1.5M / `_OUTPUT_LIMIT` 200k
-   ~= $5 at $2/$10 per 1M). Each leg has its own `providerQuota` key
-   (`experiential-argon-free` / `-paid`), the same latch/pause backoff and
-   reservation settlement, and `EXPLABS_ARGON_TIMEOUT_MS` (90 s). Any other
-   Argon failure (timeout, 5xx, empty answer) falls straight through to the
-   chain below, never to paid Argon. Probed: JSON mode honoured, reasoning
-   params ignored, both ids echo `gemini-4-argon` (the route string says which:
-   `experiential:google/gemini-4-argon[:free]`).
-3. DeepSeek requests then try **Experiential Cloud** (`gpt-6-luna`, since
+2. DeepSeek requests first try **Experiential Cloud** (`gpt-6-luna`, since
    2026-10-08; `DEFAULT_EXPERIENTIAL_MODEL` — any other `EXPLABS_MODEL`
-   disables the leg) when `EXPLABS_API_KEY` is bound. `server/quotaStore.js` reserves estimated input
+   disables the leg) when `EXPLABS_API_KEY` is bound, free while the operator's
+   incentive/free tier there applies. The Gemini 4 Argon legs that used to run
+   first were retired on 2026-10-30 because Argon is no longer free (issue
+   #323); a leftover `EXPLABS_ARGON_*` variable is ignored and logged once at
+   boot as `env.ignored` (names only). `server/quotaStore.js` reserves estimated input
    and output tokens against this instance's share of the provider's
    daily/hourly free-tier limits, then settles to reported usage. A failed
    call releases its reservation only when the provider never ran it
@@ -117,11 +115,23 @@ npm run optimize-css     # Apply CSS purging
    a 429 saying quota/credit) latch for the current window; other 429s pause
    the leg for `Retry-After` (at most 5 min). Either way the request falls
    through to the existing OpenAI Luna route.
-4. The existing **OpenAI free tier** (`gpt-6-luna`; `gpt-5.6-luna` stopped receiving the data-sharing incentive in 2026-09) remains the next leg,
+3. The existing **OpenAI free tier** (`gpt-6-luna`; `gpt-5.6-luna` stopped receiving the data-sharing incentive in 2026-09) remains the next leg,
    gated by the org-wide OpenAI Usage API (a per-instance tally when it is
    unavailable); billed-tier responses latch that gate off for the day.
-5. Then DeepSeek itself. Fatal DeepSeek failures (out of credits, auth revoked)
+4. Then DeepSeek itself. Fatal DeepSeek failures (out of credits, auth revoked)
    fail over to the **OpenRouter free tier** when `OPENROUTER_API_KEY` is set.
+5. One request deadline bounds the whole chain (`server/aiDeadline.js`,
+   `AI_REQUEST_DEADLINE_MS`, default 90 s, under Cloudflare's 100 s origin
+   timeout): each leg runs for min(its own timeout, the remaining budget) and
+   its call is aborted when that runs out, a leg is skipped when less than 5 s
+   remains, and running out answers a retryable, refunded 504 `AI_TIMEOUT`.
+   The deadline starts when the request arrives (generateContent handler,
+   `generateAIReportFromWinDBG`, the `/api/analyze/status` poll) and is passed
+   into `generateAIContent`, so the awaits before the chain count against it
+   (issue #305). The legs before DeepSeek (Experiential Luna, OpenAI free) are
+   non-final: they never use the last 30 s of the budget (a third of a shorter
+   one), which stays reserved for the final leg, so a stalled early leg falls
+   through instead of failing the request (issue #272).
 6. All adapters (`services/aiProvider.js`) share the same retry contract:
    transient statuses and transport errors are retried with backoff, the
    network-error latch is cleared on every successful fetch, and responses
@@ -168,7 +178,7 @@ prerendered markup — never another route's — or hydration mismatches.
   CI runs on every push/PR.
 - TS sources are loaded in tests via rolldown (a vite dependency):
   single-file `transform('x.ts', source)` for leaf modules
-  (`tests/minidumpStreams.test.mjs`), or full bundling with a plugin resolving
+  (`tests/bugCheckCodes.test.mjs`), or full bundling with a plugin resolving
   `.js` specifiers back to `.ts` for modules with imports
   (`tests/dumpParserBugCheck.test.mjs`).
 - Each fake Redis client (e.g. in `tests/cacheIntegration.test.mjs`)
@@ -190,6 +200,15 @@ prerendered markup — never another route's — or hydration mismatches.
 
 ## Environment Variables
 
+Parsing is strict and shared (`server/envConfig.js`): numbers are digits only
+(underscores allowed, `1_500_000`), switches accept `1/true/yes/on` and
+`0/false/no/off` in any case, and a malformed value logs `env.invalid` naming
+the variable and keeps the default. An unrecognised switch value keeps the
+safe side: the ingress gate stays on in production, and `STATS_ENABLED`,
+`STATS_INSIGHT_ENABLED`, `FORUM_RELATED_ENABLED`, `CORPUS_ENABLED` and
+`CORPUS_PRIORS_ENABLED` turn off. `TRUST_PROXY_HOPS`
+must be an integer >= 1.
+
 | Variable | Purpose | Required |
 |----------|---------|----------|
 | `GEMINI_API_KEY` | Gemini AI API access | Yes |
@@ -197,13 +216,14 @@ prerendered markup — never another route's — or hydration mismatches.
 | `SESSION_SECRET` | Signs session cookies and WinDBG file handles (HKDF key per purpose) | Production |
 | `SESSION_SECRET_PREVIOUS` | Old secret still accepted for verification during rotation (never signs) | No |
 | `WINDBG_API_KEY` | WinDBG server API access | No (browser path falls back to AI/local evidence) |
+| `WINDBG_UPLOAD_RESPONSE_BUDGET_MS` | How long `/api/windbg/upload` waits for the WinDbg-API submit before answering a retryable JSON 504 `WINDBG_UPLOAD_TIMEOUT` (clamped to 95 s, under Cloudflare's 100 s); the submit runs on to `WINDBG_UPLOAD_TIMEOUT_MS` (240 s) and a same-instance retry adopts its job (`server/windbgUploadSubmit.js`). The submit to WinDbg-API also crosses Cloudflare's 100 s origin timeout, so in practice it gets a `524` at ~100 s, treated as unconfirmed (no adopt, 10 min hold; issue #342) | Defaults `90000` |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint for the optional analysis cache | No (cache off without it) |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | Production |
 | `CACHE_ZSTD_DICTIONARY_PATH` | Binary cache dictionary path (`/secrets/redis-zstd/dictionary` in Cloud Run) | Production |
 | `CACHE_ZSTD_WRITES_ENABLED` | Enables dictionary-zstd writes for `analysis:*` only | No; defaults to `false` for staged rollout |
 | `REDIS_ENABLED` | Overrides the committed `redis.cfg` switch without a build | No |
 | `MAX_INSTANCES` | Cloud Run `--max-instances`; `cloudbuild.yaml` (`_MAX_INSTANCES`) and `deploy-with-secret.sh` pass the value they deploy with (the GitHub trigger's inline build does not) | Defaults `10` |
-| `EXPLABS_ARGON_ENABLED` | Gemini 4 Argon legs first in the AI chain (free id, then paid within `EXPLABS_ARGON_PAID_DAILY_INPUT_LIMIT`/`_OUTPUT_LIMIT`); `EXPLABS_ARGON_TIMEOUT_MS`, free-leg `EXPLABS_ARGON_DAILY_*`/`_HOURLY_*` limits. Runtime switch: `gcloud run services update bsod-analyzer --region=us-east1 --update-env-vars EXPLABS_ARGON_ENABLED=1` (deploys merge env vars, so it persists) | Defaults off |
+| `AI_REQUEST_DEADLINE_MS` | Budget for one request's whole AI provider chain; every leg's timeout is capped by what remains, and running out answers a refunded 504 (`server/aiDeadline.js`) | Defaults `90000` |
 | `PROVIDER_QUOTA_SHARDS` | Per-instance share divisor for AI free-tier budgets. Set it to `MAX_INSTANCES` for a hard bound (instances together never overshoot, at 1/10 of the free tier per instance); the provider's own quota errors latch the route either way | Defaults `2` |
 | `QUOTA_REDIS_REST_URL` / `QUOTA_REDIS_REST_TOKEN` | Dedicated Upstash database for the cross-instance AI quota and cost-bearing rate limits (`server/sharedCounters.js`); bound from secrets `quota-redis-rest-url` / `quota-redis-rest-token` when both have an enabled version | No (per-instance counters without it; production logs `quota.shared_store_missing`) |
 | `WINDBG_UPLOAD_SESSION_RATE_LIMIT_MAX` / `ARCHIVE_SESSION_RATE_LIMIT_MAX` | Per-session hourly WinDBG upload / archive extraction caps, next to the per-IP ones | Defaults `50` / `30` |

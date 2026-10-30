@@ -145,3 +145,80 @@ test('parseAndValidateAnalysisReport keeps rejecting malformed reports', () => {
   }));
   assert.equal(ok.valid, true);
 });
+
+// Client mirror: services/geminiProxy.ts keeps its normalizer private, so lift
+// the three contiguous helpers out of the source and run them through oxc.
+async function loadClientNormalizer() {
+  const { transform } = await import('rolldown/experimental');
+  const fs = await import('node:fs/promises');
+  const source = await fs.readFile(new URL('../services/geminiProxy.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('function normalizeText(');
+  const end = source.indexOf('function looksLikeAnalysisReport(');
+  assert.ok(start > 0 && end > start, 'client normalizer helpers not found');
+  const result = await transform('normalizer.ts',
+    `${source.slice(start, end)}\nexport { normalizeAnalysisReportData };\n`);
+  if (result.errors?.length) throw new Error(String(result.errors[0]));
+  return (await import(`data:text/javascript;base64,${Buffer.from(result.code).toString('base64')}`))
+    .normalizeAnalysisReportData;
+}
+
+const BASE_REPORT = { summary: 's', probableCause: 'p', culprit: 'nvlddmkm.sys', recommendations: ['r'] };
+
+test('an explicit isHardwareError:false drops hardwareError even with an errorType (issue #247)', async () => {
+  const negatives = [
+    { isHardwareError: false, errorType: 'None', component: 'Other' },
+    { isHardwareError: false, errorType: 'Not a hardware error', type: 'x' },
+    { isHardwareError: false, type: 'Not applicable' }
+  ];
+  const normalizeClient = await loadClientNormalizer();
+  for (const hardwareError of negatives) {
+    const server = parseAndValidateAnalysisReport(JSON.stringify({ ...BASE_REPORT, hardwareError }));
+    assert.equal(server.valid, true);
+    assert.equal(server.report.hardwareError, undefined, JSON.stringify(hardwareError));
+    assert.equal(normalizeClient({ ...BASE_REPORT, hardwareError }).hardwareError, undefined,
+      `client: ${JSON.stringify(hardwareError)}`);
+  }
+});
+
+test('hardwareError is inferred from errorType/type only when the flag is absent (issue #247)', async () => {
+  const normalizeClient = await loadClientNormalizer();
+  for (const hardwareError of [{ errorType: 'CPU Cache Error' }, { type: 'Machine Check' }, { isHardwareError: true }]) {
+    const server = parseAndValidateAnalysisReport(JSON.stringify({ ...BASE_REPORT, hardwareError }));
+    assert.equal(server.report.hardwareError?.isHardwareError, true, JSON.stringify(hardwareError));
+    assert.equal(normalizeClient({ ...BASE_REPORT, hardwareError }).hardwareError?.isHardwareError, true,
+      `client: ${JSON.stringify(hardwareError)}`);
+  }
+  for (const hardwareError of [{ component: 'CPU' }, { isHardwareError: false }]) {
+    const server = parseAndValidateAnalysisReport(JSON.stringify({ ...BASE_REPORT, hardwareError }));
+    assert.equal(server.report.hardwareError, undefined, JSON.stringify(hardwareError));
+    assert.equal(normalizeClient({ ...BASE_REPORT, hardwareError }).hardwareError, undefined,
+      `client: ${JSON.stringify(hardwareError)}`);
+  }
+});
+
+test('non-object driverWarnings entries are dropped instead of throwing (issue #254)', () => {
+  const good = { driverName: 'nvlddmkm.sys', displayName: 'NVIDIA', manufacturer: 'NVIDIA' };
+  const result = parseAndValidateAnalysisReport(JSON.stringify({
+    ...BASE_REPORT, driverWarnings: [null, 'x', 7, [1], good]
+  }));
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.report.driverWarnings.map(w => w.driverName), ['nvlddmkm.sys']);
+});
+
+test('an unexpected report shape yields valid:false, never a throw (issue #254)', () => {
+  // A getter that throws stands in for any normalisation TypeError.
+  const hostile = JSON.stringify({ ...BASE_REPORT, hardwareError: { errorType: 'MCE', details: ['__throw__'] } });
+  const original = Array.isArray;
+  let result;
+  Array.isArray = (v) => {
+    if (original(v) && v[0] === '__throw__') throw new TypeError('boom');
+    return original(v);
+  };
+  try {
+    result = parseAndValidateAnalysisReport(hostile);
+  } finally {
+    Array.isArray = original;
+  }
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /schema/);
+});

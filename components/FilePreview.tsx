@@ -1,5 +1,6 @@
 import React, { memo } from 'react';
 import { FileIcon, CloseIcon } from './Icons';
+import { formatFileSize } from '../utils/formatFileSize';
 
 interface FilePreviewProps {
   file: File;
@@ -11,12 +12,6 @@ interface FilePreviewProps {
 }
 
 const FilePreview: React.FC<FilePreviewProps> = memo(({ file, displayName, progress, onRemove, status, error }) => {
-  const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
-
   const getStatusColor = () => {
     switch (status) {
       case 'processing': return 'var(--brand-primary)';

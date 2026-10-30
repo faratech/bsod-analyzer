@@ -172,6 +172,67 @@ export function neutralizeMarkdownLinks(value) {
   );
 }
 
+// The forum summary is pasted into XenForo, which renders BBCode. Rewrite the
+// tags that create links, images, embeds or mailto links into plain text
+// (issue #259): `[URL=x]text[/URL]` becomes `text (x)`, `[IMG]x[/IMG]` becomes
+// `x`. Tag names match case-insensitively; complete pairs unwrap innermost
+// first, unmatched tags are dropped only once no pair is left, and the loop
+// re-runs until nothing changes, so nested or split tags (`[UR[/URL]L=x]`)
+// cannot reassemble. Every change removes at least one `]`, so it terminates.
+// Both the `[TAG=option]` form and the attribute form (`[URL unfurl="true"]`,
+// `[IMG alt="a" width="1"]`, `[URL='x' unfurl="true"]`) are matched: the tag
+// name must be followed by `=`, whitespace or `]` (issue #281).
+// The tag tail is bounded (BBCODE_TAIL_MAX) so a long unterminated tail costs
+// a bounded scan per `[` instead of one to the end of the line (issue #310).
+// An opener whose tail is longer than that is defanged (`[` becomes `(`), so a
+// long tail cannot slip a working tag past the bounded patterns.
+const BBCODE_TAIL_MAX = 512;
+const BBCODE_PAIRED_RE = new RegExp(String.raw`\[(URL|IMG|MEDIA|EMAIL)(?=[=\s\]])([^\]\n]{0,${BBCODE_TAIL_MAX}})\]([^[\n]*?)\[\/\1\s*\]`, 'gi');
+const BBCODE_STRAY_RE = new RegExp(String.raw`\[\/?(?:URL|IMG|MEDIA|EMAIL)(?=[=\s\]])([^\]\n]{0,${BBCODE_TAIL_MAX}})\]`, 'gi');
+const BBCODE_OVERLONG_RE = new RegExp(String.raw`\[(?=\/?(?:URL|IMG|MEDIA|EMAIL)[=\s][^\]\n]{${BBCODE_TAIL_MAX}})`, 'gi');
+
+// The option of a tag tail: the value after a leading `=` (quoted, or up to
+// the first ` name=` attribute); attribute-only tails carry no option. One
+// forward search finds the attribute: `\s[\w-]+\s*=` cannot backtrack across
+// a whitespace run the way a lazy match with a `(?=\s+...)` lookahead did.
+function bbcodeOption(tail) {
+  const text = String(tail || '');
+  const lead = /^\s*=\s*/.exec(text);
+  if (!lead) return '';
+  const rest = text.slice(lead[0].length);
+  const quote = rest[0];
+  if (quote === '"' || quote === "'") {
+    const end = rest.indexOf(quote, 1);
+    if (end !== -1) return rest.slice(1, end).trim();
+  }
+  const attribute = /\s[\w-]+\s*=/.exec(rest);
+  return (attribute ? rest.slice(0, attribute.index) : rest).trim();
+}
+
+export function neutralizeBBCodeLinks(value) {
+  let out = String(value || '');
+  for (;;) {
+    const paired = out.replace(BBCODE_PAIRED_RE, (_match, _tag, option, inner) => {
+      const target = bbcodeOption(option);
+      const text = inner.trim();
+      if (!target || target === text) return text;
+      return text ? `${text} (${target})` : target;
+    });
+    if (paired !== out) { out = paired; continue; }
+    // No complete pairs left: drop unmatched tags (keeping any target).
+    const stray = out.replace(BBCODE_STRAY_RE, (_match, option) => {
+      const target = bbcodeOption(option);
+      return target ? `(${target}) ` : '';
+    });
+    if (stray !== out) { out = stray; continue; }
+    // Last, openers too long for the bounded patterns. Each pass removes a
+    // `[` or a `]`, so the loop still terminates.
+    const defanged = out.replace(BBCODE_OVERLONG_RE, '(');
+    if (defanged === out) return out;
+    out = defanged;
+  }
+}
+
 export function generateForumReport(dumpFile) {
   const facts = getReportFacts(dumpFile);
   if (!facts) return '';
@@ -198,7 +259,7 @@ export function generateForumReport(dumpFile) {
 
   lines.push('', `_${facts.caveat} Private upload details and raw dump output omitted._`);
   lines.push('', `Analyzed with BSOD Analyzer: ${ANALYZER_URL}`);
-  return neutralizeMarkdownLinks(redactPublicReportText(lines.join('\n')));
+  return neutralizeMarkdownLinks(neutralizeBBCodeLinks(redactPublicReportText(lines.join('\n'))));
 }
 
 export function generateMarkdownReport(dumpFile) {
