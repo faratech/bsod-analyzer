@@ -133,3 +133,27 @@ test('the page reserves room for the sticky ad bar on mobile only while it is fi
   assert.equal(bar.style.maxHeight, 'var(--sticky-ad-height)');
   assert.equal(bar.style.boxSizing, 'border-box');
 });
+
+// Issue #378: the bar was 100px tall including 0.5rem padding top and bottom,
+// so a filled 100px unit was clipped by 8px (.ad-container hides overflow).
+test('the sticky ad bar is tall enough for its capped ad unit plus its padding (issue #378)', () => {
+  const rules = cssRules(read('styles.css'));
+  const rootRule = rules.find(rule => rule.selectorText === ':root' && rule.style.getPropertyValue('--sticky-ad-height'));
+  const bar = rules.find(rule => rule.selectorText === '.ad-container.sticky-ad');
+  const unit = rules.find(rule => rule.selectorText === '.sticky-ad .adsbygoogle');
+  const px = value => {
+    const m = /^(\d+(?:\.\d+)?)(px|rem)$/.exec(value.trim());
+    assert.ok(m, `a px or rem length: ${value}`);
+    return m[2] === 'rem' ? Number(m[1]) * 16 : Number(m[1]);
+  };
+  // Bar height = unit height + vertical padding, written as calc(<unit> + <padding>).
+  const height = /^calc\((\S+) \+ (\S+)\)$/.exec(rootRule.style.getPropertyValue('--sticky-ad-height').trim());
+  assert.ok(height, rootRule.style.getPropertyValue('--sticky-ad-height'));
+  const [unitHeight, verticalPadding] = [px(height[1]), px(height[2])];
+  assert.equal(unitHeight, 100, 'the tallest mobile unit');
+  assert.equal(px(bar.style.paddingTop || bar.style.padding) + px(bar.style.paddingBottom || bar.style.padding), verticalPadding);
+  assert.equal(bar.style.boxSizing, 'border-box');
+  assert.equal(bar.style.maxHeight, 'var(--sticky-ad-height)');
+  // The unit is capped at the bar's content box, never more.
+  assert.equal(unit.style.maxHeight, `calc(var(--sticky-ad-height) - ${height[2]})`);
+});

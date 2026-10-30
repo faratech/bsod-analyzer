@@ -53,22 +53,29 @@ export const useAnalysis = () => {
             return;
         }
 
+        // Mark the files as analyzing before the session check, which can
+        // take seconds (Turnstile): from here on they are no longer offered
+        // for removal, so a file the user removed is never uploaded (#380).
+        const ids = new Set(filesToAnalyze.map(df => df.id));
+        onUpdate(prevFiles =>
+            prevFiles.map(df => (ids.has(df.id) ? { ...df, status: FileStatus.ANALYZING } : df))
+        );
+
         const sessionReady = await initializeSession(true);
+        // Superseded meanwhile (a retry, or the session was invalidated):
+        // whoever superseded this run settled its files.
+        if (runIdRef.current !== runId) return;
         if (!sessionReady) {
             setIsAnalyzing(false);
             abortRef.current = null;
             setError('Security check expired. Please complete Turnstile again, then retry analysis.');
+            onUpdate(prevFiles =>
+                prevFiles.map(df =>
+                    ids.has(df.id) && df.status === FileStatus.ANALYZING ? { ...df, status: FileStatus.PENDING } : df
+                )
+            );
             return;
         }
-
-        // Mark files as analyzing
-        onUpdate(prevFiles =>
-            prevFiles.map(df =>
-                filesToAnalyze.some(fta => fta.id === df.id)
-                    ? { ...df, status: FileStatus.ANALYZING }
-                    : df
-            )
-        );
 
         const allCached = filesToAnalyze.every(df => df.knownCached && df.fileHash);
 
@@ -157,30 +164,13 @@ export const useAnalysis = () => {
         const abortController = new AbortController();
         abortRef.current = abortController;
 
-        const sessionReady = await initializeSession(true);
-        if (!sessionReady) {
-            abortRef.current = null;
-            setError('Security check expired. Please complete Turnstile again, then retry analysis.');
-            // The aborted run can no longer settle itself (every completion
-            // path is guarded by its now-stale runId), so the state it was
-            // driving must be closed out here — otherwise isAnalyzing sticks
-            // true and the interrupted files stay ANALYZING forever (issue #119).
-            setIsAnalyzing(false);
-            setProgress(null);
-            onUpdate(prevFiles =>
-                prevFiles.map(df =>
-                    df.status === FileStatus.ANALYZING
-                        ? { ...df, status: FileStatus.ERROR, error: 'Analysis cancelled' }
-                        : df
-                )
-            );
-            return;
-        }
-
-        // Reset file status to ANALYZING. The batch this retry just aborted
-        // was interrupted mid-flight, and its completion callbacks are now
-        // runId-stale: settle every other ANALYZING file so the new single-file
-        // run does not leave them stuck (issue #119).
+        // Set the file to ANALYZING before the session check, which can take
+        // seconds (Turnstile): from here on its card offers no Remove and
+        // Clear finished keeps it, so a removed file is never uploaded (#380).
+        // The batch this retry just aborted was interrupted mid-flight, and
+        // its completion callbacks are now runId-stale: settle every other
+        // ANALYZING file so the new single-file run does not leave them stuck
+        // (issue #119).
         onUpdate(prevFiles =>
             prevFiles.map(df => {
                 if (df.id === fileId) {
@@ -192,9 +182,31 @@ export const useAnalysis = () => {
                 return df;
             })
         );
-
         setIsAnalyzing(true);
         clearError();
+
+        const sessionReady = await initializeSession(true);
+        // Superseded meanwhile (another retry or analysis, or the session was
+        // invalidated): whoever superseded this run settled its file.
+        if (runIdRef.current !== runId) return;
+        if (!sessionReady) {
+            abortRef.current = null;
+            setError('Security check expired. Please complete Turnstile again, then retry analysis.');
+            // Every completion path of the aborted run is guarded by its
+            // now-stale runId, so close out the state here — otherwise
+            // isAnalyzing sticks true and files stay ANALYZING (issue #119).
+            // The retried file goes back to its failure, still removable.
+            setIsAnalyzing(false);
+            setProgress(null);
+            onUpdate(prevFiles =>
+                prevFiles.map(df =>
+                    df.status === FileStatus.ANALYZING
+                        ? { ...df, status: FileStatus.ERROR, error: df.id === fileId ? (fileToRetry.error ?? 'Analysis cancelled') : 'Analysis cancelled' }
+                        : df
+                )
+            );
+            return;
+        }
 
         const startTime = Date.now();
         const cachedRetry = !!(fileToRetry.knownCached && fileToRetry.fileHash);

@@ -157,6 +157,12 @@ test('If-Modified-Since is honoured only as an HTTP-date (issue #366)', async ()
   assert.equal(parseHttpDate('Sun Nov  6 08:49:37 1994'), expected, 'asctime');
   assert.equal(parseHttpDate('Sun Nov 16 08:49:37 1994'), Date.UTC(1994, 10, 16, 8, 49, 37), 'asctime, two-digit day');
   assert.equal(parseHttpDate(' Thu, 01 Oct 2026 12:00:00 GMT '), Date.UTC(2026, 9, 1, 12), 'surrounding whitespace');
+  // A leap second (:60) is a valid HTTP-date and counts as :59; :61 is not
+  // (issue #382).
+  assert.equal(parseHttpDate('Wed, 31 Dec 2025 23:59:60 GMT'), Date.UTC(2025, 11, 31, 23, 59, 59), 'leap second');
+  for (const invalid of ['Thu, 01 Oct 2026 12:00:61 GMT', 'Thursday, 01-Oct-26 12:00:61 GMT', 'Thu Oct  1 12:00:61 2026']) {
+    assert.equal(parseHttpDate(invalid), null, invalid);
+  }
   // RFC 850 two-digit years: more than 50 years ahead means the past century.
   const nextYear = (new Date().getUTCFullYear() + 1) % 100;
   assert.equal(new Date(parseHttpDate(`Friday, 01-Jan-${String(nextYear).padStart(2, '0')} 00:00:00 GMT`)).getUTCFullYear(), new Date().getUTCFullYear() + 1);

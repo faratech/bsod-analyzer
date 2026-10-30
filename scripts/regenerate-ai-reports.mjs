@@ -15,7 +15,11 @@
 // Concurrency is adaptive per route (additive increase, halve on 429 honoring
 // retry-after). Progress is checkpointed so the run can be resumed.
 //
-//   node scripts/regenerate-ai-reports.mjs --input jobs.ndjson --checkpoint done.txt [--limit N] [--routes a,b]
+//   node scripts/regenerate-ai-reports.mjs --input jobs.ndjson [--checkpoint done.txt] [--limit N]
+//     [--routes openai-incentive,explabs-gpt6] [--openai-budget TOKENS]
+//     [--openai-max-concurrency N] [--gpt6-max-concurrency N]
+// Flags take `--name value` or `--name=value`; anything unknown or invalid
+// exits 1 with usage (scripts/lib/args.mjs, issue #375).
 // jobs.ndjson lines: {"job_id","dump_type","file_size_bytes","ai_signal"}.
 // Env: OPENAI_API_KEY, EXPLABS_API_KEY, BQ_PROJECT (default project-bigfoot).
 import fs from 'node:fs';
@@ -27,21 +31,36 @@ import { extractRelevantWinDbgSignal } from '../shared/windbgApiClient.js';
 import { generateExperientialContent, generateOpenAIContent, isOpenAIFreeTier } from '../services/aiProvider.js';
 import { buildWinDbgEvidence, parseAndValidateAnalysisReport } from '../server/analysisReport.js';
 import { buildAiReportRow, toAiInsertAllRow } from '../server/windbgCorpus.js';
+import { parseArgs, ArgsError } from './lib/args.mjs';
 
-const args = Object.fromEntries(process.argv.slice(2).map(a => {
-  const [k, ...v] = a.replace(/^--/, '').split('=');
-  return [k, v.length ? v.join('=') : 'true'];
-}));
+const ROUTE_NAMES = ['openai-incentive', 'explabs-gpt6'];
+const USAGE = 'usage: node scripts/regenerate-ai-reports.mjs --input jobs.ndjson [--checkpoint done.txt] [--limit N] '
+  + `[--routes ${ROUTE_NAMES.join(',')}] [--openai-budget TOKENS] [--openai-max-concurrency N] [--gpt6-max-concurrency N]`;
+let args;
+try {
+  ({ flags: args } = parseArgs(process.argv.slice(2), {
+    flags: {
+      input: { type: 'string' },
+      checkpoint: { type: 'string' },
+      limit: { type: 'positiveInteger' },
+      routes: { type: 'list', choices: ROUTE_NAMES },
+      'openai-budget': { type: 'nonNegativeNumber' },
+      'openai-max-concurrency': { type: 'positiveInteger' },
+      'gpt6-max-concurrency': { type: 'positiveInteger' },
+    },
+  }));
+  if (!args.input) throw new ArgsError('--input is required');
+} catch (error) {
+  if (!(error instanceof ArgsError)) throw error;
+  console.error(`regenerate-ai-reports: ${error.message}\n${USAGE}`);
+  process.exit(1);
+}
 const INPUT = args.input;
-const CHECKPOINT = args.checkpoint || 'regenerate-done.txt';
-const LIMIT = Number(args.limit || Infinity);
+const CHECKPOINT = args.checkpoint ?? 'regenerate-done.txt';
+const LIMIT = args.limit ?? Infinity;
 const PROJECT = process.env.BQ_PROJECT || 'project-bigfoot';
 const MAX_OUTPUT_TOKENS = 16_384;
 const REQUEST_TIMEOUT_MS = 240_000;
-if (!INPUT) {
-  console.error('usage: node scripts/regenerate-ai-reports.mjs --input=jobs.ndjson [--checkpoint=done.txt] [--limit=N] [--routes=...]');
-  process.exit(1);
-}
 
 // Budgets leave headroom for the live site, which draws on the same free allowances.
 const ROUTES = [
@@ -51,8 +70,8 @@ const ROUTES = [
     call: (request, signal) => generateOpenAIContent(request, {
       apiKey: process.env.OPENAI_API_KEY, model: 'gpt-6-luna', signal, maxRetries: 0
     }),
-    budget: { total: Number(args['openai-budget'] || 3_000_000) },
-    maxConcurrency: Number(args['openai-max-concurrency'] || 64)
+    budget: { total: args['openai-budget'] ?? 3_000_000 },
+    maxConcurrency: args['openai-max-concurrency'] ?? 64
   },
   {
     name: 'explabs-gpt6',
@@ -61,10 +80,10 @@ const ROUTES = [
       apiKey: process.env.EXPLABS_API_KEY, model: 'gpt-6-luna', signal, maxRetries: 0
     }),
     budget: {},
-    maxConcurrency: Number(args['gpt6-max-concurrency'] || 256),
+    maxConcurrency: args['gpt6-max-concurrency'] ?? 256,
     price: { input: 0.025, cached: 0.003, output: 0.13 } // $/M tokens (75% off)
   }
-].filter(r => !args.routes || args.routes.split(',').includes(r.name))
+].filter(r => !args.routes || args.routes.includes(r.name))
   .map(r => ({ ...r, inFlight: 0, limit: 4, active: true, pausedUntil: 0, done: 0, failed: 0, input: 0, output: 0, cached: 0, billed: 0, reason: '' }));
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import AnalysisReportCard from './AnalysisReportCard';
 
@@ -10,6 +10,8 @@ interface AnalysisResultsProps {
     onRemove?: (fileId: string) => void;
     /** Remove every finished or failed result. */
     onClearFinished?: () => void;
+    /** Gets focus when Remove or Clear leaves no result (the section is gone); give it tabIndex -1. */
+    emptyFocusRef?: React.RefObject<HTMLElement | null>;
     /** Retry needs the data-use terms like Analyze: shown disabled while they are unchecked. */
     retryDisabled?: boolean;
     className?: string;
@@ -23,24 +25,64 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
     onRetry,
     onRemove,
     onClearFinished,
+    emptyFocusRef,
     retryDisabled = false,
     className = '',
     showAds = false,
     AdComponent
 }) => {
-    if (dumpFiles.length === 0) {
-        return null;
-    }
+    // Remove and Clear unmount the button that has focus (issue #379): say
+    // what happened in a live region that outlives the cards and the section,
+    // and move focus to the next report's toggle, else the previous one, else
+    // the results heading, else emptyFocusRef once no result is left.
+    const [announcement, setAnnouncement] = useState('');
+    const focusAfterUpdate = useRef<string | null>(null);
+    const sectionRef = useRef<HTMLElement>(null);
+    const headingRef = useRef<HTMLHeadingElement>(null);
+
+    useEffect(() => {
+        const target = focusAfterUpdate.current;
+        if (target === null) return;
+        focusAfterUpdate.current = null;
+        const toggle = [...(sectionRef.current?.querySelectorAll<HTMLElement>('.result-toggle[aria-controls]') ?? [])]
+            .find(el => el.getAttribute('aria-controls') === `report-content-${target}`);
+        (toggle ?? headingRef.current ?? emptyFocusRef?.current)?.focus();
+    }, [dumpFiles, emptyFocusRef]);
+
     const isFinished = (dumpFile: DumpFile) =>
         dumpFile.status === FileStatus.ANALYZED || dumpFile.status === FileStatus.ERROR;
     const hasFinished = dumpFiles.some(isFinished);
 
+    const removeOne = (index: number) => {
+        const dumpFile = dumpFiles[index];
+        focusAfterUpdate.current = (dumpFiles[index + 1] ?? dumpFiles[index - 1])?.id ?? '';
+        setAnnouncement(`Report for ${dumpFile.displayName || dumpFile.file.name} removed`);
+        onRemove?.(dumpFile.id);
+    };
+    const clearFinished = () => {
+        const count = dumpFiles.filter(isFinished).length;
+        focusAfterUpdate.current = '';
+        setAnnouncement(`Cleared ${count} finished ${count === 1 ? 'report' : 'reports'}`);
+        onClearFinished?.();
+    };
+
+    const liveRegion = (
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {announcement}
+        </div>
+    );
+    if (dumpFiles.length === 0) {
+        return liveRegion;
+    }
+
     return (
-        <section id="analysis-results" className={className} style={{ marginTop: '2rem', marginBottom: '4rem' }}>
-            <h2 style={{ textAlign: 'center', marginBottom: onClearFinished && hasFinished ? '0.75rem' : '2rem' }}>{title}</h2>
+        <>
+        {liveRegion}
+        <section id="analysis-results" ref={sectionRef} className={className} style={{ marginTop: '2rem', marginBottom: '4rem' }}>
+            <h2 ref={headingRef} tabIndex={-1} style={{ textAlign: 'center', marginBottom: onClearFinished && hasFinished ? '0.75rem' : '2rem' }}>{title}</h2>
             {onClearFinished && hasFinished && (
                 <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-                    <button type="button" className="btn btn-secondary" onClick={onClearFinished}>
+                    <button type="button" className="btn btn-secondary" onClick={clearFinished}>
                         Clear finished results
                     </button>
                 </div>
@@ -51,7 +93,7 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
                         <AnalysisReportCard
                             dumpFile={dumpFile}
                             onRetry={onRetry ? () => onRetry(dumpFile.id) : undefined}
-                            onRemove={onRemove && isFinished(dumpFile) ? () => onRemove(dumpFile.id) : undefined}
+                            onRemove={onRemove && isFinished(dumpFile) ? () => removeOne(index) : undefined}
                             retryDisabled={retryDisabled}
                             style={{ animationDelay: `${index * 100}ms` }}
                         />
@@ -66,6 +108,7 @@ const AnalysisResults: React.FC<AnalysisResultsProps> = memo(({
                 ))}
             </div>
         </section>
+        </>
     );
 });
 

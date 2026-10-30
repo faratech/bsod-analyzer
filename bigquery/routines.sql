@@ -3,6 +3,12 @@
 --   bq query --use_legacy_sql=false --location=us-east1 < bigquery/routines.sql
 -- job_facts_since()/ai_facts_since() filter on the tables' partition columns,
 -- so the daily incremental build only scans recent partitions.
+--
+-- job_facts stores the outputs of these functions per row (windows_release,
+-- crash_utc_weekday/_hour, ...), and the daily build only MERGEs the last two
+-- days. After changing anything a stored column depends on, also rebuild the
+-- existing rows once with bigquery/job_facts_full.sql (full scan, ~10 GB);
+-- the next bsod-crash-insights-daily run then republishes the insights.
 
 CREATE OR REPLACE FUNCTION `project-bigfoot.bsod_corpus.norm_manufacturer`(m STRING) AS (
   CASE
@@ -52,11 +58,16 @@ CREATE OR REPLACE FUNCTION `project-bigfoot.bsod_corpus.windows_release`(build I
     WHEN product = 'Server' AND build = 20348 THEN 'Windows Server 2022'
     WHEN product = 'Server' AND build = 17763 THEN 'Windows Server 2019'
     WHEN product = 'Server' THEN 'Windows Server (older)'
-    WHEN build > 26200 THEN 'Windows 11 Insider'
+    -- GA releases, from the Microsoft KB release notes (KB5127646: 26H1 =
+    -- OS Build 28000; KB5127648: 26H2 = OS Build 26300). Add each new GA
+    -- build here: any other Windows 11-era build is an Insider build.
+    WHEN build = 28000 THEN 'Windows 11 26H1'
+    WHEN build = 26300 THEN 'Windows 11 26H2'
     WHEN build = 26200 THEN 'Windows 11 25H2'
     WHEN build = 26100 THEN 'Windows 11 24H2'
     WHEN build IN (22621, 22631) THEN 'Windows 11 22H2/23H2'
     WHEN build = 22000 THEN 'Windows 11 21H2'
+    WHEN build > 22000 THEN 'Windows 11 Insider'
     WHEN build = 20348 THEN 'Windows Server 2022'
     WHEN build BETWEEN 19041 AND 19045 THEN 'Windows 10 20H1-22H2'
     WHEN build = 17763 THEN 'Windows 10 1809 / Server 2019'
@@ -121,7 +132,12 @@ CREATE OR REPLACE TABLE FUNCTION `project-bigfoot.bsod_corpus.job_facts_since`(s
            WHEN REGEXP_CONTAINS(w.product, r'(?i)LanManNt|ServerNt') THEN 'Server' ELSE 'Workstation' END AS product_type,
       SUBSTR(w.session_time, 1, 3) AS local_weekday,
       SAFE_CAST(REGEXP_EXTRACT(w.session_time, r' (\d{1,2}):\d{2}:\d{2}') AS INT64) AS local_hour,
-      SAFE_CAST(REPLACE(REGEXP_EXTRACT(w.session_time, r'\(UTC ([+-] ?\d{1,2}):\d{2}\)'), ' ', '') AS INT64) AS utc_offset_hours,
+      SAFE_CAST(REGEXP_EXTRACT(w.session_time, r' \d{1,2}:(\d{2}):\d{2}') AS INT64) AS local_minute,
+      -- '(UTC + 5:30)' -> 330, '(UTC - 3:30)' -> -210: the minutes matter for
+      -- half- and quarter-hour zones (issue #373).
+      IF(REGEXP_EXTRACT(w.session_time, r'\(UTC ([+-]) ?\d{1,2}:\d{2}\)') = '-', -1, 1)
+        * (SAFE_CAST(REGEXP_EXTRACT(w.session_time, r'\(UTC [+-] ?(\d{1,2}):\d{2}\)') AS INT64) * 60
+           + SAFE_CAST(REGEXP_EXTRACT(w.session_time, r'\(UTC [+-] ?\d{1,2}:(\d{2})\)') AS INT64)) AS utc_offset_minutes,
       SAFE_CAST(REGEXP_EXTRACT(w.system_uptime, r'^(\d+) days') AS INT64) * 86400
         + SAFE_CAST(REGEXP_EXTRACT(w.system_uptime, r'days (\d+):') AS INT64) * 3600
         + SAFE_CAST(REGEXP_EXTRACT(w.system_uptime, r'days \d+:(\d+):') AS INT64) * 60
@@ -136,9 +152,11 @@ CREATE OR REPLACE TABLE FUNCTION `project-bigfoot.bsod_corpus.job_facts_since`(s
     f.arch, f.processor_count, f.stack_depth, f.os_build, f.product_type,
     `project-bigfoot.bsod_corpus.windows_release`(f.os_build, f.product_type) AS windows_release,
     f.uptime_seconds,
-    MOD(MOD(DIV(STRPOS('MonTueWedThuFriSatSun', f.local_weekday) - 1, 3)
-          + DIV(f.local_hour - f.utc_offset_hours + 48, 24) - 2, 7) + 7, 7) AS crash_utc_weekday,
-    MOD(f.local_hour - f.utc_offset_hours + 48, 24) AS crash_utc_hour,
+    -- UTC minute of the local day, shifted by two days (2880) so it stays
+    -- positive for any offset; DIV(..., 1440) - 2 is the day change.
+    MOD(MOD(DIV(NULLIF(STRPOS('MonTueWedThuFriSatSun', f.local_weekday), 0) - 1, 3)
+          + DIV(f.local_hour * 60 + f.local_minute - f.utc_offset_minutes + 2880, 1440) - 2, 7) + 7, 7) AS crash_utc_weekday,
+    MOD(DIV(f.local_hour * 60 + f.local_minute - f.utc_offset_minutes + 2880, 60), 24) AS crash_utc_hour,
     CASE
       WHEN REGEXP_CONTAINS(LOWER(IFNULL(f.image_name, '')), r'^(nvlddmkm|nvkflt|nvhda)') THEN 'NVIDIA'
       WHEN REGEXP_CONTAINS(LOWER(IFNULL(f.image_name, '')), r'^(amdkmdag|atikmdag|atikmpag|amdkmpfd)') THEN 'AMD'

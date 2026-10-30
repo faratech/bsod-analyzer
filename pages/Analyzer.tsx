@@ -1,5 +1,5 @@
 declare const __BUILD_VERSION__: string;
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { DumpFile, FileStatus } from '../types';
 import FileUploader from '../components/FileUploader';
 import DataUseAgreement from '../components/DataUseAgreement';
@@ -31,6 +31,8 @@ const Analyzer: React.FC = () => {
     // Data-use terms (checked by default); unchecked disables uploading and analysis.
     const [dataUseAccepted, setDataUseAccepted] = useState(true);
     const [, setSessionReady] = useState(false);
+    // Focus target once Remove / Clear finished leaves no result (#379).
+    const pageHeadingRef = useRef<HTMLHeadingElement>(null);
 
     // Initialize session on component mount
     useEffect(() => {
@@ -199,7 +201,7 @@ const Analyzer: React.FC = () => {
                 <section className="analyzer-hero">
                 <div className="container">
                     <div className="analyzer-header">
-                        <h1>BSOD Dump Analyzer</h1>
+                        <h1 ref={pageHeadingRef} tabIndex={-1}>BSOD Dump Analyzer</h1>
                         <p>Upload your Windows crash dump files for instant AI-powered analysis</p>
                     </div>
 
@@ -268,6 +270,7 @@ const Analyzer: React.FC = () => {
                     onRetry={handleRetry}
                     onRemove={handleRemoveFile}
                     onClearFinished={handleClearFinished}
+                    emptyFocusRef={pageHeadingRef}
                     retryDisabled={!dataUseAccepted}
                     showAds={true}
                     AdComponent={InFeedAd}

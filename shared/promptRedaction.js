@@ -5,10 +5,11 @@
 //
 // Only identifiers with an unambiguous shape are touched:
 //  - the profile folder name in "...\Users\<name>..." (also "Documents and
-//    Settings", any drive or UNC prefix, forward slashes, any case): the whole
-//    path segment when it is followed by a separator or ends a path standing
-//    on its own (names contain spaces: issue #360), and a conservative name
-//    when the path ends inside running text (issue #363, profileNameOf);
+//    Settings", any drive or UNC prefix, forward slashes outside URLs (issue
+//    #376), any case): the whole path segment when it is followed by a
+//    separator or ends a path standing on its own (names contain spaces:
+//    issue #360), and a conservative name when the path ends inside running
+//    text (issue #363, profileNameOf);
 //  - the values of identifying environment strings (USERNAME=, COMPUTERNAME=,
 //    USERDOMAIN=, LOGONSERVER=, CLIENTNAME=, and the last path segment of
 //    USERPROFILE=, HOMEPATH=, HOMESHARE= when that path is profile-folder
@@ -17,7 +18,8 @@
 //    user or computer names found by the two rules above (3+ characters, or
 //    2+ for names beyond Latin-1 such as 田中, with a script-aware word
 //    boundary), plus the ASCII fragments of names with non-ASCII characters
-//    (the prompt's strings are cut there: issue #365). Callers collect the
+//    (the prompt's strings are cut there: issue #365), except PC and
+//    hardware vendor names (VENDOR_NAMES: issue #381). Callers collect the
 //    names from the dump bytes (collectPersonalNamesFromBytes);
 //  - email addresses.
 // Computer names (DESKTOP-XXXX and the like) have no reliable pattern on their
@@ -119,6 +121,24 @@ export const NON_PERSONAL_NAMES = new Set([
 ]);
 const NON_PERSONAL = NON_PERSONAL_NAMES;
 
+// PC makers and hardware/driver vendors. OEM images and shop-built PCs ship
+// with accounts named after them (C:\Users\Dell, USERNAME=ASUS), and hunting
+// such a name as a bare word erased the hardware evidence ("BIOS Vendor: Dell
+// Inc.", "NVIDIA Corporation"). The profile path segment and environment
+// value are still redacted; only their bare occurrences elsewhere are kept
+// (issue #381). Trade-off: a person really named e.g. "Dell" keeps that bare
+// word in the prompt. Lowercase (foldName); names shorter than three
+// characters (HP, LG) are never hunted anyway.
+export const VENDOR_NAMES = new Set([
+  'dell', 'alienware', 'asus', 'asustek', 'acer', 'lenovo', 'thinkpad', 'msi', 'samsung', 'toshiba',
+  'dynabook', 'fujitsu', 'sony', 'vaio', 'panasonic', 'huawei', 'xiaomi', 'gigabyte', 'aorus', 'asrock',
+  'biostar', 'supermicro', 'razer', 'medion', 'clevo', 'packard bell', 'compaq', 'hewlett-packard', 'chuwi',
+  'teclast', 'system76', 'apple', 'intel', 'amd', 'ati', 'radeon', 'nvidia', 'geforce', 'qualcomm',
+  'mediatek', 'broadcom', 'realtek', 'marvell', 'logitech', 'corsair', 'steelseries', 'hyperx', 'kingston',
+  'micron', 'sandisk', 'seagate', 'adata', 'evga', 'zotac', 'sapphire', 'xfx', 'pny', 'nzxt', 'vmware',
+  'virtualbox', 'parallels', 'qemu',
+]);
+
 // Directories that put a path inside Windows itself: a path-valued
 // environment string under one of them (HOMEPATH=\Windows\system32 for
 // LocalSystem, USERPROFILE=C:\Windows\ServiceProfiles\LocalService) names
@@ -206,13 +226,39 @@ const RANK_USER = 0;
 const RANK_HOST = 1;
 const RANK_DERIVED = 2;
 
+// Case folding for names, one UTF-16 code unit at a time: the hunted-name
+// keys and the text walk must fold alike, and whole-string toLowerCase() does
+// not (final sigma depends on context, 'İ' becomes two code points), so both
+// use foldCode (issue #377). 'ς' folds to 'σ' and 'İ'/'ı' to 'i'; a unit
+// whose lowercase is not one unit stays as it is.
+const foldCache = new Uint16Array(0x10000);
+function foldCode(c) {
+  if (c < 0x80) return c >= 0x41 && c <= 0x5a ? c + 0x20 : c;
+  let folded = foldCache[c];
+  if (folded === 0) {
+    if (c === 0x3c2) folded = 0x3c3;
+    else if (c === 0x130 || c === 0x131) folded = 0x69;
+    else {
+      const lower = String.fromCharCode(c).toLowerCase();
+      folded = lower.length === 1 ? lower.charCodeAt(0) : c;
+    }
+    foldCache[c] = folded;
+  }
+  return folded;
+}
+function foldName(name) {
+  let out = '';
+  for (let i = 0; i < name.length; i++) out += String.fromCharCode(foldCode(name.charCodeAt(i)));
+  return out;
+}
+
 const isPersonal = name => {
-  const key = name.trim().toLowerCase();
+  const key = foldName(name.trim());
   return key.length > 0 && !key.startsWith('<') && !NON_PERSONAL.has(key);
 };
 
 /**
- * Names found in dump text, keyed by the lowercased name. A value is the
+ * Names found in dump text, keyed by the case-folded name (foldName). A value is the
  * candidate's replacement token, rank, occurrence count and first-seen order
  * (or just a token). Entries are replaced, never mutated, so a copied map can
  * be extended safely.
@@ -241,7 +287,7 @@ function addName(names, name, token, rank) {
 
 function addCandidate(names, name, token, rank) {
   const trimmed = name.trim();
-  const key = trimmed.toLowerCase();
+  const key = foldName(trimmed);
   if (trimmed.length < (BEYOND_LATIN1.test(trimmed) ? 2 : MIN_HUNTED_NAME) || !isPersonal(key)) return;
   const known = names.has(key) ? asCandidate(names.get(key), 0) : null;
   if (known) {
@@ -256,10 +302,30 @@ const asCandidate = (value, order) => (typeof value === 'string'
   ? { token: value, rank: RANK_USER, count: 1, order }
   : value);
 
-// "X:" ending at `index`, not preceded by another letter or digit.
-function driveBefore(text, index) {
-  if (index < 2 || text[index - 1] !== ':' || !/[A-Za-z]/.test(text[index - 2])) return false;
-  return index < 3 || !/[A-Za-z0-9]/.test(text[index - 3]);
+// Whether a forward-slash "/users/" is a URL path rather than a profile
+// folder (issues #364, #376) is decided by the token before it, which starts
+// after the last whitespace, quote, '=', bracket, ',', ';', '|' or control
+// character: a URL is "scheme://..." (not file:), a token starting with a host
+// (host.tld, localhost, host:port, IPv4), or one holding an API path segment
+// ("/api/", "/v9/"). Anything else (/mnt/c/Users/x, /c/Users/x, /Users/x,
+// D:/users/x, file:///C:/Users/x) is a path. Junk that still gets through is
+// outranked by real profile names (selectHuntedNames).
+const isUrlTokenBreak = c => c <= 0x20 || c === 0xa0 || c === 0x3000 || c === 0x22 || c === 0x27 || c === 0x60
+  || c === 0x3d || c === 0x28 || c === 0x29 || c === 0x3c || c === 0x3e || c === 0x5b || c === 0x5d
+  || c === 0x7b || c === 0x7d || c === 0x2c || c === 0x3b || c === 0x7c || c === 0x7f;
+const URL_SCHEME = /^([A-Za-z][A-Za-z0-9+.-]{0,31}):\/\//;
+const URL_HOST = /^(?:localhost|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?$|^[A-Za-z0-9.-]+:\d{1,5}$/i;
+const API_SEGMENT = /(?:^|\/)(?:api|v\d{1,2}(?:\.\d{1,2})?)\//i;
+const MAX_HOST_TOKEN = 300;
+
+// The prefix verdict (scheme or host) for a token starting at `from`, whose
+// first "/users/" is at `index`.
+function urlPrefix(text, from, index) {
+  const head = text.slice(from, Math.min(index, from + MAX_HOST_TOKEN));
+  const scheme = URL_SCHEME.exec(head);
+  if (scheme) return scheme[1].toLowerCase() !== 'file';
+  const slash = head.indexOf('/');
+  return URL_HOST.test(slash < 0 ? head : head.slice(0, slash));
 }
 
 // Profile-name and environment-value spans in `text`, plus the names they
@@ -270,15 +336,31 @@ function structuralSpans(text, names) {
   // before the match: tracked incrementally so the scan stays linear.
   let scanned = 0;
   let lineHasSpace = false;
+  // The URL token around the match (see urlPrefix), its verdict so far and
+  // how far it has been searched for API segments, all kept incrementally.
+  let tokenFrom = 0;
+  let verdictFrom = -1;
+  let isUrl = false;
+  let apiChecked = 0;
   for (const m of text.matchAll(PROFILE_PATH)) {
     for (; scanned < m.index; scanned++) {
       const c = text.charCodeAt(scanned);
       if (c < 0x20) lineHasSpace = false;
       else if (c === 0x20 || c === 0xa0 || c === 0x3000) lineHasSpace = true;
+      if (isUrlTokenBreak(c)) tokenFrom = scanned + 1;
     }
-    // "/users/" counts only right after a drive letter (D:/users/x,
-    // file:///C:/Users/x): elsewhere it is a URL path, not a profile folder.
-    if (m[1][0] === '/' && !driveBefore(text, m.index)) continue;
+    // A forward-slash "/users/" in a URL is not a profile folder.
+    if (m[1][0] === '/') {
+      if (verdictFrom !== tokenFrom) {
+        verdictFrom = apiChecked = tokenFrom;
+        isUrl = urlPrefix(text, tokenFrom, m.index);
+      }
+      if (!isUrl) {
+        isUrl = API_SEGMENT.test(text.slice(apiChecked, m.index + 1));
+        apiChecked = m.index;
+      }
+      if (isUrl) continue;
+    }
     const start = m.index + m[1].length;
     const { name, free } = profileNameOf(text, start, m[2], !lineHasSpace);
     if (!isPersonal(name)) continue;
@@ -323,12 +405,16 @@ export function collectPersonalNames(text, names = new Map()) {
   return names;
 }
 
-// The MAX_HUNTED_NAMES best candidates: rank, then occurrence count, then
-// first seen (issue #364).
+// The MAX_HUNTED_NAMES best candidates, vendor names left out (issue #381):
+// rank, then occurrence count, then first seen (issue #364).
 function selectHuntedNames(names) {
   let order = 0;
   const candidates = [];
-  for (const [key, value] of names) candidates.push([key, asCandidate(value, order++)]);
+  for (const [key, value] of names) {
+    const candidate = asCandidate(value, order++);
+    // Vendor names are redacted where found but never hunted (issue #381).
+    if (!VENDOR_NAMES.has(key)) candidates.push([key, candidate]);
+  }
   candidates.sort(([, a], [, b]) => a.rank - b.rank || b.count - a.count || a.order - b.order);
   return candidates.slice(0, MAX_HUNTED_NAMES).map(([key, { token }]) => [key, token]);
 }
@@ -367,13 +453,6 @@ const joined = (text, a, b) => {
   return cls !== null && cls === wordClass(text.charCodeAt(b));
 };
 
-// Lowercase of one UTF-16 code unit (itself when lowercasing changes length).
-function lowerCode(c) {
-  if (c < 0x80) return c >= 0x41 && c <= 0x5a ? c + 0x20 : c;
-  const lower = String.fromCharCode(c).toLowerCase();
-  return lower.length === 1 ? lower.charCodeAt(0) : c;
-}
-
 // Every whole-word, case-insensitive occurrence of `entries` ([name, token])
 // in `text`, pushed onto `spans`: the longest name wins at a position ("John
 // Smith" over "John"), and matches do not overlap. A trie of the names is
@@ -381,7 +460,9 @@ function lowerCode(c) {
 // linear in the text whatever the names are.
 function huntNames(text, entries, spans) {
   const root = new Map();
-  for (const [key, token] of entries) {
+  for (const [name, token] of entries) {
+    // Keys from collectPersonalNames are folded already; callers' own are not.
+    const key = foldName(name);
     let node = root;
     for (let i = 0; i < key.length; i++) {
       const c = key.charCodeAt(i);
@@ -392,7 +473,7 @@ function huntNames(text, entries, spans) {
     node.token = token;
   }
   for (let i = 0; i < text.length;) {
-    let node = root.get(lowerCode(text.charCodeAt(i)));
+    let node = root.get(foldCode(text.charCodeAt(i)));
     if (!node || joined(text, i - 1, i)) { i++; continue; }
     let end = -1;
     let token;
@@ -402,7 +483,7 @@ function huntNames(text, entries, spans) {
         token = node.token;
       }
       j++;
-      node = j < text.length ? node.get(lowerCode(text.charCodeAt(j))) : undefined;
+      node = j < text.length ? node.get(foldCode(text.charCodeAt(j))) : undefined;
     }
     if (end < 0) { i++; continue; }
     spans.push({ start: i, end, token });

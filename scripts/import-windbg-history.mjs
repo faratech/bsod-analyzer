@@ -14,12 +14,21 @@
 // hash, so each completed job counts once. Prints one baseline JSONL row.
 import fs from 'node:fs';
 import { extractStatsFacts, normalizeDumpType, utcDay } from '../server/stats.js';
+import { parseArgs, ArgsError } from './lib/args.mjs';
 
-const args = process.argv.slice(2);
-const before = Date.parse(args.find(a => a.startsWith('--before='))?.slice('--before='.length) || '');
-const input = args.find(a => !a.startsWith('--'));
-if (!input || !Number.isFinite(before)) {
-  console.error('usage: node scripts/import-windbg-history.mjs --before=<ISO cutover> <stats_backfill.jsonl>');
+const USAGE = 'usage: node scripts/import-windbg-history.mjs --before=<ISO cutover> <stats_backfill.jsonl>';
+let before;
+let input;
+try {
+  const { flags, positionals } = parseArgs(process.argv.slice(2), {
+    flags: { before: { type: 'string' } }, positionals: 1,
+  });
+  before = Date.parse(flags.before ?? '');
+  input = positionals[0];
+  if (!input || !Number.isFinite(before)) throw new ArgsError('--before <ISO time> and an input file are required');
+} catch (error) {
+  if (!(error instanceof ArgsError)) throw error;
+  console.error(`import-windbg-history: ${error.message}\n${USAGE}`);
   process.exit(1);
 }
 

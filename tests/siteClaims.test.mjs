@@ -23,6 +23,10 @@ test('/privacy says the WinDBG fallback sends dump strings and byte excerpts to 
   // and says exactly which names are found and what is not covered (#365).
   assert.match(text, /Before sending, your browser removes, from the byte excerpts as well as the text: the user folder name in Windows paths \(the folder after C:\\Users\), the user and computer names in environment strings such as USERNAME and COMPUTERNAME, email addresses, and other whole-word occurrences of up to 128 of the names found this way \(names of three or more characters, or two in scripts such as Chinese, Japanese or Korean\)\./);
   assert.match(text, /Names are recognized only by where they appear: a name, or part of one, that the dump shows only outside such a path, environment string or email address is not removed\./);
+  // Vendor names are not hunted as bare words (#381): the page says so.
+  assert.match(text, /A name that is also the name of a PC or hardware maker, such as Dell or NVIDIA, is removed from that path or environment string but not elsewhere, so hardware details stay readable\./);
+  const { VENDOR_NAMES } = await import('../shared/promptRedaction.js');
+  assert.ok(VENDOR_NAMES.has('dell') && VENDOR_NAMES.has('nvidia'), 'the page names vendors the redactor keeps');
   assert.doesNotMatch(text, /user folder names, the user and computer names in environment strings, and email addresses removed first/);
   assert.match(text, /stored with the report/);
   const { MAX_HUNTED_NAMES } = await import('../shared/promptRedaction.js');

@@ -403,6 +403,91 @@ test('URL paths are neither redacted nor harvested; Windows forward-slash paths 
   assert.equal(redact('file:///C:/Users/jsmith/x.txt'), 'file:///C:/Users/<user>/x.txt');
 });
 
+// Issue #376: #364 required a drive letter before a forward-slash "/users/",
+// so WSL, Git Bash/MSYS and macOS-style profile paths leaked again.
+test('forward-slash profile paths without a drive letter are profile paths, not URLs (issue #376)', () => {
+  const cases = [
+    ['cd /mnt/c/Users/jsmith/projects\nowner jsmith', 'cd /mnt/c/Users/<user>/projects\nowner <user>'],
+    ['/c/Users/jsmith/.bashrc', '/c/Users/<user>/.bashrc'],
+    ['HOME=/Users/jsmith/Library x', 'HOME=/Users/<user>/Library x'],
+    ['source "/c/Users/jsmith/.profile"', 'source "/c/Users/<user>/.profile"'],
+    ['PATH:/mnt/d/users/jsmith/bin', 'PATH:/mnt/d/users/<user>/bin'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(redact(input), expected, input);
+    assert.deepEqual([...collectPersonalNames(input).keys()], ['jsmith'], input);
+  }
+  // The hex views (issue #359) take the same rule: Latin-1 and UTF-16LE.
+  for (const encoding of ['latin1', 'utf16le']) {
+    const bytes = Buffer.from('xx/mnt/c/Users/jsmith/p\0seen by jsmith\0', encoding);
+    const out = Buffer.from(redactPersonalBytes(new Uint8Array(bytes))).toString(encoding);
+    assert.equal(out, 'xx/mnt/c/Users/******/p\0seen by ******\0', encoding);
+  }
+  // URLs stay untouched and harvest nothing (#364), whatever the scheme.
+  for (const url of [
+    'https://api.example.com/users/u1000',
+    'discord.com/api/v9/users/@me',
+    'see https://discord.com/api/v9/users/123456/profile',
+    'ws://10.0.0.5:9000/users/u42/feed',
+    'localhost:3000/users/jsmith',
+    '/api/v1/users/u77/settings',
+  ]) {
+    assert.equal(redact(url), url, url);
+    assert.deepEqual([...collectPersonalNames(url).keys()], [], url);
+  }
+  // file: URLs are local paths.
+  assert.equal(redact('file:///Users/jsmith/x.txt'), 'file:///Users/<user>/x.txt');
+  // URL spam before a WSL path does not keep its name from being hunted.
+  const urls = Array.from({ length: 200 }, (_, i) => `https://api.example.com/users/u${1000 + i}`);
+  assert.match(redact([...urls, '/mnt/c/Users/jsmith/x', 'mapped by jsmith'].join('\n')), /\/mnt\/c\/Users\/<user>\/x\nmapped by <user>$/);
+  // The URL test reads each token once, however many /users/ it holds.
+  assertScalesLinearly('chained /users/', redact, n => '/users/ab'.repeat(20_000 * n));
+  assertScalesLinearly('long URL path', redact, n => 'https://x.com' + '/v1/users/ab'.repeat(20_000 * n));
+});
+
+// Issue #377: the hunted-name keys were lowercased as whole strings (final
+// sigma, İ -> i + U+0307) but the text one code unit at a time, so they never
+// met for those characters.
+test('hunted names match whatever their case mapping (Greek final sigma, Turkish İ/ı, German ß) (issue #377)', () => {
+  const cases = [
+    ['USERNAME=ΟΔΥΣΣΕΥΣ\nhello ΟΔΥΣΣΕΥΣ and Οδυσσευς and οδυσσευς', 'USERNAME=<user>\nhello <user> and <user> and <user>'],
+    ['USERNAME=Οδυσσευς\nhello ΟΔΥΣΣΕΥΣ', 'USERNAME=<user>\nhello <user>'],
+    ['C:\\Users\\İbrahim\\AppData\\x\nowner İbrahim, İBRAHIM', 'C:\\Users\\<user>\\AppData\\x\nowner <user>, <user>'],
+    ['C:\\Users\\ılgın\\x\nby ILGIN and Ilgın', 'C:\\Users\\<user>\\x\nby <user> and <user>'],
+    ['C:\\Users\\Weiß\\x\nby WEIß and weiß and WEIẞ', 'C:\\Users\\<user>\\x\nby <user> and <user> and <user>'],
+    ['USERNAME=JoHn.SmItH\nfrom john.smith and JOHN.SMITH', 'USERNAME=<user>\nfrom <user> and <user>'],
+  ];
+  for (const [input, expected] of cases) assert.equal(redact(input), expected, input);
+  // The same names hunted from collected names into another text (and bytes).
+  const names = collectPersonalNames('C:\\Users\\İbrahim\\x');
+  assert.equal(redact('signed İbrahim', { names }), 'signed <user>');
+  const bytes = Buffer.from('USERNAME=ΟΔΥΣΣΕΥΣ\0by Οδυσσευς\0', 'utf16le');
+  assert.equal(Buffer.from(redactPersonalBytes(new Uint8Array(bytes))).toString('utf16le'), 'USERNAME=********\0by ********\0');
+});
+
+// Issue #381: OEM and shop-built PCs ship with vendor-named accounts; hunting
+// "Dell" everywhere erased the BIOS vendor and system model.
+test('vendor-named profiles are masked in their paths and env values but not hunted as bare words (issue #381)', async () => {
+  const { VENDOR_NAMES } = await import('../shared/promptRedaction.js');
+  for (const vendor of ['dell', 'asus', 'acer', 'lenovo', 'msi', 'samsung', 'toshiba', 'gigabyte', 'razer', 'alienware', 'intel', 'amd', 'nvidia', 'realtek']) {
+    assert.ok(VENDOR_NAMES.has(vendor), vendor);
+  }
+  assert.equal(
+    redact('C:\\Users\\Dell\\AppData\\x.dll\nBIOS Vendor: Dell Inc.\nSystem: Dell G15 5515'),
+    'C:\\Users\\<user>\\AppData\\x.dll\nBIOS Vendor: Dell Inc.\nSystem: Dell G15 5515'
+  );
+  assert.equal(
+    redact('USERNAME=NVIDIA\nUSERPROFILE=C:\\Users\\ASUS\nnvlddmkm.sys NVIDIA Corporation, ASUSTeK ASUS ROG'),
+    'USERNAME=<user>\nUSERPROFILE=C:\\Users\\<user>\nnvlddmkm.sys NVIDIA Corporation, ASUSTeK ASUS ROG'
+  );
+  // A vendor word inside a longer name keeps the longer name hunted.
+  assert.equal(redact('C:\\Users\\Dell User\\x\nowner Dell User; Dell Inc.'), 'C:\\Users\\<user>\\x\nowner <user>; Dell Inc.');
+  // Other names are still hunted; and so are the bytes of the hex views.
+  assert.equal(redact('C:\\Users\\jsmith\\x\nby jsmith'), 'C:\\Users\\<user>\\x\nby <user>');
+  const bytes = Buffer.from('C:\\Users\\Lenovo\\x\0Lenovo ThinkPad\0', 'utf16le');
+  assert.equal(Buffer.from(redactPersonalBytes(new Uint8Array(bytes))).toString('utf16le'), 'C:\\Users\\******\\x\0Lenovo ThinkPad\0');
+});
+
 test('hunted names are ranked so junk cannot crowd out the real name, and capped (issue #364)', async () => {
   const { MAX_HUNTED_NAMES } = await import('../shared/promptRedaction.js');
   assert.ok(MAX_HUNTED_NAMES >= 128, String(MAX_HUNTED_NAMES));
@@ -515,4 +600,22 @@ test('the email scan finds exactly what the former email regex found (issue #367
     for (let len = random(24); len > 0; len--) s += alphabet[random(alphabet.length)];
     assert.equal(redact(s), s.replace(reference, '<email>'), JSON.stringify(s));
   }
+});
+
+// Issue #382: no test hunted a name longer than 16 characters, so capping the
+// trie walk below MAX_HUNTED_NAME (64) went unnoticed.
+test('names up to 64 characters are hunted whole; longer ones are masked only where found (issue #382)', () => {
+  assert.equal(
+    redact('USERPROFILE=C:\\Users\\Christopher Johnson\nsigned by Christopher Johnson.'),
+    'USERPROFILE=C:\\Users\\<user>\nsigned by <user>.'
+  );
+  const long = 'Maximilian-Alexander Wolfgang Bartholomew von Hohenzollern-Sigm';
+  assert.equal(long.length, 63);
+  for (const name of [long, `${long}x`]) {
+    assert.equal(redact(`USERNAME=${name}\nowner ${name}!`), 'USERNAME=<user>\nowner <user>!', name);
+  }
+  // Past 64 characters a name is not hunted (MAX_HUNTED_NAME); its path
+  // segment and environment value are still masked.
+  const tooLong = `${long}xy`;
+  assert.equal(redact(`USERNAME=${tooLong}\nowner ${tooLong}!`), `USERNAME=<user>\nowner ${tooLong}!`);
 });

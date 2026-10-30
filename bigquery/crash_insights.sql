@@ -52,11 +52,11 @@ SELECT CURRENT_TIMESTAMP() AS generated_at, TO_JSON_STRING(STRUCT(
   ARRAY(SELECT AS STRUCT windows_release AS k, COUNT(*) AS n FROM t GROUP BY 1 ORDER BY n DESC) AS windows_releases,
   ARRAY(SELECT AS STRUCT IFNULL(product_type, 'Unknown') AS k, COUNT(*) AS n FROM t GROUP BY 1 ORDER BY n DESC) AS product_types,
   ARRAY(SELECT AS STRUCT k, COUNT(*) AS n, MIN(o) AS o FROM (
-    SELECT CASE WHEN processor_count <= 4 THEN '2-4' WHEN processor_count <= 8 THEN '6-8' WHEN processor_count <= 12 THEN '10-12'
-      WHEN processor_count <= 16 THEN '14-16' WHEN processor_count <= 24 THEN '18-24' WHEN processor_count <= 32 THEN '28-32' ELSE '33+' END AS k,
+    SELECT CASE WHEN processor_count <= 4 THEN '1-4' WHEN processor_count <= 8 THEN '5-8' WHEN processor_count <= 12 THEN '9-12'
+      WHEN processor_count <= 16 THEN '13-16' WHEN processor_count <= 24 THEN '17-24' WHEN processor_count <= 32 THEN '25-32' ELSE '33+' END AS k,
       CASE WHEN processor_count <= 4 THEN 1 WHEN processor_count <= 8 THEN 2 WHEN processor_count <= 12 THEN 3
       WHEN processor_count <= 16 THEN 4 WHEN processor_count <= 24 THEN 5 WHEN processor_count <= 32 THEN 6 ELSE 7 END AS o
-    FROM t WHERE processor_count IS NOT NULL) GROUP BY k ORDER BY o) AS cpu_threads,
+    FROM t WHERE processor_count > 0) GROUP BY k ORDER BY o) AS cpu_threads,
   ARRAY(SELECT AS STRUCT gpu_stack AS k, COUNT(*) AS n FROM t WHERE gpu_stack IS NOT NULL GROUP BY 1 ORDER BY n DESC) AS gpu_stacks,
   ARRAY(SELECT AS STRUCT category AS k, COUNT(DISTINCT job_id) AS n FROM drivers WHERE category IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 10) AS ai_driver_categories,
   ARRAY(SELECT AS STRUCT manufacturer AS k, COUNT(DISTINCT job_id) AS n FROM drivers WHERE manufacturer != 'Unknown' GROUP BY 1 ORDER BY n DESC LIMIT 12) AS ai_manufacturers,

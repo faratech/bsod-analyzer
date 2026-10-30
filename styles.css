@@ -2494,8 +2494,11 @@ body.mobile-menu-open .header {
    Browsers without :has() drop those rules and keep the themed bar.
    .ad-container.sticky-ad outranks adsense-fix.css's later .ad-container
    (position: relative). */
+/* The bar holds a unit up to 100px tall plus its 0.5rem padding top and
+   bottom (border-box), so a filled unit is never clipped (issue #378); the
+   page padding below equals the bar height. */
 :root {
-  --sticky-ad-height: 100px;
+  --sticky-ad-height: calc(100px + 1rem);
 }
 
 .ad-container.sticky-ad {
@@ -2520,7 +2523,7 @@ body.mobile-menu-open .header {
 }
 
 .sticky-ad .adsbygoogle {
-  max-height: 100px;
+  max-height: calc(var(--sticky-ad-height) - 1rem);
 }
 
 /* Hide ads on very small screens for better UX */
