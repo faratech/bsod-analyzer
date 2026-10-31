@@ -3173,8 +3173,8 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .analyzer-summary .btn { margin-left: auto; }
 .analyzer-live > .container { display: flex; flex-direction: column; gap: 0.6rem; min-height: 0; width: 100%; padding: 0.75rem 1.5rem 1rem; }
 
-.progress { --pt: var(--brand-accent); --on: color-mix(in srgb, var(--brand-primary) 80%, transparent); --lens: color-mix(in srgb, var(--brand-primary) 34%, transparent); position: relative; flex: 1; min-height: 0; container: progress / size; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 1rem; padding: 1.4rem 1.5rem 1rem; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--glass-bg); }
-.light .progress { --pt: var(--brand-secondary); }
+.progress { --glow: var(--brand-primary); --ga: 34%; --teal: #14b8a6; isolation: isolate; --pt: var(--brand-accent); --on: color-mix(in srgb, var(--brand-primary) 80%, transparent); --lens: color-mix(in srgb, var(--brand-primary) 34%, transparent); position: relative; flex: 1; min-height: 0; container: progress / size; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 1rem; padding: 1.4rem 1.5rem 1rem; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--glass-bg); }
+.light .progress { --pt: var(--brand-secondary); --ga: 16%; --teal: #0d9488; }
 @media (max-width: 640px) { .progress { padding: 1rem 0.9rem 0.75rem; gap: 0.75rem; } }
 @media (max-height: 720px) { .progress { padding: 0.9rem 1.1rem 0.7rem; gap: 0.6rem; } .analyzer-live .ad-header { margin-top: 0.5rem; } }
 .progress-bar { position: absolute; inset: 0 0 auto; height: 3px; background: var(--border-primary); }
@@ -3191,7 +3191,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .progress-time .warn { color: var(--status-warning); }
 
 .progress-body { container: body / size; display: grid; grid-template-columns: minmax(0, 1fr) 17rem; gap: 1.25rem; min-height: 0; }
-.progress-mem { min-height: 0; padding: 10px; border: 1px solid var(--border-primary); border-radius: 14px; background: var(--bg-primary); }
+.progress-mem { position: relative; overflow: hidden; min-height: 0; padding: 10px; border: 1px solid var(--border-primary); border-radius: 14px; background: var(--bg-primary); }
 /* One masked element draws the grid (22px tiles, 3px gaps); its child is the light that moves under the mask. */
 .progress-cells { --g: 22px; position: relative; height: 100%; overflow: hidden; background: color-mix(in srgb, var(--brand-accent) 8%, transparent); mask-image: linear-gradient(90deg, #000 calc(var(--g) - 3px), #0000 0), linear-gradient(#000 calc(var(--g) - 3px), #0000 0); mask-size: var(--g) var(--g); mask-composite: intersect; }
 .progress-cells i { position: absolute; inset: 0; background: var(--on); }
@@ -3205,12 +3205,6 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 [data-s="complete"] .progress-bar i { background: var(--status-success); }
 
 .progress-side { display: flex; flex-direction: column; gap: 0.9rem; min-height: 0; }
-.progress-face { flex: none; align-self: center; width: 5.25rem; height: 5.25rem; }
-.progress-face rect { fill: var(--brand-primary); transition: fill 0.5s; }
-.progress-face circle { fill: #fff; transform-box: fill-box; transform-origin: center; animation: progress-blink 4.6s infinite; }
-.progress-face path { fill: none; stroke: #fff; stroke-width: 6; stroke-linecap: round; transform-box: fill-box; transform-origin: center; transition: transform 0.4s; }
-[data-s="complete"] .progress-face rect { fill: var(--status-success); }
-[data-s="complete"] .progress-face path { transform: scaleY(-1); }
 
 .progress-steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .progress-step { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; padding: 6px 0; }
@@ -3222,6 +3216,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .progress-step[data-state="done"] .progress-node::after, .analyzer-summary .progress-node::after { content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 9px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .progress-step[data-state="active"] .progress-node { border-color: var(--brand-primary) #0000 var(--brand-primary) var(--brand-primary); animation: spin 0.9s linear infinite; }
 .progress-step[data-state="skip"] .progress-node { border-style: dashed; }
+.progress-txt { min-width: 0; }
 .progress-label { display: block; font-size: 0.875rem; font-weight: 600; color: var(--text-secondary); }
 [data-state="active"] .progress-label, [data-state="done"] .progress-label { color: var(--text-primary); }
 
@@ -3230,11 +3225,206 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .progress-fact b { font-size: 0.7rem; line-height: 1.7; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pt); white-space: nowrap; }
 .progress-fact p { min-height: 3em; font-size: 0.85rem; animation: progress-fade 0.5s; }
 
+/* The mascot, the stage effects, the thought bubble and the log. */
+.progress-fw { position: relative; flex: none; align-self: center; line-height: 0; }
+
+.progress { --glow: var(--brand-primary); --ga: 34%; --teal: #14b8a6; isolation: isolate; border-color: color-mix(in srgb, var(--glow) 38%, var(--glass-border)); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent); }
+.light .progress { --ga: 16%; --teal: #0d9488; }
+.progress[data-s="analyzing"] { --glow: var(--teal); --on: color-mix(in srgb, var(--teal) 78%, transparent); --lens: color-mix(in srgb, var(--teal) 42%, transparent); }
+.progress[data-s="complete"] { --glow: var(--status-success); }
+
+/* aurora: two soft lights drifting behind the content, tinted by the stage */
+.progress::before, .progress::after { content: ""; position: absolute; z-index: -1; width: 65%; height: 80%; border-radius: 50%; pointer-events: none; background: radial-gradient(closest-side, color-mix(in srgb, var(--glow) var(--ga), transparent), transparent); }
+.progress::before { left: -12%; top: -30%; animation: progress-drift 14s ease-in-out infinite alternate; }
+.progress::after { right: -12%; bottom: -35%; animation: progress-drift 18s ease-in-out infinite alternate-reverse; }
+
+/* bloom: the lit cells glow */
+.progress-mem { filter: drop-shadow(0 0 14px color-mix(in srgb, var(--glow) 45%, transparent)); }
+.light .progress-mem { filter: none; }
+[data-s="uploading"] .progress-cells i { border-right: 2px solid var(--brand-accent); }
+[data-s="complete"] .progress-cells i { animation: progress-bloom 0.9s ease-out, progress-glint 3s 1s ease-in-out infinite; }
+
+/* every stage change sweeps a flash across the card (a remounted element in the app; two names here to restart it) */
+.progress-flash { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: 0; animation: progress-flash 0.9s ease-out; background: linear-gradient(100deg, #0000 30%, color-mix(in srgb, var(--glow) 38%, transparent) 50%, #0000 70%); }
+
+/* a glowing progress head, a shining title, steps that pop and pulse */
+.progress-bar i { box-shadow: 0 0 12px 1px var(--glow); }
+@media (forced-colors: none) { .progress .progress-title { background: linear-gradient(100deg, var(--text-primary) 40%, var(--pt) 50%, var(--text-primary) 60%) 100% 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: progress-shine 3.2s linear infinite; } }
+[data-s="complete"] .progress-title { animation: none; background: none; color: var(--text-primary); }
+.progress-step[data-state="done"] .progress-node { animation: progress-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1); }
+.progress-step[data-state="active"] .progress-node { animation: spin 0.9s linear infinite, progress-halo 1.6s ease-out infinite; }
+
+/* the face: it bobs, follows the scan, and celebrates */
+.progress-fw { animation: progress-bob 3.6s ease-in-out infinite; }
+[data-s="processing"] .progress-eyes { animation: progress-look 3.6s linear infinite; }
+[data-s="complete"] .progress-fw { animation: progress-bounce 0.7s cubic-bezier(0.3, 1.6, 0.5, 1); }
+[data-s="complete"] .progress-fw::before { content: ""; position: absolute; inset: -6px; border: 2px solid var(--status-success); border-radius: 30px; animation: progress-ring 0.9s ease-out forwards; }
+[data-s="complete"] .progress-fw::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; animation: progress-burst 0.9s ease-out forwards; box-shadow: 0 -48px #6ee7b7, 34px -34px #34d399, 48px 0 #6ee7b7, 34px 34px #34d399, 0 48px #6ee7b7, -34px 34px #34d399, -48px 0 #6ee7b7, -34px -34px #34d399; }
+
+.progress-fx { position: absolute; inset: 0; pointer-events: none; }
+.progress-mem::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(#0000 0 2px, rgba(0, 0, 0, 0.16) 2px 3px); }
+.light .progress-mem::after { opacity: 0.25; }
+
+/* ghost step numeral, outlined, bottom right of the grid */
+.progress-fx::after { position: absolute; right: 14px; bottom: -0.12em; font: 800 min(9rem, 46cqh) / 1 ui-monospace, monospace; color: transparent; -webkit-text-stroke: 2px color-mix(in srgb, var(--glow) 20%, transparent); }
+[data-s="uploading"] .progress-fx::after { content: "01"; }
+[data-s="queued"] .progress-fx::after { content: "02"; }
+[data-s="processing"] .progress-fx::after { content: "03"; }
+[data-s="downloading"] .progress-fx::after { content: "04"; }
+[data-s="analyzing"] .progress-fx::after { content: "05"; }
+[data-s="complete"] .progress-fx::after { content: "OK"; }
+
+/* particles: one set of twelve, a different behaviour per stage */
+.progress-fx b { position: absolute; width: 6px; height: 6px; border-radius: 2px; background: var(--glow); opacity: 0; }
+[data-s="uploading"] .progress-fx b { animation: progress-fly 2.2s linear infinite; }
+[data-s="queued"] .progress-fx b { top: 100% !important; width: 4px; height: 4px; border-radius: 50%; animation: progress-rise 7s linear infinite; }
+[data-s="processing"] .progress-fx b { width: 4px; height: 4px; border-radius: 50%; background: var(--brand-accent); animation: progress-spark 1.3s ease-in-out infinite; }
+[data-s="downloading"] .progress-fx b { top: -12px !important; animation: progress-fall 2.4s linear infinite; }
+[data-s="analyzing"] .progress-fx b { top: 100% !important; width: 5px; height: 5px; border-radius: 50%; animation: progress-rise 3.4s ease-in infinite; }
+[data-s="complete"] .progress-fx b { top: -12px !important; width: 7px; height: 10px; animation: progress-confetti 2.6s linear infinite; }
+[data-s="complete"] .progress-fx b:nth-child(3n) { background: #fbbf24; }
+[data-s="complete"] .progress-fx b:nth-child(3n+1) { background: #6ee7b7; }
+[data-s="complete"] .progress-fx b:nth-child(3n+2) { background: #f472b6; }
+
+/* a typing log in the corner of the grid */
+.progress-log { display: flex; flex-direction: column; gap: 2px; position: absolute; left: 14px; bottom: 12px; z-index: 1; padding: 6px 10px; border: 1px solid var(--border-primary); border-radius: 8px; background: color-mix(in srgb, var(--bg-primary) 74%, transparent); font: 11px/1.5 ui-monospace, monospace; color: var(--text-primary); }
+.progress-log span { display: block; white-space: nowrap; animation: progress-type 7s steps(26) infinite; }
+.progress-log span::before { content: "\25B8  "; color: var(--pt); }
+.progress-log span:nth-child(2) { animation-delay: 0.9s; }
+.progress-log span:nth-child(3) { animation-delay: 1.8s; }
+@container body (max-height: 200px) { .progress-log { display: none; } }
+
+/* the active step shows what it is doing */
+.progress-txt { min-width: 0; }
+.progress-cmd { display: none; font: 11px/1.4 ui-monospace, monospace; color: var(--pt); }
+.progress-step[data-state="active"] .progress-cmd, [data-state="skip"] .progress-cmd { display: block; }
+[data-state="skip"] .progress-cmd { color: var(--status-warning); }
+.progress-step[data-state="active"] .progress-cmd::after { content: ""; display: inline-block; width: 6px; height: 11px; margin-left: 3px; vertical-align: -2px; background: currentColor; animation: progress-caret 1s steps(2) infinite; }
+
+/* ======== the gremlin: an original blue-screen creature, one pose set per stage ======== */
+.gr { display: block; width: 6.5rem; height: 6.5rem; overflow: visible; }
+.gr * { transform-box: fill-box; }
+.gr-head { fill: var(--brand-primary); transition: fill 0.5s; }
+.gr-screen { fill: color-mix(in srgb, var(--brand-primary) 42%, #000); transition: fill 0.5s; }
+.gr-ear, .gr-limb { fill: var(--brand-secondary); transition: fill 0.5s; }
+.gr-stem { stroke: var(--brand-secondary); stroke-width: 3; stroke-linecap: round; }
+.gr-bulb { fill: var(--brand-accent); transform-origin: center; animation: progress-pulse 2s ease-in-out infinite; }
+.gr-eye { fill: #fff; transform-origin: center; animation: progress-blink 4.6s infinite; }
+.gr-eyes { transition: translate 0.5s, scale 0.5s; transform-origin: center; }
+.gr-mouth { fill: none; stroke: #fff; stroke-width: 5; stroke-linecap: round; transform-origin: center; transition: transform 0.4s; }
+.gr-al { transform-origin: 100% 50%; }
+.gr-ar { transform-origin: 0 50%; }
+.gr-fl, .gr-fr { transform-origin: 50% 0; }
+.gr-prop { opacity: 0; }
+.gr-mag circle { fill: none; stroke: #fff; stroke-width: 3; }
+.gr-mag line { stroke: #fff; stroke-width: 3.5; stroke-linecap: round; }
+.gr-gear { fill: none; stroke: var(--teal, #14b8a6); stroke-width: 5; stroke-dasharray: 4.2 3.2; transform-origin: center; }
+.gr-z { fill: var(--brand-accent); font: 700 12px ui-monospace, monospace; }
+.gr-blk, .gr-crate { fill: var(--brand-accent); }
+
+/* uploading: pumping arms, a crate pushed along */
+[data-s="uploading"] .gr-al { animation: progress-pump 0.6s ease-in-out infinite alternate; }
+[data-s="uploading"] .gr-ar { animation: progress-pump 0.6s ease-in-out infinite alternate-reverse; }
+[data-s="uploading"] .gr-crate { opacity: 1; animation: progress-push 1.6s linear infinite; }
+/* queued: foot tapping, ears twitching, eyes drooping, zzz */
+[data-s="queued"] .gr-fl { animation: progress-tap 0.5s ease-in-out infinite alternate; }
+[data-s="queued"] .gr-ear { animation: progress-twitch 2.4s ease-in-out infinite; }
+[data-s="queued"] .gr-eyes { scale: 1 0.5; }
+[data-s="queued"] .gr-z { animation: progress-z 2.4s ease-out infinite; }
+[data-s="queued"] .gr-z2 { animation-delay: 0.8s; }
+[data-s="queued"] .gr-z3 { animation-delay: 1.6s; }
+/* processing: a magnifier sweeping with the scan, eyes following it */
+[data-s="processing"] .gr-ar { rotate: -28deg; }
+[data-s="processing"] .gr-mag { opacity: 1; animation: progress-look 3.6s linear infinite; }
+[data-s="processing"] .gr-eyes { animation: progress-look 3.6s linear infinite; }
+[data-s="processing"] .gr-bulb { animation: progress-flicker 0.7s steps(2) infinite; }
+/* downloading: arms up, catching falling blocks */
+[data-s="downloading"] .gr-al { rotate: 55deg; }
+[data-s="downloading"] .gr-ar { rotate: -55deg; }
+[data-s="downloading"] .gr-blk { animation: progress-catch 1.6s ease-in infinite; }
+[data-s="downloading"] .gr-blk2 { animation-delay: 0.8s; }
+/* analyzing: a hand on the chin, a gear turning, a teal glow */
+[data-s="analyzing"] .gr-ar { rotate: -105deg; }
+[data-s="analyzing"] .gr-gear { opacity: 1; animation: spin 2.4s linear infinite; }
+[data-s="analyzing"] .gr-eyes { translate: 3px -3px; }
+[data-s="analyzing"] .gr-bulb { fill: var(--teal, #14b8a6); animation-duration: 0.9s; }
+/* complete: arms in the air, a smile, green */
+[data-s="complete"] .gr-head { fill: var(--status-success); }
+[data-s="complete"] .gr-screen { fill: color-mix(in srgb, var(--status-success) 42%, #000); }
+[data-s="complete"] .gr-ear, [data-s="complete"] .gr-limb { fill: color-mix(in srgb, var(--status-success) 62%, #000); }
+[data-s="complete"] .gr-al { rotate: 70deg; animation: progress-cheer 0.5s ease-in-out infinite alternate; }
+[data-s="complete"] .gr-ar { rotate: -70deg; animation: progress-cheerR 0.5s ease-in-out infinite alternate; }
+[data-s="complete"] .gr-mouth { transform: scaleY(-1); }
+
+.progress-fw { align-self: flex-start; }
+@container progress (max-width: 620px) or (max-height: 480px) { .progress-fw { align-self: center; } }
+.gr-top { transform-origin: 50% 100%; }
+.gr-yawn { fill: #fff; opacity: 0; transform-origin: center; }
+.gr-sweat { fill: #7dd3fc; }
+.gr-jug { fill: var(--brand-accent); }
+.gr-q, .gr-bang, .gr-note { fill: #fff; font: 800 18px ui-sans-serif, system-ui, sans-serif; }
+.gr-note { fill: var(--brand-accent); }
+
+/* the thought bubble: stage thoughts rotate, an antic brings its own */
+.progress-think { position: absolute; left: calc(100% + 14px); top: -4px; z-index: 3; display: grid; width: max-content; max-width: 9.5rem; padding: 7px 11px; border: 1px solid var(--border-secondary); border-radius: 16px; background: var(--bg-primary); box-shadow: 0 6px 16px -8px var(--shadow-color); font: 600 12px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--text-primary); animation: progress-popin 0.4s cubic-bezier(0.3, 1.6, 0.5, 1); }
+.progress-think::before, .progress-think::after { content: ""; position: absolute; border: 1px solid var(--border-secondary); border-radius: 50%; background: var(--bg-primary); }
+.progress-think::before { left: -9px; top: 68%; width: 10px; height: 10px; }
+.progress-think::after { left: -18px; top: 92%; width: 6px; height: 6px; }
+.progress-think span { grid-area: 1 / 1; opacity: 0; animation: progress-thought 7.5s infinite; }
+.progress-think span:nth-child(2) { animation-delay: 2.5s; }
+.progress-think span:nth-child(3) { animation-delay: 5s; }
+.progress-think span:only-child { opacity: 1; animation: none; }
+@container progress (max-width: 620px) or (max-height: 480px) {
+  .progress-think { left: 0; top: auto; bottom: calc(100% + 14px); }
+  .progress-think::before { left: 16px; top: auto; bottom: -9px; }
+  .progress-think::after { left: 10px; top: auto; bottom: -17px; }
+}
+@container body (max-height: 200px) { .progress-think { display: none; } }
+
+/* a long wait: a sweat drop */
+[data-slow="true"] .gr-sweat { opacity: 1; animation: progress-sweat 1.6s ease-in infinite; }
+
+/* emotes */
+[data-s="processing"] .gr-q { animation: progress-emote 3.2s ease-in-out infinite; }
+[data-s="analyzing"] .gr-bang { animation: progress-emote 4.4s ease-in-out infinite; }
+[data-s="complete"] .gr-bang { animation: progress-emote 1.4s ease-in-out infinite; }
+
+/* antics: every few seconds he does something else (the page sets data-antic from the elapsed time) */
+.progress-fw[data-antic="1"] .gr-ar { rotate: -105deg; animation: progress-wave 0.45s ease-in-out infinite alternate; }
+.progress-fw[data-antic="1"] .gr-mouth { transform: scaleY(-1); }
+.progress-fw[data-antic="2"] .gr-eyes { animation: progress-scan 3.4s ease-in-out infinite; }
+.progress-fw[data-antic="2"] .gr-top { animation: progress-tilt 3.4s ease-in-out infinite; }
+.progress-fw[data-antic="3"] .gr-al { rotate: 62deg; }
+.progress-fw[data-antic="3"] .gr-ar { rotate: -62deg; }
+.progress-fw[data-antic="3"] .gr-eyes { scale: 1 0.2; }
+.progress-fw[data-antic="3"] .gr-mouth { opacity: 0; }
+.progress-fw[data-antic="3"] .gr-yawn { opacity: 1; animation: progress-yawn 2.4s ease-in-out infinite; }
+.progress-fw[data-antic="4"] .gr-jug { opacity: 1; animation: progress-juggle 1.2s linear infinite; }
+.progress-fw[data-antic="4"] .gr-jug2 { animation-delay: -0.4s; }
+.progress-fw[data-antic="4"] .gr-jug3 { animation-delay: -0.8s; }
+.progress-fw[data-antic="4"] .gr-al { animation: progress-pump 0.6s ease-in-out infinite alternate; }
+.progress-fw[data-antic="4"] .gr-ar { animation: progress-pump 0.6s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr { animation: progress-sway 0.8s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-fl { animation: progress-tap 0.4s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-fr { animation: progress-tap 0.4s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr-al { animation: progress-pump 0.8s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-ar { animation: progress-pump 0.8s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr-note { animation: progress-note 1.6s ease-out infinite; }
+.progress-fw[data-antic="6"] .gr-eyes { translate: 4px 3px; scale: 1.25; }
+.progress-fw[data-antic="6"] .gr-top { rotate: 8deg; }
+.progress-fw[data-antic="6"] .gr-q { animation: progress-emote 2.2s ease-in-out infinite; }
+.progress-fw[data-antic="7"] .gr { animation: progress-spin 1.1s ease-in-out 1; }
+.progress-fw[data-antic="8"] .gr-al { rotate: 35deg; animation: progress-flex 0.5s ease-in-out infinite alternate; }
+.progress-fw[data-antic="8"] .gr-ar { rotate: -35deg; animation: progress-flex 0.5s ease-in-out infinite alternate; }
+.progress-fw[data-antic="8"] .gr-bang { animation: progress-emote 1.6s ease-in-out infinite; }
+
 @container progress (max-width: 620px) or (max-height: 480px) {
   .progress-description { -webkit-line-clamp: 1; }
   .progress-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 0.75rem; }
   .progress-side { flex-direction: row; align-items: center; }
-  .progress-face { width: 3.5rem; height: 3.5rem; }
+  .gr { width: 4.4rem; height: 4.4rem; }
+  .progress-step[data-state="active"] .progress-cmd, .progress-step[data-state="skip"] .progress-cmd { display: none; }
+  .progress-log { top: 12px; bottom: auto; }
   .progress-steps { flex: 1; flex-direction: row; }
   .progress-step { display: flex; flex: 1; flex-direction: column; align-items: center; min-width: 0; padding: 0; gap: 5px; text-align: center; }
   .progress-step::before { left: calc(50% + 14px); right: calc(-50% + 14px); top: 9px; bottom: auto; width: auto; height: 2px; }
@@ -3250,6 +3440,47 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 @keyframes progress-bloom { from { clip-path: circle(0); } to { clip-path: circle(75%); } }
 @keyframes progress-blink { 94%, 100% { scale: 1; } 97% { scale: 1 0.1; } }
 @keyframes progress-fade { from { opacity: 0; } }
+@keyframes progress-drift { to { translate: 16% 12%; } }
+@keyframes progress-glint { 50% { opacity: 0.25; } }
+@keyframes progress-flash { from { translate: -100% 0; opacity: 1; } to { translate: 100% 0; opacity: 0; } }
+@keyframes progress-shine { to { background-position: 0 0; } }
+@keyframes progress-pop { from { scale: 0.4; } }
+@keyframes progress-halo { to { box-shadow: 0 0 0 10px #0000; } }
+@keyframes progress-bob { 50% { translate: 0 -4px; } }
+@keyframes progress-look { from { translate: -5px 0; } to { translate: 5px 0; } }
+@keyframes progress-bounce { 0% { scale: 0.7; } 60% { scale: 1.15; } }
+@keyframes progress-ring { from { scale: 0.8; opacity: 0.9; } to { scale: 1.9; opacity: 0; } }
+@keyframes progress-burst { from { scale: 0.2; opacity: 1; } to { scale: 1.5; opacity: 0; } }
+@keyframes progress-fly { 0% { opacity: 0; translate: 0 0; } 15% { opacity: 0.9; } 100% { opacity: 0; translate: 34cqw 0; } }
+@keyframes progress-rise { 0% { opacity: 0; translate: 0 0; } 20% { opacity: 0.8; } 100% { opacity: 0; translate: 6px -105cqh; } }
+@keyframes progress-spark { 0%, 100% { opacity: 0; scale: 0.4; } 50% { opacity: 1; scale: 1.6; } }
+@keyframes progress-fall { 0% { opacity: 0; translate: 0 0; } 10% { opacity: 0.9; } 100% { opacity: 0.2; translate: 0 105cqh; } }
+@keyframes progress-confetti { 0% { opacity: 1; translate: 0 0; rotate: 0deg; } 100% { opacity: 0.4; translate: 20px 105cqh; rotate: 540deg; } }
+@keyframes progress-type { 0% { clip-path: inset(0 100% 0 0); } 18%, 88% { clip-path: inset(0); } 100% { clip-path: inset(0 100% 0 0); } }
+@keyframes progress-caret { 50% { opacity: 0; } }
+@keyframes progress-pulse { 50% { opacity: 0.4; scale: 0.8; } }
+@keyframes progress-flicker { 50% { opacity: 0.2; } }
+@keyframes progress-pump { from { rotate: -28deg; } to { rotate: 28deg; } }
+@keyframes progress-push { 0% { opacity: 0; translate: 0 0; } 20% { opacity: 1; } 100% { opacity: 0; translate: 40px 0; } }
+@keyframes progress-tap { from { rotate: 0deg; } to { rotate: -22deg; } }
+@keyframes progress-twitch { 0%, 80%, 100% { rotate: 0deg; } 88% { rotate: -12deg; } 94% { rotate: 8deg; } }
+@keyframes progress-z { 0% { opacity: 0; translate: 0 6px; } 30% { opacity: 1; } 100% { opacity: 0; translate: 6px -14px; } }
+@keyframes progress-catch { 0% { opacity: 0; translate: 0 0; } 15% { opacity: 1; } 75% { opacity: 1; translate: 0 78px; } 100% { opacity: 0; translate: 0 84px; } }
+@keyframes progress-cheer { from { rotate: 55deg; } to { rotate: 85deg; } }
+@keyframes progress-cheerR { from { rotate: -55deg; } to { rotate: -85deg; } }
+@keyframes progress-popin { from { scale: 0.5; opacity: 0; } }
+@keyframes progress-thought { 0% { opacity: 0; translate: 0 4px; } 5%, 30% { opacity: 1; translate: 0 0; } 36%, 100% { opacity: 0; } }
+@keyframes progress-sweat { 0% { opacity: 1; translate: 0 0; } 100% { opacity: 0; translate: 0 14px; } }
+@keyframes progress-emote { 0%, 60%, 100% { opacity: 0; translate: 0 4px; } 70%, 90% { opacity: 1; translate: 0 -4px; } }
+@keyframes progress-wave { from { rotate: -85deg; } to { rotate: -125deg; } }
+@keyframes progress-scan { 0%, 100% { translate: 0 0; } 25% { translate: -5px 0; } 50% { translate: 5px 0; } 75% { translate: 0 -4px; } }
+@keyframes progress-tilt { 0%, 100% { rotate: 0deg; } 25% { rotate: -5deg; } 50% { rotate: 5deg; } }
+@keyframes progress-yawn { 0%, 100% { scale: 0.4; } 50% { scale: 1.3; } }
+@keyframes progress-juggle { 0% { translate: -24px 0; } 25% { translate: 0 -22px; } 50% { translate: 24px 0; } 75% { translate: 0 8px; } 100% { translate: -24px 0; } }
+@keyframes progress-sway { from { rotate: -6deg; } to { rotate: 6deg; } }
+@keyframes progress-note { 0% { opacity: 0; translate: 0 6px; } 30% { opacity: 1; } 100% { opacity: 0; translate: 10px -16px; } }
+@keyframes progress-spin { to { rotate: 360deg; } }
+@keyframes progress-flex { from { scale: 1; } to { scale: 1.25 1.4; } }
 
 
 /* ==========================================================================

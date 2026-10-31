@@ -31,6 +31,7 @@ test('purge-css keeps the classes the app builds dynamically or applies outside 
     '.confidence-windbg', '.confidence-fallback', '.confidence-mixed',
     '.related-match-both', '.related-match-module',
     ...[0, 1, 2, 3, 4, 5].map(n => `.heatmap-cell.step-${n}`),
+    '.gr-jug1', '.gr-jug3', '.gr-z1', '.gr-z3',
     '.app-embed',
   ];
   const purged = live.filter(selector => result.rejected.includes(selector));
