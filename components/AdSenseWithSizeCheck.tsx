@@ -34,10 +34,14 @@ const useElementWidth = (ref: React.RefObject<HTMLElement | null>, minWidth: num
 };
 
 // Enhanced Display Ad with size checking
-export const DisplayAdSafe: React.FC<AdProps> = ({ 
-  className = '', 
-  style = {}, 
-  minWidth = 200 
+// `fixed` places the unit manually at a size set in CSS (.ad-fixed-row: 320x100,
+// 468x60 or 728x90 by width) instead of letting AdSense pick one, so a page
+// that has to fit a screen is never resized by the creative that fills it.
+export const DisplayAdSafe: React.FC<AdProps & { fixed?: boolean }> = ({
+  className = '',
+  style = {},
+  minWidth = 200,
+  fixed = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const hasWidth = useElementWidth(containerRef, minWidth);
@@ -71,15 +75,15 @@ export const DisplayAdSafe: React.FC<AdProps> = ({
   if (isPremium) return null;
 
   return (
-    <div ref={containerRef} className={`ad-container ${className}`} style={{ minHeight: '90px', ...style }}>
+    <div ref={containerRef} className={`ad-container ${fixed ? 'ad-fixed-row ' : ''}${className}`} style={fixed ? style : { minHeight: '90px', ...style }}>
       {hasWidth && (
         <ins
           className="adsbygoogle"
-          style={{ display: 'block', minHeight: '90px' }}
+          style={fixed ? undefined : { display: 'block', minHeight: '90px' }}
           data-ad-client={ADSENSE_CONFIG.client}
           data-ad-slot={getAdSlot('headerDisplay')}
-          data-ad-format="auto"
-          data-full-width-responsive="true"
+          data-ad-format={fixed ? undefined : 'auto'}
+          data-full-width-responsive={fixed ? undefined : 'true'}
         />
       )}
     </div>

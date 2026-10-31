@@ -3157,9 +3157,16 @@ body.mobile-menu-open .header {
 }
 
 /* Analysis progress (components/AnalysisProgress.tsx): a card that fills the space the page gives it. */
-.analyzer-live { display: grid; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - 4.5rem - 1px); }
-@media (max-width: 480px) { .analyzer-live { height: calc(100dvh - 4rem - 1px); } }
-body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { height: calc(100dvh - 4.5rem - 1px - var(--sticky-ad-height)); }
+/* A manually placed ad: its box is the size of the unit, from first paint. */
+.ad-container.ad-fixed-row { --w: 320px; --h: 100px; min-height: var(--h); }
+@media (min-width: 500px) { .ad-container.ad-fixed-row { --w: 468px; --h: 60px; } }
+@media (min-width: 800px) { .ad-container.ad-fixed-row { --w: 728px; --h: 90px; } }
+.ad-fixed-row { text-align: center; }
+.ad-container.ad-fixed-row ins.adsbygoogle { display: inline-block; vertical-align: top; width: var(--w); height: var(--h); min-height: 0; }
+/* The page is at least one screen tall; a tall ad pushes it past that rather than squeezing the card below 24rem. */
+.analyzer-live { display: grid; grid-template-rows: auto minmax(24rem, 1fr); min-height: calc(100dvh - 4.5rem - 1px); }
+@media (max-width: 480px) { .analyzer-live { min-height: calc(100dvh - 4rem - 1px); } }
+body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: calc(100dvh - 4.5rem - 1px - var(--sticky-ad-height)); }
 .analyzer-live .ad-header { margin: 0.75rem auto 0; }
 .analyzer-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem 1.5rem; margin-top: 1rem; padding: 0.9rem 1.25rem; border: 1px solid var(--status-success); border-radius: 16px; background: var(--glass-bg); animation: progress-fade 0.5s; }
 .analyzer-summary small { display: block; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary); }
