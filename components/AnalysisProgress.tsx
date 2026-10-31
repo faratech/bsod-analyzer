@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Mascot from './Mascot';
+import { ACTS, type ActId } from '../utils/mascotActs';
+import { LONG_WAIT_ACT, chooseAct, type ScanStage } from '../utils/mascotPicks';
 
 interface AnalysisProgressProps {
     stage: 'uploading' | 'queued' | 'processing' | 'downloading' | 'analyzing' | 'complete';
     message?: string;
     startTime?: number;
     percentage?: number;
+    // How the report came out (utils/mascotReaction.ts): his reaction when the scan finishes.
+    reaction?: ActId;
 }
 
 const FACTS = [
@@ -16,27 +20,19 @@ const FACTS = [
 ];
 
 // The first five rows are the steps beside the grid (cmd is what the active step shows);
-// maxSeconds is a stage's own budget for the "taking longer" note, think is what the
-// mascot thinks, log is the typing log in the corner of the grid.
+// maxSeconds is a stage's own budget for the "taking longer" note, log is the typing log
+// in the corner of the grid. What the mascot does is picked in utils/mascotPicks.ts.
 const STAGES = [
-    { key: 'uploading', title: 'Uploading Dump File', description: 'Securely transferring your crash dump to the analysis server...', label: 'Upload', cmd: 'sending dump...', typical: 'typically 5–15 seconds', maxSeconds: 15,
-        think: ['heave ho!', 'shipping your dump...', 'steady... steady...'], log: ['sending dump.dmp', 'to the analysis server', 'keep this tab open'] },
-    { key: 'queued', title: 'Queued for Analysis', description: 'Your file is in the queue and will be processed shortly...', label: 'Queue', cmd: 'waiting for a debugger', typical: 'usually under a minute', maxSeconds: 60,
-        think: ['any minute now...', 'tap tap tap...', 'is it my turn?'], log: ['waiting for a free debugger', 'you are in the queue', 'this page updates itself'] },
-    { key: 'processing', title: 'WinDBG Analysis in Progress', description: 'Running professional debugging commands on your crash dump...', label: 'WinDBG', cmd: 'kd> !analyze -v', typical: 'usually 30–90 seconds', maxSeconds: 90,
-        think: ["let's see what broke", 'kd> hmm...', 'who touched my kernel?'], log: ['kd> !analyze -v', 'kd> lm', 'kd> k'] },
-    { key: 'downloading', title: 'Downloading Results', description: 'Retrieving the detailed analysis from WinDBG...', label: 'Fetch', cmd: 'fetching output', typical: 'a few seconds', maxSeconds: 10,
-        think: ['catch it!', 'nom nom bytes', 'one more block...'], log: ['fetching analysis output', 'receiving the results', 'nearly ready'] },
-    { key: 'analyzing', title: 'AI Analysis', description: 'Our AI is interpreting the crash data for you...', label: 'AI', cmd: 'explaining cause', typical: 'usually 10–30 seconds', maxSeconds: 30,
-        think: ['thinking...', 'hmm... hmm...', 'connecting the dots'], log: ['reading the stack and modules', 'weighing likely causes', 'drafting fixes'] },
-    { key: 'complete', title: 'Analysis Complete', description: 'Your crash analysis is ready!', label: '', cmd: '', typical: '', maxSeconds: 0,
-        think: ['got it!', "report's ready", 'high five!'], log: ['analysis complete', 'report ready', 'scroll for the details'] },
+    { key: 'uploading', title: 'Uploading Dump File', description: 'Securely transferring your crash dump to the analysis server...', label: 'Upload', cmd: 'sending dump...', typical: 'typically 5–15 seconds', maxSeconds: 15, log: ['sending dump.dmp', 'to the analysis server', 'keep this tab open'] },
+    { key: 'queued', title: 'Queued for Analysis', description: 'Your file is in the queue and will be processed shortly...', label: 'Queue', cmd: 'waiting for a debugger', typical: 'usually under a minute', maxSeconds: 60, log: ['waiting for a free debugger', 'you are in the queue', 'this page updates itself'] },
+    { key: 'processing', title: 'WinDBG Analysis in Progress', description: 'Running professional debugging commands on your crash dump...', label: 'WinDBG', cmd: 'kd> !analyze -v', typical: 'usually 30–90 seconds', maxSeconds: 90, log: ['kd> !analyze -v', 'kd> lm', 'kd> k'] },
+    { key: 'downloading', title: 'Downloading Results', description: 'Retrieving the detailed analysis from WinDBG...', label: 'Fetch', cmd: 'fetching output', typical: 'a few seconds', maxSeconds: 10, log: ['fetching analysis output', 'receiving the results', 'nearly ready'] },
+    { key: 'analyzing', title: 'AI Analysis', description: 'Our AI is interpreting the crash data for you...', label: 'AI', cmd: 'explaining cause', typical: 'usually 10–30 seconds', maxSeconds: 30, log: ['reading the stack and modules', 'weighing likely causes', 'drafting fixes'] },
+    { key: 'complete', title: 'Analysis Complete', description: 'Your crash analysis is ready!', label: '', cmd: '', typical: '', maxSeconds: 0, log: ['analysis complete', 'report ready', 'scroll for the details'] },
 ];
 
-// Every 8 s of the run the mascot does something else (0 = the pose of the stage); each antic has a line.
-const ANTICS = [0, 1, 0, 2, 3, 0, 4, 5, 0, 6, 7, 0, 8];
-const ANTIC_SAYS = ['', 'hi there!', 'just looking around...', '*yaaawn*', 'look, no hands!', 'la la la', 'ooh, what is that?', 'wheee!', 'still got it'];
-const SLOW = ['still working...', 'this one is a big one', 'hang in there!'];
+// A stage running twice as long as usual: he naps, and the bubble keeps him company.
+const SLOW = ['this one is a big one', 'hang in there!'];
 
 // Drops a trailing elapsed counter: `— 40s elapsed` or `(40s)`.
 const ELAPSED_SUFFIX = /\s*(?:—\s*\d+s elapsed|\(\d+s\))\s*$/;
@@ -46,7 +42,7 @@ const FX = Array.from({ length: 12 }, (_, i) => (
     <b key={i} style={{ left: `${6 + ((i * 37) % 88)}%`, top: `${12 + ((i * 53) % 70)}%`, animationDelay: `-${((i * 0.61) % 6.5).toFixed(2)}s` }} />
 ));
 
-const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime, percentage }) => {
+const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime, percentage, reaction }) => {
     const [, tick] = useState(0);
     useEffect(() => {
         const id = setInterval(() => tick(n => n + 1), 1000);
@@ -71,8 +67,11 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
         : stage === 'uploading' && percentage !== undefined ? `Uploading... ${percentage}%` : message || info.description;
     const bar = done ? 100 : ((idx + (stage === 'uploading' ? (percentage ?? 0) * 0.009 : 0.4)) / 5) * 100;
     const fact = Math.floor(elapsed / 8) % FACTS.length;
-    const antic = done ? 0 : ANTICS[Math.floor(elapsed / 8) % ANTICS.length];
-    const thoughts = isTakingLong ? SLOW : antic ? [ANTIC_SAYS[antic]] : info.think;
+    // One act per stage, picked when the stage first shows and never the previous scan's (utils/mascotPicks.ts).
+    const picks = useRef<Partial<Record<string, ActId>>>({});
+    if (!done && !picks.current[stage]) picks.current[stage] = chooseAct(stage as ScanStage);
+    const act: ActId = done ? (reaction ?? 'unsure') : isTakingLong ? LONG_WAIT_ACT : picks.current[stage]!;
+    const thoughts = isTakingLong ? [ACTS[act].says, ...SLOW] : [ACTS[act].says];
 
     // Assistive technology hears the stage and its message, without the
     // elapsed counter the queued messages end in, which changes on every poll
@@ -106,9 +105,9 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
                     <div className="progress-log">{info.log.map(line => <span key={line}>{line}</span>)}</div>
                 </div>
                 <div className="progress-side">
-                    <div className="progress-fw" aria-hidden="true" data-antic={antic}>
-                        <Mascot />
-                        <div className="progress-think" key={`${antic}${isTakingLong}`}>{thoughts.map(t => <span key={t}>{t}</span>)}</div>
+                    <div className="progress-fw" aria-hidden="true">
+                        <div className="progress-mascot"><Mascot act={act} /></div>
+                        <div className="progress-think" key={`${act}${isTakingLong}`}>{thoughts.map(t => <span key={t}>{t}</span>)}</div>
                     </div>
                     <ol className="progress-steps">
                         {STAGES.slice(0, 5).map((s, i) => (
