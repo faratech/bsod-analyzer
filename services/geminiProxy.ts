@@ -23,6 +23,7 @@ import { getLargeDumpSampleRanges, shouldUseLightweightAiFailover } from '../sha
 import { redactPersonalIdentifiers, redactPersonalBytes, collectPersonalNamesFromBytes } from '../shared/promptRedaction.js';
 import { isPremiumTier } from './tierState';
 import { SSO_ENABLED } from './featureFlags';
+import { describeForcedCrash, describeForcedCrashParameters } from '../utils/forcedCrash';
 // Define types to match original imports
 enum Type {
     STRING = 'string',
@@ -424,6 +425,8 @@ async function readSampledDumpBuffer(file: File): Promise<{ buffer: ArrayBuffer;
 
 // Enhanced extraction functions
 function getBugCheckParameterMeaning(code: number, params: bigint[]): string {
+    const forced = describeForcedCrashParameters(code, params);
+    if (forced) return forced;
     // Provide specific parameter meanings for common bug checks
     switch (code) {
         case 0x0000000A: // IRQL_NOT_LESS_OR_EQUAL
@@ -558,7 +561,7 @@ function getBugCheckDescription(code: number): string {
         0x133: 'a DPC watchdog violation, indicating a driver took too long',
         0x139: 'a kernel data integrity check failure',
     };
-    return descriptions[code] || 'a critical system error requiring analysis';
+    return descriptions[code] || describeForcedCrash(code) || 'a critical system error requiring analysis';
 }
 
 function getBasicRecommendations(bugCode: number, culprit: string): string[] {

@@ -47,6 +47,22 @@ function confidenceLabel(source) {
   return 'AI interpreted';
 }
 
+// A dump a person forced (power button held, keyboard hotkey, debugger) records
+// that action, not the hang or crash that came first. Live-dump forms are not
+// here: the system kept running. Sources: Microsoft Learn, Bug Check 0x1C8 and
+// 0xE2, "Forcing a System Crash".
+function forcedCrashNote(report) {
+  const raw = `${report?.bugCheck?.code ?? report?.bugCheckCode ?? ''} ${report?.bugCheck?.name ?? ''}`;
+  const code = /0x0*([0-9a-f]+)/i.exec(raw)?.[1]?.toUpperCase();
+  if (code === '1C8' || /MANUALLY_INITIATED_POWER_BUTTON_HOLD(?!_LIVE)/i.test(raw)) {
+    return 'This crash was forced by holding the power button. A dump taken this way records that action, not the hang or crash that came first, so the original cause is not in this report.';
+  }
+  if (code === 'E2' || code === 'DEADDEAD' || /MANUALLY_INITIATED_CRASH/i.test(raw)) {
+    return 'This crash was forced from the keyboard or a debugger. A dump taken this way records that action, not a fault, so whatever prompted it is not in this report.';
+  }
+  return undefined;
+}
+
 function caveatFor(source) {
   if (source === 'windbg') {
     return 'Core crash facts are taken from WinDbg output; the explanation and recommendations are AI-assisted.';
@@ -125,6 +141,7 @@ export function getReportFacts(dumpFile) {
     facts,
     topActions,
     caveat: caveatFor(source),
+    forcedCrash: forcedCrashNote(report),
   };
 }
 
@@ -250,6 +267,7 @@ export function generateForumReport(dumpFile) {
   if (facts.imageName) lines.push(`**Image:** \`${facts.imageName}\``);
   if (facts.symbolName) lines.push(`**Symbol:** \`${facts.symbolName}\``);
   if (facts.failureBucketId) lines.push(`**Failure bucket:** \`${facts.failureBucketId}\``);
+  if (facts.forcedCrash) lines.push(`**Note:** ${facts.forcedCrash}`);
 
   lines.push('', '### Recommended next steps');
   const actions = facts.topActions.length > 0
@@ -337,6 +355,7 @@ export function generateMarkdownReport(dumpFile) {
     lines.push('## Raw WinDbg Output', '', '<details>', `<summary>${report.rawWinDbgOutput.length.toLocaleString()} characters</summary>`, '', '```text', report.rawWinDbgOutput, '```', '', '</details>', '');
   }
 
+  if (facts.forcedCrash) lines.push(`> ${facts.forcedCrash}`, '');
   lines.push(`_${facts.caveat}_`);
   return neutralizeMarkdownLinks(lines.join('\n'));
 }

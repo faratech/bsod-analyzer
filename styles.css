@@ -1854,6 +1854,18 @@ body.mobile-menu-open .header {
   font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'Courier New', monospace;
 }
 
+.report-forced {
+  margin: 0.9rem 0 0;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--status-warning);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
 .report-caveat {
   margin: 0.9rem 0 0;
   color: var(--text-tertiary);

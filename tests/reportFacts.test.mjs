@@ -265,3 +265,28 @@ test('the BBCode neutralizer also rewrites attribute-form tags (issue #281)', ()
   assert.doesNotMatch(report, /\[\/?(?:url|img|media|email)\b/i, report);
   assert.match(report, /https:\/\/evil\.example\/x then https:\/\/evil\.example\/p\.png/);
 });
+
+test('a forced crash carries a note that the original cause is not in the dump', () => {
+  const powerButton = dumpFile({
+    summary: 'The system was forced to crash.', probableCause: 'Not established.', culprit: 'Unknown (not captured in this dump)',
+    recommendations: ['Check Event Viewer for Kernel-Power 41.'],
+    bugCheck: { code: '0x000001C8', name: 'MANUALLY_INITIATED_POWER_BUTTON_HOLD', parameters: ['0x1B58', '0xfffff80012345678', '0x0', '0x0'] }
+  });
+  const facts = getReportFacts(powerButton);
+  assert.match(facts.forcedCrash, /holding the power button/);
+  assert.match(facts.forcedCrash, /not the hang or crash that came first/);
+  assert.match(generateForumReport(powerButton), /\*\*Note:\*\* This crash was forced by holding the power button/);
+  assert.match(generateMarkdownReport(powerButton), /> This crash was forced by holding the power button/);
+
+  const keyboard = getReportFacts(dumpFile({ summary: 's', bugCheck: { code: '0xE2', name: 'MANUALLY_INITIATED_CRASH' } }));
+  assert.match(keyboard.forcedCrash, /keyboard or a debugger/);
+  // The name alone is enough when the code is missing.
+  assert.match(getReportFacts(dumpFile({ summary: 's', bugCheck: { name: 'MANUALLY_INITIATED_POWER_BUTTON_HOLD' } })).forcedCrash, /power button/);
+
+  // Ordinary crashes and the live-dump form (the system kept running) get no note.
+  for (const bugCheck of [{ code: '0xD1', name: 'DRIVER_IRQL_NOT_LESS_OR_EQUAL' }, { code: '0x1C7', name: 'STORE_DATA_STRUCTURE_CORRUPTION' }, { code: '0x11C8', name: 'MANUALLY_INITIATED_POWER_BUTTON_HOLD_LIVE_DUMP' }]) {
+    const plain = dumpFile({ summary: 's', bugCheck });
+    assert.equal(getReportFacts(plain).forcedCrash, undefined, bugCheck.code);
+    assert.doesNotMatch(generateForumReport(plain), /\*\*Note:\*\*/);
+  }
+});
