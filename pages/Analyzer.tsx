@@ -286,10 +286,10 @@ const Analyzer: React.FC = () => {
             </section>
             
             {/* Ad after upload section */}
-            <DisplayAdSafe 
+            <DisplayAdSafe
                 className="ad-header"
-                style={{ minHeight: '90px' }}
                 minWidth={250}
+                fixed
             />
             
             <div className="container">
