@@ -115,7 +115,7 @@ test('--status-success text reaches 4.5:1 on the backgrounds and green fills it 
 
 test('--status-warning text reaches 4.5:1 on the amber fills it is drawn on (issue #312)', () => {
   // .status-pending 0.1, .confidence-fallback 0.12, the progress fallback
-  // notice (AnalysisProgress) 0.15, .status-warning 0.2.
+  // notice (styles.css .progress-notice) 0.15, .status-warning 0.2.
   for (const [name, source] of Object.entries(SOURCES)) {
     for (const [theme, selector] of Object.entries(THEMES)) {
       const t = tokens(source, selector);
@@ -128,18 +128,21 @@ test('--status-warning text reaches 4.5:1 on the amber fills it is drawn on (iss
       }
     }
   }
-  assert.match(read('components', 'AnalysisProgress.tsx'), /rgba\(245, 158, 11, 0\.15\)[^]{0,500}color: 'var\(--status-warning\)'/);
+  assert.match(read('styles.css'), /\.progress-notice[^}]*rgba\(245, 158, 11, 0\.15\)[^}]*color: var\(--status-warning\)/);
 });
 
 // Text drawn on a --status-* background (issue #324): every styles.css rule
 // and every inline style object in components/ and pages/ that paints a
 // background from a --status-* token, checked against the foreground that
 // actually applies there: its own `color`, the colour its base rule sets
-// (`.progress-stage-dot` for `.progress-stage-dot.completed`), the colours of
+// (a base rule's `color` for its modifier rules), the colours of
 // styled descendants (inline styles), or the inherited --text-primary.
 const NAMED_COLOURS = { white: '#ffffff', black: '#000000' };
 // Background-only marks with no text in them.
-const DECORATIVE_STATUS_FILLS = new Set(['.progress-stage-line.completed']);
+const DECORATIVE_STATUS_FILLS = new Set([
+  '[data-s="complete"] .progress-bar i',
+  '[data-s="complete"] .progress-cells i'
+]);
 const OWN_COLOUR = /(?<![\w-])color\s*:\s*([^;,\n}]+)/;
 
 function colourRefs(expression) {
@@ -234,7 +237,7 @@ test('text drawn on a --status-* background reaches 4.5:1 (3:1 for large text) i
   ];
   const where = fills.map(f => f.where).join('\n');
   // The scan must keep finding the fills it was written for.
-  assert.match(where, /styles\.css \.progress-stage-dot\.completed/);
+  assert.match(where, /styles\.css \.progress-step\[data-state="done"\] \.progress-node/);
   assert.match(where, /styles\.css \.confidence-windbg/);
   assert.equal(fills.filter(f => f.where.startsWith('components/AnalysisReportCard.tsx')).length, 4, where);
 
