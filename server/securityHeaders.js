@@ -133,9 +133,25 @@ export const EMBEDDABLE_PATHS = ['/stats/embed'];
 //   violations are logged as `csp.violation` events (server/cspReport.js)
 //   without breaking the site.
 // - 'enforce': the hash-based policy becomes the enforcing header.
-export const CSP_MODE = ['report-only', 'enforce'].includes(process.env.CSP_MODE)
-  ? process.env.CSP_MODE
-  : 'report-only';
+export const CSP_MODES = ['report-only', 'enforce'];
+
+// Resolve the rollout switch without silently accepting a typo: cloudbuild.yaml
+// and deploy-with-secret.sh already reject unknown values, but an out-of-band
+// env edit (gcloud run services update --update-env-vars CSP_MODE=enforc) used to
+// land here and quietly keep the legacy 'unsafe-inline' policy enforcing with the
+// strict one stuck in Report-Only. Warn instead of downgrading in silence.
+export function resolveCspMode(raw, warn = (...args) => console.warn(...args)) {
+  if (raw === undefined || raw === null || raw === '') return 'report-only';
+  if (CSP_MODES.includes(raw)) return raw;
+  warn(
+    `csp.mode.invalid: CSP_MODE=${JSON.stringify(raw)} is not one of ${CSP_MODES.join('|')}; ` +
+    "falling back to 'report-only' (legacy 'unsafe-inline' policy keeps enforcing). " +
+    'Fix the deploy env var to silence this warning.'
+  );
+  return 'report-only';
+}
+
+export const CSP_MODE = resolveCspMode(process.env.CSP_MODE);
 
 // Extract inline <script> contents and return their CSP source expressions.
 // Exported so server.js and tests share one implementation. `sha256` must be a
