@@ -69,7 +69,9 @@ export function readEnvSwitches(env = process.env, options = {}) {
     statsInsightEnabled: capture('STATS_INSIGHT_ENABLED'),
     forumRelatedEnabled: capture('FORUM_RELATED_ENABLED'),
     corpusEnabled: capture('CORPUS_ENABLED'),
-    corpusPriorsEnabled: capture('CORPUS_PRIORS_ENABLED')
+    corpusPriorsEnabled: capture('CORPUS_PRIORS_ENABLED'),
+    // New AI surface: off until the operator turns it on; a typo keeps it off.
+    bsodAiChatEnabled: parseBoolEnv(env, 'BSOD_AI_CHAT_ENABLED', false, { ...options, invalid: false })
   };
 }
 

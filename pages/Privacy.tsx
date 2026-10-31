@@ -68,6 +68,15 @@ const Privacy: React.FC = () => (
       </section>
 
       <section>
+        <h2>Asking BSOD AI about your crash</h2>
+        <ul>
+          <li>After a scan you can ask BSOD AI questions about your crash. Your question, the last few messages of the conversation and your crash report (stop code, faulting driver, summary and recommendations, plus WinDBG details such as module names and stack frames) are sent to an AI provider: Experiential Labs, or OpenAI if it is unavailable. File paths, user names in paths, IP addresses and job ids are masked first. The dump file itself is never sent.</li>
+          <li>We do not store the conversation. It lives in your browser tab and is gone when you close it; our logs keep a fingerprint of each question, never its text.</li>
+          <li>The chat starts with a Cloudflare Turnstile check, is limited to a few questions an hour, and only answers questions about your crash.</li>
+        </ul>
+      </section>
+
+      <section>
         <h2>How long we keep it</h2>
         <ul>
           <li>The website does not store uploaded files; it passes them to the analysis server.</li>

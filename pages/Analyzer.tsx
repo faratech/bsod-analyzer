@@ -8,7 +8,9 @@ import ErrorAlert from '../components/ErrorAlert';
 import AnalysisResults from '../components/AnalysisResults';
 import AnalysisProgress from '../components/AnalysisProgress';
 import AnalysisCompletionAnnouncer from '../components/AnalysisCompletionAnnouncer';
-import { AnalyzeIcon } from '../components/Icons';
+import { AnalyzeIcon, WandIcon } from '../components/Icons';
+import BsodAiChat from '../components/BsodAiChat';
+import { getBsodAiStatus } from '../services/bsodAiService';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
 import { SITE_URL, IMAGES, IDS } from '../constants/structuredData';
@@ -158,6 +160,10 @@ const Analyzer: React.FC = () => {
     // while rendering so the card never unmounts between the run and the hold.
     const [finishing, setFinishing] = useState(false);
     const [summaryOpen, setSummaryOpen] = useState(false);
+    // BSOD AI: the wand in the summary strip opens the chat; closed by default.
+    const [aiEnabled, setAiEnabled] = useState(false);
+    const [aiOpen, setAiOpen] = useState(false);
+    const wandRef = useRef<HTMLButtonElement>(null);
     const [wasAnalyzing, setWasAnalyzing] = useState(false);
     const analyzedBefore = useRef(0);
     const runIds = useRef<string[]>([]);
@@ -166,6 +172,7 @@ const Analyzer: React.FC = () => {
         if (isAnalyzing) {
             analyzedBefore.current = analyzedCount;
             setSummaryOpen(false);
+            setAiOpen(false);
         }
         setFinishing(!isAnalyzing && !error && analyzedCount > analyzedBefore.current);
     }
@@ -174,6 +181,13 @@ const Analyzer: React.FC = () => {
         const timer = setTimeout(() => { setFinishing(false); setSummaryOpen(true); }, 1600);
         return () => clearTimeout(timer);
     }, [finishing]);
+
+    useEffect(() => {
+        if (!summaryOpen) return;
+        let cancelled = false;
+        getBsodAiStatus().then(status => { if (!cancelled) setAiEnabled(status.enabled); });
+        return () => { cancelled = true; };
+    }, [summaryOpen]);
 
     const live = Boolean((isAnalyzing && progress) || finishing);
     const startTime = useRef(0);
@@ -300,10 +314,18 @@ const Analyzer: React.FC = () => {
                         {facts?.bugcheck && <span><small>Stop code</small>{facts.bugcheck}</span>}
                         {facts?.culprit && <span><small>Likely cause</small>{facts.culprit}</span>}
                         {fresh.length > 1 && <span>{fresh.length} reports ready</span>}
-                        <button className="btn btn-secondary" onClick={() => { setSummaryOpen(false); setTimeout(() => pageHeadingRef.current?.focus(), 0); }}>
+                        {aiEnabled && fresh.length > 0 && (
+                            <button ref={wandRef} className="btn btn-primary" aria-expanded={aiOpen} aria-controls="bsod-ai-chat" onClick={() => setAiOpen(open => !open)}>
+                                <WandIcon /><span style={{ marginLeft: '0.5rem' }}>Ask BSOD AI</span>
+                            </button>
+                        )}
+                        <button className="btn btn-secondary" onClick={() => { setSummaryOpen(false); setAiOpen(false); setTimeout(() => pageHeadingRef.current?.focus(), 0); }}>
                             Analyze another file
                         </button>
                     </div>
+                )}
+                {summaryOpen && !live && aiOpen && fresh.length > 0 && (
+                    <BsodAiChat files={fresh} onClose={() => { setAiOpen(false); setTimeout(() => wandRef.current?.focus(), 0); }} />
                 )}
                 {error && <ErrorAlert error={error} className="mt-2" />}
 
