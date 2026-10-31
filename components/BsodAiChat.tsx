@@ -6,6 +6,7 @@ import {
     BSOD_AI_TURNSTILE_ACTION, BsodAiError, BsodAiReport, askBsodAi, createBsodAiPass, getBsodAiStatus,
 } from '../services/bsodAiService';
 import CloudflareTurnstile, { type CloudflareTurnstileHandle } from './CloudflareTurnstile';
+import ChatMarkdown from './ChatMarkdown';
 import Mascot from './Mascot';
 
 interface Message {
@@ -156,7 +157,7 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
                 )}
                 {messages.map((m, i) => (
                     <div key={i} className={`ai-msg ${m.role === 'user' ? 'ai-me' : 'ai-gm'}`}>
-                        <span>{m.text}</span>
+                        {m.role === 'user' ? <span>{m.text}</span> : <ChatMarkdown text={m.text} />}
                         {m.evidence && m.evidence.length > 0 && (
                             <div className="ai-ev">Based on: {m.evidence.join(' · ')}</div>
                         )}
@@ -164,7 +165,7 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
                 ))}
                 {busy && !streaming && <div className="ai-msg ai-gm" aria-label="BSOD AI is thinking"><span className="ai-dots" aria-hidden="true"><i /><i /><i /></span></div>}
                 {/* Hidden from screen readers while it grows, so the finished answer is announced once, whole. */}
-                {busy && streaming && <div className="ai-msg ai-gm" aria-hidden="true"><span>{streaming}</span><span className="ai-caret" /></div>}
+                {busy && streaming && <div className="ai-msg ai-gm" aria-hidden="true"><ChatMarkdown text={streaming} /><span className="ai-caret" /></div>}
                 {notice && <p className={`ai-note ${notice.kind}`} role="status">{notice.text}</p>}
             </div>
 
