@@ -33,8 +33,9 @@ const STAGES = [
         think: ['got it!', "report's ready", 'high five!'], log: ['analysis complete', 'report ready', 'scroll for the details'] },
 ];
 
-// Every 8 s of the run the mascot does something else (0 = the pose of the stage); each antic has a line.
-const ANTICS = [0, 1, 0, 2, 3, 0, 4, 5, 0, 6, 7, 0, 8];
+// Every 14 s of the run the mascot does something else (0 = the pose of the stage, so most of the time he is calm); each antic has a line.
+const ANTIC_SECONDS = 14;
+const ANTICS = [0, 1, 0, 0, 2, 0, 3, 0, 0, 4, 0, 5, 0, 0, 6, 0, 7, 0, 0, 8];
 const ANTIC_SAYS = ['', 'hi there!', 'just looking around...', '*yaaawn*', 'look, no hands!', 'la la la', 'ooh, what is that?', 'wheee!', 'still got it'];
 const SLOW = ['still working...', 'this one is a big one', 'hang in there!'];
 
@@ -71,7 +72,7 @@ const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, sta
         : stage === 'uploading' && percentage !== undefined ? `Uploading... ${percentage}%` : message || info.description;
     const bar = done ? 100 : ((idx + (stage === 'uploading' ? (percentage ?? 0) * 0.009 : 0.4)) / 5) * 100;
     const fact = Math.floor(elapsed / 8) % FACTS.length;
-    const antic = done ? 0 : ANTICS[Math.floor(elapsed / 8) % ANTICS.length];
+    const antic = done ? 0 : ANTICS[Math.floor(elapsed / ANTIC_SECONDS) % ANTICS.length];
     const thoughts = isTakingLong ? SLOW : antic ? [ANTIC_SAYS[antic]] : info.think;
 
     // Assistive technology hears the stage and its message, without the

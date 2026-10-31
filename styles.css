@@ -3219,7 +3219,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 /* The mascot as the chat's avatar: one pose per state (data-gs on the svg). */
 [data-gs] { animation: ai-bob 3.2s ease-in-out infinite; }
 [data-gs="happy"] .gr-mouth, [data-gs="talk"] .gr-mouth { transform: scaleY(-1); }
-[data-gs="talk"] .gr-mouth { animation: ai-talk 0.32s ease-in-out infinite; }
+[data-gs="talk"] .gr-mouth { animation: ai-talk 0.5s ease-in-out infinite; }
 [data-gs="think"] .gr-gear { opacity: 1; animation: spin 2.4s linear infinite; }
 [data-gs="think"] .gr-eyes { translate: 3px -3px; }
 [data-gs="think"] .gr-ar { rotate: -105deg; }
@@ -3235,7 +3235,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 @keyframes ai-dot { 0%, 80%, 100% { opacity: 0.25; transform: none; } 40% { opacity: 1; transform: translateY(-3px); } }
 @keyframes ai-caret { 50% { opacity: 0; } }
 @keyframes ai-bob { 50% { translate: 0 -3px; } }
-@keyframes ai-talk { 50% { scale: 1 0.55; } }
+@keyframes ai-talk { 50% { scale: 1 0.7; } }
 .analyzer-live > .container { display: flex; flex-direction: column; gap: 0.6rem; min-height: 0; width: 100%; padding: 0.75rem 1.5rem 1rem; }
 
 .progress { --glow: var(--brand-primary); --ga: 34%; --teal: #14b8a6; isolation: isolate; --pt: var(--brand-accent); --on: color-mix(in srgb, var(--brand-primary) 80%, transparent); --lens: color-mix(in srgb, var(--brand-primary) 34%, transparent); position: relative; flex: 1; min-height: 0; container: progress / size; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 1rem; padding: 1.4rem 1.5rem 1rem; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--glass-bg); }
@@ -3321,7 +3321,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 
 /* the face: it bobs, follows the scan, and celebrates */
 .progress-fw { animation: progress-bob 3.6s ease-in-out infinite; }
-[data-s="processing"] .progress-eyes { animation: progress-look 3.6s linear infinite; }
+[data-s="processing"] .progress-eyes { animation: progress-look 5s ease-in-out infinite alternate; }
 [data-s="complete"] .progress-fw { animation: progress-bounce 0.7s cubic-bezier(0.3, 1.6, 0.5, 1); }
 [data-s="complete"] .progress-fw::before { content: ""; position: absolute; inset: -6px; border: 2px solid var(--status-success); border-radius: 30px; animation: progress-ring 0.9s ease-out forwards; }
 [data-s="complete"] .progress-fw::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; animation: progress-burst 0.9s ease-out forwards; box-shadow: 0 -48px #6ee7b7, 34px -34px #34d399, 48px 0 #6ee7b7, 34px 34px #34d399, 0 48px #6ee7b7, -34px 34px #34d399, -48px 0 #6ee7b7, -34px -34px #34d399; }
@@ -3353,10 +3353,10 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 
 /* a typing log in the corner of the grid */
 .progress-log { display: flex; flex-direction: column; gap: 2px; position: absolute; left: 14px; bottom: 12px; z-index: 1; padding: 6px 10px; border: 1px solid var(--border-primary); border-radius: 8px; background: color-mix(in srgb, var(--bg-primary) 74%, transparent); font: 11px/1.5 ui-monospace, monospace; color: var(--text-primary); }
-.progress-log span { display: block; white-space: nowrap; animation: progress-type 7s steps(26) infinite; }
+.progress-log span { display: block; white-space: nowrap; animation: progress-type 1.3s steps(26) both; }
 .progress-log span::before { content: "\25B8  "; color: var(--pt); }
-.progress-log span:nth-child(2) { animation-delay: 0.9s; }
-.progress-log span:nth-child(3) { animation-delay: 1.8s; }
+.progress-log span:nth-child(2) { animation-delay: 1.4s; }
+.progress-log span:nth-child(3) { animation-delay: 2.8s; }
 @container body (max-height: 200px) { .progress-log { display: none; } }
 
 /* the active step shows what it is doing */
@@ -3375,7 +3375,8 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .gr-stem { stroke: var(--brand-secondary); stroke-width: 3; stroke-linecap: round; }
 .gr-bulb { fill: var(--brand-accent); transform-origin: center; animation: progress-pulse 2s ease-in-out infinite; }
 .gr-eye { fill: #fff; transform-origin: center; animation: progress-blink 4.6s infinite; }
-.gr-eyes { transition: translate 0.5s, scale 0.5s; transform-origin: center; }
+.gr-eyes { transition: translate 0.6s ease, scale 0.6s ease; transform-origin: center; }
+.gr-limb, .gr-top, .gr-mouth, .gr-ear { transition: rotate 0.7s ease, scale 0.7s ease, translate 0.7s ease, opacity 0.5s ease, transform 0.4s ease; }
 .gr-mouth { fill: none; stroke: #fff; stroke-width: 5; stroke-linecap: round; transform-origin: center; transition: transform 0.4s; }
 .gr-al { transform-origin: 100% 50%; }
 .gr-ar { transform-origin: 0 50%; }
@@ -3388,11 +3389,11 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .gr-blk, .gr-crate { fill: var(--brand-accent); }
 
 /* uploading: pumping arms, a crate pushed along */
-[data-s="uploading"] .gr-al { animation: progress-pump 0.6s ease-in-out infinite alternate; }
-[data-s="uploading"] .gr-ar { animation: progress-pump 0.6s ease-in-out infinite alternate-reverse; }
+[data-s="uploading"] .gr-al { animation: progress-pump 1.8s ease-in-out infinite alternate; }
+[data-s="uploading"] .gr-ar { animation: progress-pump 1.8s ease-in-out infinite alternate-reverse; }
 [data-s="uploading"] .gr-crate { opacity: 1; animation: progress-push 1.6s linear infinite; }
 /* queued: foot tapping, ears twitching, eyes drooping, zzz */
-[data-s="queued"] .gr-fl { animation: progress-tap 0.5s ease-in-out infinite alternate; }
+[data-s="queued"] .gr-fl { animation: progress-tap 1.4s ease-in-out infinite alternate; }
 [data-s="queued"] .gr-ear { animation: progress-twitch 2.4s ease-in-out infinite; }
 [data-s="queued"] .gr-eyes { scale: 1 0.5; }
 [data-s="queued"] .gr-z { animation: progress-z 2.4s ease-out infinite; }
@@ -3400,9 +3401,9 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 [data-s="queued"] .gr-z3 { animation-delay: 1.6s; }
 /* processing: a magnifier sweeping with the scan, eyes following it */
 [data-s="processing"] .gr-ar { rotate: -28deg; }
-[data-s="processing"] .gr-mag { opacity: 1; animation: progress-look 3.6s linear infinite; }
-[data-s="processing"] .gr-eyes { animation: progress-look 3.6s linear infinite; }
-[data-s="processing"] .gr-bulb { animation: progress-flicker 0.7s steps(2) infinite; }
+[data-s="processing"] .gr-mag { opacity: 1; animation: progress-look 5s ease-in-out infinite alternate; }
+[data-s="processing"] .gr-eyes { animation: progress-look 5s ease-in-out infinite alternate; }
+[data-s="processing"] .gr-bulb { animation: progress-flicker 2.4s ease-in-out infinite; }
 /* downloading: arms up, catching falling blocks */
 [data-s="downloading"] .gr-al { rotate: 55deg; }
 [data-s="downloading"] .gr-ar { rotate: -55deg; }
@@ -3417,8 +3418,8 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 [data-s="complete"] .gr-head { fill: var(--status-success); }
 [data-s="complete"] .gr-screen { fill: color-mix(in srgb, var(--status-success) 42%, #000); }
 [data-s="complete"] .gr-ear, [data-s="complete"] .gr-limb { fill: color-mix(in srgb, var(--status-success) 62%, #000); }
-[data-s="complete"] .gr-al { rotate: 70deg; animation: progress-cheer 0.5s ease-in-out infinite alternate; }
-[data-s="complete"] .gr-ar { rotate: -70deg; animation: progress-cheerR 0.5s ease-in-out infinite alternate; }
+[data-s="complete"] .gr-al { rotate: 70deg; animation: progress-cheer 1.4s ease-in-out infinite alternate; }
+[data-s="complete"] .gr-ar { rotate: -70deg; animation: progress-cheerR 1.4s ease-in-out infinite alternate; }
 [data-s="complete"] .gr-mouth { transform: scaleY(-1); }
 
 .progress-fw { align-self: flex-start; }
@@ -3455,7 +3456,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 [data-s="complete"] .gr-bang { animation: progress-emote 1.4s ease-in-out infinite; }
 
 /* antics: every few seconds he does something else (the page sets data-antic from the elapsed time) */
-.progress-fw[data-antic="1"] .gr-ar { rotate: -105deg; animation: progress-wave 0.45s ease-in-out infinite alternate; }
+.progress-fw[data-antic="1"] .gr-ar { rotate: -105deg; animation: progress-wave 1.2s ease-in-out infinite alternate; }
 .progress-fw[data-antic="1"] .gr-mouth { transform: scaleY(-1); }
 .progress-fw[data-antic="2"] .gr-eyes { animation: progress-scan 3.4s ease-in-out infinite; }
 .progress-fw[data-antic="2"] .gr-top { animation: progress-tilt 3.4s ease-in-out infinite; }
@@ -3464,23 +3465,23 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .progress-fw[data-antic="3"] .gr-eyes { scale: 1 0.2; }
 .progress-fw[data-antic="3"] .gr-mouth { opacity: 0; }
 .progress-fw[data-antic="3"] .gr-yawn { opacity: 1; animation: progress-yawn 2.4s ease-in-out infinite; }
-.progress-fw[data-antic="4"] .gr-jug { opacity: 1; animation: progress-juggle 1.2s linear infinite; }
+.progress-fw[data-antic="4"] .gr-jug { opacity: 1; animation: progress-juggle 2.4s linear infinite; }
 .progress-fw[data-antic="4"] .gr-jug2 { animation-delay: -0.4s; }
 .progress-fw[data-antic="4"] .gr-jug3 { animation-delay: -0.8s; }
-.progress-fw[data-antic="4"] .gr-al { animation: progress-pump 0.6s ease-in-out infinite alternate; }
-.progress-fw[data-antic="4"] .gr-ar { animation: progress-pump 0.6s ease-in-out infinite alternate-reverse; }
-.progress-fw[data-antic="5"] .gr { animation: progress-sway 0.8s ease-in-out infinite alternate; }
-.progress-fw[data-antic="5"] .gr-fl { animation: progress-tap 0.4s ease-in-out infinite alternate; }
-.progress-fw[data-antic="5"] .gr-fr { animation: progress-tap 0.4s ease-in-out infinite alternate-reverse; }
-.progress-fw[data-antic="5"] .gr-al { animation: progress-pump 0.8s ease-in-out infinite alternate; }
-.progress-fw[data-antic="5"] .gr-ar { animation: progress-pump 0.8s ease-in-out infinite alternate-reverse; }
-.progress-fw[data-antic="5"] .gr-note { animation: progress-note 1.6s ease-out infinite; }
+.progress-fw[data-antic="4"] .gr-al { animation: progress-pump 1.8s ease-in-out infinite alternate; }
+.progress-fw[data-antic="4"] .gr-ar { animation: progress-pump 1.8s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr { animation: progress-sway 2.4s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-fl { animation: progress-tap 1.4s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-fr { animation: progress-tap 1.4s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr-al { animation: progress-pump 2s ease-in-out infinite alternate; }
+.progress-fw[data-antic="5"] .gr-ar { animation: progress-pump 2s ease-in-out infinite alternate-reverse; }
+.progress-fw[data-antic="5"] .gr-note { animation: progress-note 2.4s ease-out infinite; }
 .progress-fw[data-antic="6"] .gr-eyes { translate: 4px 3px; scale: 1.25; }
 .progress-fw[data-antic="6"] .gr-top { rotate: 8deg; }
 .progress-fw[data-antic="6"] .gr-q { animation: progress-emote 2.2s ease-in-out infinite; }
 .progress-fw[data-antic="7"] .gr { animation: progress-spin 1.1s ease-in-out 1; }
-.progress-fw[data-antic="8"] .gr-al { rotate: 35deg; animation: progress-flex 0.5s ease-in-out infinite alternate; }
-.progress-fw[data-antic="8"] .gr-ar { rotate: -35deg; animation: progress-flex 0.5s ease-in-out infinite alternate; }
+.progress-fw[data-antic="8"] .gr-al { rotate: 35deg; animation: progress-flex 1.6s ease-in-out infinite alternate; }
+.progress-fw[data-antic="8"] .gr-ar { rotate: -35deg; animation: progress-flex 1.6s ease-in-out infinite alternate; }
 .progress-fw[data-antic="8"] .gr-bang { animation: progress-emote 1.6s ease-in-out infinite; }
 
 @container progress (max-width: 620px) or (max-height: 480px) {
@@ -3512,7 +3513,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 @keyframes progress-pop { from { scale: 0.4; } }
 @keyframes progress-halo { to { box-shadow: 0 0 0 10px #0000; } }
 @keyframes progress-bob { 50% { translate: 0 -4px; } }
-@keyframes progress-look { from { translate: -5px 0; } to { translate: 5px 0; } }
+@keyframes progress-look { from { translate: -4px 0; } to { translate: 4px 0; } }
 @keyframes progress-bounce { 0% { scale: 0.7; } 60% { scale: 1.15; } }
 @keyframes progress-ring { from { scale: 0.8; opacity: 0.9; } to { scale: 1.9; opacity: 0; } }
 @keyframes progress-burst { from { scale: 0.2; opacity: 1; } to { scale: 1.5; opacity: 0; } }
@@ -3521,31 +3522,31 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 @keyframes progress-spark { 0%, 100% { opacity: 0; scale: 0.4; } 50% { opacity: 1; scale: 1.6; } }
 @keyframes progress-fall { 0% { opacity: 0; translate: 0 0; } 10% { opacity: 0.9; } 100% { opacity: 0.2; translate: 0 105cqh; } }
 @keyframes progress-confetti { 0% { opacity: 1; translate: 0 0; rotate: 0deg; } 100% { opacity: 0.4; translate: 20px 105cqh; rotate: 540deg; } }
-@keyframes progress-type { 0% { clip-path: inset(0 100% 0 0); } 18%, 88% { clip-path: inset(0); } 100% { clip-path: inset(0 100% 0 0); } }
+@keyframes progress-type { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 @keyframes progress-caret { 50% { opacity: 0; } }
 @keyframes progress-pulse { 50% { opacity: 0.4; scale: 0.8; } }
-@keyframes progress-flicker { 50% { opacity: 0.2; } }
-@keyframes progress-pump { from { rotate: -28deg; } to { rotate: 28deg; } }
+@keyframes progress-flicker { 50% { opacity: 0.55; } }
+@keyframes progress-pump { from { rotate: -14deg; } to { rotate: 14deg; } }
 @keyframes progress-push { 0% { opacity: 0; translate: 0 0; } 20% { opacity: 1; } 100% { opacity: 0; translate: 40px 0; } }
-@keyframes progress-tap { from { rotate: 0deg; } to { rotate: -22deg; } }
+@keyframes progress-tap { from { rotate: 0deg; } to { rotate: -12deg; } }
 @keyframes progress-twitch { 0%, 80%, 100% { rotate: 0deg; } 88% { rotate: -12deg; } 94% { rotate: 8deg; } }
 @keyframes progress-z { 0% { opacity: 0; translate: 0 6px; } 30% { opacity: 1; } 100% { opacity: 0; translate: 6px -14px; } }
 @keyframes progress-catch { 0% { opacity: 0; translate: 0 0; } 15% { opacity: 1; } 75% { opacity: 1; translate: 0 78px; } 100% { opacity: 0; translate: 0 84px; } }
-@keyframes progress-cheer { from { rotate: 55deg; } to { rotate: 85deg; } }
-@keyframes progress-cheerR { from { rotate: -55deg; } to { rotate: -85deg; } }
+@keyframes progress-cheer { from { rotate: 62deg; } to { rotate: 78deg; } }
+@keyframes progress-cheerR { from { rotate: -62deg; } to { rotate: -78deg; } }
 @keyframes progress-popin { from { scale: 0.5; opacity: 0; } }
 @keyframes progress-thought { 0% { opacity: 0; translate: 0 4px; } 5%, 30% { opacity: 1; translate: 0 0; } 36%, 100% { opacity: 0; } }
 @keyframes progress-sweat { 0% { opacity: 1; translate: 0 0; } 100% { opacity: 0; translate: 0 14px; } }
 @keyframes progress-emote { 0%, 60%, 100% { opacity: 0; translate: 0 4px; } 70%, 90% { opacity: 1; translate: 0 -4px; } }
-@keyframes progress-wave { from { rotate: -85deg; } to { rotate: -125deg; } }
+@keyframes progress-wave { from { rotate: -92deg; } to { rotate: -118deg; } }
 @keyframes progress-scan { 0%, 100% { translate: 0 0; } 25% { translate: -5px 0; } 50% { translate: 5px 0; } 75% { translate: 0 -4px; } }
 @keyframes progress-tilt { 0%, 100% { rotate: 0deg; } 25% { rotate: -5deg; } 50% { rotate: 5deg; } }
 @keyframes progress-yawn { 0%, 100% { scale: 0.4; } 50% { scale: 1.3; } }
 @keyframes progress-juggle { 0% { translate: -24px 0; } 25% { translate: 0 -22px; } 50% { translate: 24px 0; } 75% { translate: 0 8px; } 100% { translate: -24px 0; } }
-@keyframes progress-sway { from { rotate: -6deg; } to { rotate: 6deg; } }
+@keyframes progress-sway { from { rotate: -3deg; } to { rotate: 3deg; } }
 @keyframes progress-note { 0% { opacity: 0; translate: 0 6px; } 30% { opacity: 1; } 100% { opacity: 0; translate: 10px -16px; } }
 @keyframes progress-spin { to { rotate: 360deg; } }
-@keyframes progress-flex { from { scale: 1; } to { scale: 1.25 1.4; } }
+@keyframes progress-flex { from { scale: 1; } to { scale: 1.12 1.2; } }
 
 
 /* ==========================================================================
