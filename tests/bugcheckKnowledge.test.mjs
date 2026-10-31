@@ -34,7 +34,8 @@ const MUST = {
   '0x19C': [/Win32k/i, /monitor/i],
   '0x1A0': [/terminal topology manager/i],
   '0x1A6': [/Bluetooth/i, /live dump/i],
-  '0x1C8': [/power button/i],
+  '0x1C8': [/power button/i, /not what went wrong first/i],
+  '0xE2': [/keyboard/i, /debugger/i],
 };
 const MUST_NOT = {
   '0x7F': [/^Double fault/i],

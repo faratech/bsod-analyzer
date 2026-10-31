@@ -20,6 +20,7 @@ export const BUGCHECK_MEANINGS = {
   '0xC5': 'A driver corrupted the kernel memory pool; the system then touched invalid memory at too high an interrupt level.',
   '0xC9': 'Driver Verifier I/O Verification caught a driver violating I/O rules (only with Driver Verifier enabled).',
   '0xD1': 'A driver accessed pageable memory at DISPATCH_LEVEL — the most common driver-crash code.',
+  '0xE2': 'The user forced the crash from the keyboard hotkey or a debugger; the dump records that action, not a fault.',
   '0xEF': 'A critical system process died — failing drivers, disk corruption, or malware.',
   '0x101': 'A clock interrupt was lost on a secondary processor — often overclocking/instability.',
   '0x109': 'The kernel detected critical structure corruption — unstable overclock/RAM or kernel-mode tampering.',
@@ -37,7 +38,7 @@ export const BUGCHECK_MEANINGS = {
   '0x19C': 'Win32k did not turn the monitor on in time (power watchdog) — display or GPU driver stuck on a power transition.',
   '0x1A0': 'The terminal topology manager saw device operations (display, input) miss their timeout — often display or input drivers.',
   '0x1A6': 'Live dump: the Bluetooth radio driver (bthport.sys) reset the radio to recover from an internal error; the system kept running.',
-  '0x1C8': 'The power button was held to force a crash dump — usually because the system hung; the dump shows what was stuck.',
+  '0x1C8': 'The power button was held (about 7 seconds) to force a crash dump, usually because the system had hung; the dump records that action, not what went wrong first, so the original cause is unknown.',
 };
 
 const LABEL_FALLBACKS = [
