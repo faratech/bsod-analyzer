@@ -3172,7 +3172,7 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .analyzer-summary small { display: block; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary); }
 .analyzer-summary .btn { margin-left: auto; }
 /* BSOD AI chat (components/BsodAiChat.tsx): the wand in the summary strip opens it. */
-.ai-chat { --teal: #14b8a6; display: flex; flex-direction: column; max-height: min(36rem, 80dvh); margin-top: 1rem; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--glass-bg); overflow: hidden; }
+.ai-chat { --teal: #14b8a6; display: flex; flex-direction: column; max-height: min(36rem, 80dvh); margin: 1rem 0; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--glass-bg); overflow: hidden; }
 .light .ai-chat { --teal: #0d9488; }
 .ai-head { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-primary); }
 .ai-avatar { flex: none; width: 3.25rem; height: 3.25rem; }
