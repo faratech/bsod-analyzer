@@ -205,6 +205,14 @@ const Analyzer: React.FC = () => {
         wasLive.current = live;
     }, [live]);
 
+    // The chat sits under the results, which can be far below the wand: bring it into view when it opens.
+    useEffect(() => {
+        if (!aiOpen) return;
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const id = setTimeout(() => document.getElementById('bsod-ai-chat')?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' }), 0);
+        return () => clearTimeout(id);
+    }, [aiOpen]);
+
     const analyzerStructuredData = {
         "@context": "https://schema.org",
         "@graph": [
@@ -324,9 +332,6 @@ const Analyzer: React.FC = () => {
                         </button>
                     </div>
                 )}
-                {summaryOpen && !live && aiOpen && fresh.length > 0 && (
-                    <BsodAiChat files={fresh} onClose={() => { setAiOpen(false); setTimeout(() => wandRef.current?.focus(), 0); }} />
-                )}
                 {error && <ErrorAlert error={error} className="mt-2" />}
 
                 <AnalysisCompletionAnnouncer isAnalyzing={isAnalyzing} analyzedCount={analyzedCount} />
@@ -353,7 +358,12 @@ const Analyzer: React.FC = () => {
                     showAds={true}
                     AdComponent={InFeedAd}
                 />
-                
+
+                {/* Under the report it is about, not above it: the wand in the summary strip opens it and scrolls here. */}
+                {summaryOpen && !live && aiOpen && fresh.length > 0 && (
+                    <BsodAiChat files={fresh} onClose={() => { setAiOpen(false); setTimeout(() => wandRef.current?.focus(), 0); }} />
+                )}
+
                 {/* Vertical ad on desktop, shown alongside results */}
                 {dumpFiles.some(df => df.status !== FileStatus.PENDING) && (
                     <aside className="desktop-only" style={{
