@@ -3187,6 +3187,13 @@ body:has(.sticky-ad ins[data-ad-status="filled"]) .analyzer-live { min-height: c
 .ai-hello-mascot .gr { width: 6.5rem; height: 6.5rem; }
 .ai-hello p { margin: 0; max-width: 30ch; font-size: 0.875rem; line-height: 1.5; color: var(--text-secondary); }
 .ai-msg { max-width: 90%; padding: 0.6rem 0.8rem; border-radius: 16px; font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-gm { white-space: normal; }
+.ai-gm p { margin: 0; }
+.ai-gm p + p, .ai-gm p + ul, .ai-gm ul + p { margin-top: 0.45rem; }
+.ai-gm ul { margin: 0; padding-left: 1.1rem; }
+.ai-gm li + li { margin-top: 0.2rem; }
+.ai-gm strong { font-weight: 700; color: var(--text-primary); }
+.ai-gm code { padding: 0.05rem 0.35rem; border-radius: 6px; background: rgba(127, 127, 127, 0.22); font: 0.82em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .ai-me { align-self: flex-end; border-bottom-right-radius: 6px; background: #2563eb; color: #fff; }
 .ai-gm { align-self: flex-start; border-bottom-left-radius: 6px; background: var(--bg-tertiary); }
 .ai-ev { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-secondary); font: 0.72rem/1.5 ui-monospace, monospace; color: var(--text-secondary); white-space: normal; }

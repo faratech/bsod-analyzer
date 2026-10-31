@@ -283,3 +283,47 @@ test('a stream that fails after some text keeps what was shown and says so; one 
   assert.equal(second.container.querySelectorAll('.ai-msg').length, 0);
   await second.view.unmount();
 });
+
+test('answers render bold, inline code and bullets as elements, and never as HTML', async () => {
+  const { dom, container, view } = await open({});
+  script['/api/bsod-ai/ask'] = {
+    json: {
+      success: true, remaining: 7, evidence: [],
+      answer: 'The **bad.sys** driver crashed. Run `sfc /scannow`.\n- Update it\n- Restart\n<img src=x onerror=alert(1)> **half open',
+    },
+  };
+  await typeAndSend(dom, container, 'Which driver is it?');
+  const reply = [...container.querySelectorAll('.ai-gm')].at(-1);
+  assert.equal(reply.querySelector('strong').textContent, 'bad.sys');
+  assert.equal(reply.querySelector('code').textContent, 'sfc /scannow');
+  assert.deepEqual([...reply.querySelectorAll('li')].map(li => li.textContent), ['Update it', 'Restart']);
+  assert.equal(reply.querySelector('img'), null, 'text that looks like HTML stays text');
+  assert.match(reply.textContent, /<img src=x onerror=alert\(1\)> half open/, 'an unmatched marker is dropped, the words stay');
+  assert.doesNotMatch(reply.textContent, /\*\*/);
+  // The visitor's own message is never parsed.
+  const mine = container.querySelector('.ai-me');
+  assert.equal(mine.querySelector('strong'), null);
+  await view.unmount();
+});
+
+test('a streamed answer shows bold only once its closing marker has arrived', async () => {
+  const { dom, container, view } = await open({});
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  script['/api/bsod-ai/ask'] = {
+    sse: [
+      ['delta', { text: 'The **bad.' }],
+      { hold: gate },
+      ['delta', { text: 'sys** driver.' }],
+      ['done', { answer: 'The **bad.sys** driver.', evidence: [], remaining: 5 }],
+    ],
+  };
+  await typeAndSend(dom, container, 'Which driver is it?');
+  const live = container.querySelector('.ai-msg[aria-hidden="true"]');
+  assert.equal(live.querySelector('strong'), null);
+  assert.match(live.textContent, /^The bad\./);
+  release();
+  await settle();
+  assert.equal([...container.querySelectorAll('.ai-gm')].at(-1).querySelector('strong').textContent, 'bad.sys');
+  await view.unmount();
+});
