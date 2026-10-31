@@ -30,7 +30,6 @@ test('purge-css keeps the classes the app builds dynamically or applies outside 
   const live = [
     '.confidence-windbg', '.confidence-fallback', '.confidence-mixed',
     '.related-match-both', '.related-match-module',
-    ...[1, 2, 3, 4, 5, 6].map(n => `.particle-${n}`),
     ...[0, 1, 2, 3, 4, 5].map(n => `.heatmap-cell.step-${n}`),
     '.app-embed',
   ];

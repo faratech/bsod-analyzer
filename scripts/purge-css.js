@@ -43,12 +43,10 @@ export const purgeOptions = {
         /^hero-/,
         // Built from template strings, so the extractor never sees them whole:
         // confidence-${source} (AnalysisReportCard), related-match-${kind}
-        // (RelatedDiscussions), step-${n} (CorpusInsightCharts heatmap),
-        // particle-${n} (AnalysisProgress).
+        // (RelatedDiscussions), step-${n} (CorpusInsightCharts heatmap).
         /^confidence-/,
         /^related-match-/,
         /^step-\d+$/,
-        /^particle-\d+$/,
         'app-embed',
         // React Router classes
         'active',

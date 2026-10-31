@@ -146,6 +146,10 @@ route its own prerendered markup from memory with strong ETags (304s on
 If-None-Match); in development it reads from disk. Each route must get its own
 prerendered markup — never another route's — or hydration mismatches.
 
+### Analyzer live view
+
+While a run is active `pages/Analyzer.tsx` hides the uploader and wraps the page in `.analyzer-live` (viewport height minus header, minus the sticky ad bar when it is filled), so the ad row and `components/AnalysisProgress.tsx` (a container-query card: grid, face and steps resize to the space left) fit one screen. The ad row and the results list stay mounted so no ad is re-requested. A run that produced a report holds the finished card for 1.6 s, then a summary strip (stop code, likely cause from `getReportFacts`) sits above the results until "Analyze another file". The animation moves only transform, translate, scale and opacity inside the card.
+
 ### Key Files
 
 - **`server.js`** - Fastify backend with security middleware, session management, rate limiting, Gemini API proxy, and WinDBG proxy

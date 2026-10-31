@@ -93,8 +93,6 @@ test('the progress card carries a polite status region with only the stage title
   assert.doesNotMatch(region.textContent, /Elapsed|\d+s/, 'the timer is not announced');
   assert.equal(container.querySelectorAll('[aria-live]').length, 1, 'only one live region on the card');
 
-  const title = container.querySelector('.progress-title');
-  assert.ok(title.querySelector('[aria-hidden="true"]'), 'the animated dots are hidden from assistive technology');
   await view.unmount();
   dom.window.close();
 });

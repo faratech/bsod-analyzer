@@ -7,252 +7,102 @@ interface AnalysisProgressProps {
     percentage?: number;
 }
 
-const funFacts = [
-    "The first Blue Screen of Death appeared in Windows 1.0 in 1985.",
-    "BSOD errors are also called 'Stop Errors' or 'Bug Checks' in technical documentation.",
-    "Windows 8 introduced a simplified, friendlier BSOD with a sad face emoticon :(",
-    "The most common BSOD error is caused by faulty or incompatible drivers.",
-    "Microsoft calls the BSOD internally a 'Blue Screen of Doom'.",
-    "WinDBG is the same tool Microsoft engineers use to debug Windows itself.",
-    "A kernel dump contains a snapshot of all memory at the moment of the crash.",
-    "The Windows kernel handles over 400 different types of bug check codes.",
-    "IRQL_NOT_LESS_OR_EQUAL is one of the most common BSOD error codes.",
-    "Memory dumps can reveal exactly which driver instruction caused the crash.",
-    "Professional crash analysis can take hours - our AI does it in seconds!",
-    "The :( sad face on modern BSODs is actually a Unicode character.",
-    "Windows 11 added a QR code to BSODs for easier troubleshooting.",
-    "Minidumps are typically only 256KB but contain crucial crash data.",
-    "Full memory dumps can be several gigabytes in size.",
+const FACTS = [
+    'WinDBG is the debugger Microsoft engineers use to investigate Windows crashes.',
+    'Minidumps are only a few hundred KB, yet they record the stop code, stack and loaded drivers.',
+    'A kernel dump is a snapshot of kernel memory at the moment Windows crashed.',
+    'IRQL_NOT_LESS_OR_EQUAL usually means a driver touched memory it should not have.',
 ];
 
-const stageInfo: Record<string, { icon: string; title: string; description: string }> = {
-    uploading: {
-        icon: '📤',
-        title: 'Uploading Dump File',
-        description: 'Securely transferring your crash dump to the analysis server...'
-    },
-    queued: {
-        icon: '⏳',
-        title: 'Queued for Analysis',
-        description: 'Your file is in the queue and will be processed shortly...'
-    },
-    processing: {
-        icon: '🔬',
-        title: 'WinDBG Analysis in Progress',
-        description: 'Running professional debugging commands on your crash dump...'
-    },
-    downloading: {
-        icon: '📥',
-        title: 'Downloading Results',
-        description: 'Retrieving the detailed analysis from WinDBG...'
-    },
-    analyzing: {
-        icon: '🤖',
-        title: 'AI Analysis',
-        description: 'Our AI is interpreting the crash data for you...'
-    },
-    complete: {
-        icon: '✅',
-        title: 'Analysis Complete',
-        description: 'Your crash analysis is ready!'
-    }
-};
-
-const timeEstimates: Record<string, { typical: string; maxSeconds: number }> = {
-    uploading: { typical: 'typically 5\u201315 seconds', maxSeconds: 15 },
-    queued: { typical: 'usually under a minute', maxSeconds: 60 },
-    processing: { typical: 'usually 30\u201390 seconds', maxSeconds: 90 },
-    downloading: { typical: 'a few seconds', maxSeconds: 10 },
-    analyzing: { typical: 'usually 10\u201330 seconds', maxSeconds: 30 },
-    complete: { typical: '', maxSeconds: 0 },
-};
+// The first five rows are the steps beside the grid; maxSeconds is a stage's own
+// budget for the "taking longer" note.
+const STAGES = [
+    { key: 'uploading', title: 'Uploading Dump File', description: 'Securely transferring your crash dump to the analysis server...', label: 'Upload', typical: 'typically 5–15 seconds', maxSeconds: 15 },
+    { key: 'queued', title: 'Queued for Analysis', description: 'Your file is in the queue and will be processed shortly...', label: 'Queue', typical: 'usually under a minute', maxSeconds: 60 },
+    { key: 'processing', title: 'WinDBG Analysis in Progress', description: 'Running professional debugging commands on your crash dump...', label: 'WinDBG', typical: 'usually 30–90 seconds', maxSeconds: 90 },
+    { key: 'downloading', title: 'Downloading Results', description: 'Retrieving the detailed analysis from WinDBG...', label: 'Fetch', typical: 'a few seconds', maxSeconds: 10 },
+    { key: 'analyzing', title: 'AI Analysis', description: 'Our AI is interpreting the crash data for you...', label: 'AI', typical: 'usually 10–30 seconds', maxSeconds: 30 },
+    { key: 'complete', title: 'Analysis Complete', description: 'Your crash analysis is ready!', label: '', typical: '', maxSeconds: 0 },
+];
 
 // Drops a trailing elapsed counter: `— 40s elapsed` or `(40s)`.
-const ELAPSED_SUFFIX = /\s*(?:\u2014\s*\d+s elapsed|\(\d+s\))\s*$/;
-function stableAnnouncement(message: string | undefined): string {
-    return (message || '').replace(ELAPSED_SUFFIX, '').trim();
-}
+const ELAPSED_SUFFIX = /\s*(?:—\s*\d+s elapsed|\(\d+s\))\s*$/;
 
 const AnalysisProgress: React.FC<AnalysisProgressProps> = ({ stage, message, startTime, percentage }) => {
-    const [currentFact, setCurrentFact] = useState(0);
-    const [elapsedTime, setElapsedTime] = useState(0);
-    // Time spent in the current stage: the "taking longer" check compares it
-    // against that stage's own budget (the clock shows the total run time).
-    const [stageElapsedTime, setStageElapsedTime] = useState(0);
-    const stageStartRef = useRef(Date.now());
-    const [dots, setDots] = useState('');
-
-    // Rotate fun facts every 8 seconds
+    const [, tick] = useState(0);
     useEffect(() => {
-        const interval = setInterval(() => {
-            setCurrentFact(prev => (prev + 1) % funFacts.length);
-        }, 8000);
-        return () => clearInterval(interval);
+        const id = setInterval(() => tick(n => n + 1), 1000);
+        return () => clearInterval(id);
     }, []);
 
-    // Restart the per-stage clock whenever the stage changes
-    useEffect(() => {
-        stageStartRef.current = Date.now();
-        setStageElapsedTime(0);
-    }, [stage]);
+    // "Taking longer" compares the time in this stage with its own budget; the
+    // clock shows the whole run and stops once complete.
+    const stageStart = useRef(Date.now());
+    const endTime = useRef(0);
+    useEffect(() => { stageStart.current = Date.now(); }, [stage]);
+    if (stage === 'complete' && !endTime.current) endTime.current = Date.now();
+    const elapsed = startTime ? Math.floor(((endTime.current || Date.now()) - startTime) / 1000) : 0;
 
-    // Update elapsed time
-    useEffect(() => {
-        if (!startTime) return;
-        const interval = setInterval(() => {
-            setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
-            setStageElapsedTime(Math.floor((Date.now() - stageStartRef.current) / 1000));
-        }, 1000);
-        return () => clearInterval(interval);
-    }, [startTime]);
+    const idx = STAGES.findIndex(s => s.key === stage);
+    const info = STAGES[idx] || STAGES[2];
+    const isTakingLong = info.maxSeconds > 0 && (Date.now() - stageStart.current) / 1000 > info.maxSeconds * 2;
+    // WinDBG fell back to local analysis: the message becomes a notice and its step is skipped.
+    const fallback = /unavailable/.test(message || '');
+    const description = fallback ? info.description
+        : stage === 'uploading' && percentage !== undefined ? `Uploading... ${percentage}%` : message || info.description;
+    const bar = stage === 'complete' ? 100 : ((idx + (stage === 'uploading' ? (percentage ?? 0) * 0.009 : 0.4)) / 5) * 100;
+    const fact = Math.floor(elapsed / 8) % FACTS.length;
 
-    // Animate dots
-    useEffect(() => {
-        const interval = setInterval(() => {
-            setDots(prev => prev.length >= 3 ? '' : prev + '.');
-        }, 500);
-        return () => clearInterval(interval);
-    }, []);
-
-    const formatTime = (seconds: number): string => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    };
-
-    const info = stageInfo[stage] || stageInfo.processing;
-    const stageOrder = ['uploading', 'queued', 'processing', 'downloading', 'analyzing', 'complete'];
-    const currentStageIndex = stageOrder.indexOf(stage);
-
-    const estimate = timeEstimates[stage];
-    const isTakingLong = estimate && estimate.maxSeconds > 0 && stageElapsedTime > estimate.maxSeconds * 2;
-    const timeEstimateText = isTakingLong
-        ? 'Taking longer than usual...'
-        : estimate?.typical || '';
-
-    // For uploading stage, show percentage in the description
-    const displayMessage = stage === 'uploading' && percentage !== undefined
-        ? `Uploading... ${percentage}%`
-        : message || info.description;
-
-    // What assistive technology hears: the stage and its message only. The
-    // animated dots, the elapsed timer and the upload percentage tick many
-    // times a second/minute and would drown the stage changes. The queued
-    // messages also end in an elapsed counter that changes on every poll
-    // (windbgService), so it is stripped: the region changes, and is
-    // announced, only when the stage or the queue position changes (#311).
-    const announcedMessage = stableAnnouncement(message) || info.description;
+    // Assistive technology hears the stage and its message, without the
+    // elapsed counter the queued messages end in, which changes on every poll
+    // (#311).
+    const announced = (message || '').replace(ELAPSED_SUFFIX, '').trim() || info.description;
 
     return (
-        <div className="analysis-progress-container">
-            <div className="analysis-progress-card">
-                <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-                    {info.title}. {announcedMessage}
+        <section className="progress" data-s={stage} aria-label="Analysis progress">
+            <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{info.title}. {announced}</div>
+            <div className="progress-bar" aria-hidden="true"><i style={{ width: `${bar}%` }} /></div>
+
+            <div className="progress-head">
+                <div>
+                    <h3 className="progress-title">{info.title}</h3>
+                    <p className="progress-description">{description}</p>
+                    {fallback && <p className="progress-notice">{message}</p>}
                 </div>
-                {/* Animated background */}
-                <div className="progress-bg-animation"></div>
-
-                {/* Main icon with pulse animation */}
-                <div className="progress-icon-container">
-                    <div className="progress-icon-pulse"></div>
-                    <div className="progress-icon-pulse delay-1"></div>
-                    <div className="progress-icon-pulse delay-2"></div>
-                    <span className="progress-icon">{info.icon}</span>
-                </div>
-
-                {/* Stage title */}
-                <h3 className="progress-title">{info.title}<span aria-hidden="true">{dots}</span></h3>
-                <p className="progress-description">{displayMessage}</p>
-
-                {/* Fallback warning */}
-                {message && message.includes('unavailable') && (
-                    <div style={{
-                        backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                        border: '1px solid var(--status-warning)',
-                        borderRadius: '0.375rem',
-                        padding: '0.5rem 0.75rem',
-                        marginTop: '0.5rem',
-                        fontSize: '0.8rem',
-                        color: 'var(--status-warning)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem'
-                    }}>
-                        <span style={{fontSize: '1rem'}}>&#x26A0;</span>
-                        {message}
-                    </div>
-                )}
-
-                {/* Progress stages indicator */}
-                <div className="progress-stages">
-                    {stageOrder.slice(0, -1).map((s, index) => (
-                        <div key={s} className="progress-stage-item">
-                            <div className={`progress-stage-dot ${index < currentStageIndex ? 'completed' : index === currentStageIndex ? 'active' : ''}`}>
-                                {index < currentStageIndex && '✓'}
-                            </div>
-                            {index < stageOrder.length - 2 && (
-                                <div className={`progress-stage-line ${index < currentStageIndex ? 'completed' : ''}`}></div>
-                            )}
-                        </div>
-                    ))}
-                </div>
-                <div className="progress-stage-labels">
-                    <span>Upload</span>
-                    <span>Queue</span>
-                    <span>WinDBG</span>
-                    <span>Download</span>
-                    <span>AI</span>
-                </div>
-
-                {/* Elapsed time with estimate */}
                 {startTime && (
                     <div className="progress-time">
-                        <span className="time-icon">⏱️</span>
-                        <span>
-                            Elapsed: {formatTime(elapsedTime)}
-                            {timeEstimateText && <span style={{color: 'var(--text-tertiary)', marginLeft: '0.5rem'}}>({timeEstimateText})</span>}
-                        </span>
+                        <span className="progress-cap">Elapsed:</span> <b>{elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`}</b>
+                        {stage !== 'complete' && <small className={isTakingLong ? 'warn' : undefined}>{isTakingLong ? 'Taking longer than usual...' : info.typical}</small>}
                     </div>
                 )}
+            </div>
 
-                {/* Animated loading bar */}
-                <div className="progress-bar-container">
-                    <div className="progress-bar-track">
-                        {stage === 'uploading' && percentage !== undefined ? (
-                            <div
-                                className="progress-bar-fill"
-                                style={{
-                                    width: `${percentage}%`,
-                                    animation: 'none',
-                                    transition: 'width 0.3s ease'
-                                }}
-                            ></div>
-                        ) : (
-                            <>
-                                <div className="progress-bar-fill"></div>
-                                <div className="progress-bar-shimmer"></div>
-                            </>
-                        )}
-                    </div>
+            <div className="progress-body">
+                <div className="progress-mem" aria-hidden="true">
+                    <div className="progress-cells"><i style={{ '--p': (percentage ?? 0) / 100 } as React.CSSProperties} /></div>
                 </div>
-
-                {/* Fun fact */}
-                <div className="progress-fun-fact">
-                    <div className="fun-fact-icon">💡</div>
-                    <div className="fun-fact-content">
-                        <span className="fun-fact-label">Did you know?</span>
-                        <p className="fun-fact-text">{funFacts[currentFact]}</p>
-                    </div>
-                </div>
-
-                {/* Floating particles animation */}
-                <div className="floating-particles">
-                    {[...Array(6)].map((_, i) => (
-                        <div key={i} className={`particle particle-${i + 1}`}></div>
-                    ))}
+                <div className="progress-side">
+                    <svg className="progress-face" viewBox="0 0 120 120" aria-hidden="true">
+                        <rect x="4" y="4" width="112" height="112" rx="26" />
+                        <circle cx="42" cy="48" r="8" /><circle cx="78" cy="48" r="8" />
+                        <path d="M40 88Q60 66 80 88" />
+                    </svg>
+                    <ol className="progress-steps">
+                        {STAGES.slice(0, 5).map((s, i) => (
+                            <li key={s.key} className="progress-step" data-state={fallback && i === 2 ? 'skip' : stage === 'complete' || i < idx ? 'done' : i === idx ? 'active' : 'pending'}>
+                                <span className="progress-node" />
+                                <span className="progress-label">{s.label}</span>
+                            </li>
+                        ))}
+                    </ol>
                 </div>
             </div>
-        </div>
+
+            <div className="progress-fact">
+                <b>Did you know?</b>
+                <p key={fact}>{FACTS[fact]}</p>
+            </div>
+        </section>
     );
 };
 

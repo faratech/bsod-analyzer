@@ -18,6 +18,7 @@ import { useAnalysis } from '../hooks/useAnalysis';
 import { VerticalAd, InFeedAd } from '../components/AdSense';
 import { DisplayAdSafe, SafeAd } from '../components/AdSenseWithSizeCheck';
 import { countBatchFiles } from '../utils/fileValidation';
+import { getReportFacts } from '../utils/reportFacts';
 import { initializeSession, onSessionInvalid, startSessionRefresh, stopSessionRefresh } from '../utils/sessionManager';
 
 const Analyzer: React.FC = () => {
@@ -150,6 +151,46 @@ const Analyzer: React.FC = () => {
         [dumpFiles]
     );
 
+    // During a run the page is one viewport: the uploader hides and the progress
+    // card fills the space under the ad. A run that produced a report keeps the
+    // finished card for a moment, then it gives way to a summary strip above the
+    // results until the visitor asks to analyze another file. `finishing` is set
+    // while rendering so the card never unmounts between the run and the hold.
+    const [finishing, setFinishing] = useState(false);
+    const [summaryOpen, setSummaryOpen] = useState(false);
+    const [wasAnalyzing, setWasAnalyzing] = useState(false);
+    const analyzedBefore = useRef(0);
+    const runIds = useRef<string[]>([]);
+    if (isAnalyzing !== wasAnalyzing) {
+        setWasAnalyzing(isAnalyzing);
+        if (isAnalyzing) {
+            analyzedBefore.current = analyzedCount;
+            setSummaryOpen(false);
+        }
+        setFinishing(!isAnalyzing && !error && analyzedCount > analyzedBefore.current);
+    }
+    useEffect(() => {
+        if (!finishing) return;
+        const timer = setTimeout(() => { setFinishing(false); setSummaryOpen(true); }, 1600);
+        return () => clearTimeout(timer);
+    }, [finishing]);
+
+    const live = Boolean((isAnalyzing && progress) || finishing);
+    const startTime = useRef(0);
+    if (progress) startTime.current = progress.startTime;
+    const analyzing = dumpFiles.filter(df => df.status === FileStatus.ANALYZING);
+    if (analyzing.length) runIds.current = analyzing.map(df => df.id);
+    const fresh = dumpFiles.filter(df => runIds.current.includes(df.id) && df.status === FileStatus.ANALYZED);
+    const facts = summaryOpen && fresh.length === 1 ? getReportFacts(fresh[0]) : null;
+    const wasLive = useRef(false);
+    useEffect(() => {
+        if (wasLive.current && !live) {
+            const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            (document.getElementById('analysis-summary') ?? document.getElementById('analysis-results'))?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth' });
+        }
+        wasLive.current = live;
+    }, [live]);
+
     const analyzerStructuredData = {
         "@context": "https://schema.org",
         "@graph": [
@@ -198,7 +239,8 @@ const Analyzer: React.FC = () => {
             />
             <StructuredData data={analyzerStructuredData} />
             <main>
-                <section className="analyzer-hero">
+                <div className={live ? 'analyzer-live' : undefined}>
+                <section className="analyzer-hero" hidden={live || summaryOpen}>
                 <div className="container">
                     <div className="analyzer-header">
                         <h1 ref={pageHeadingRef} tabIndex={-1}>BSOD Dump Analyzer</h1>
@@ -251,20 +293,34 @@ const Analyzer: React.FC = () => {
             />
             
             <div className="container">
+                {summaryOpen && !live && (
+                    <div id="analysis-summary" className="analyzer-summary" role="region" aria-label="Analysis summary">
+                        <span className="progress-node" aria-hidden="true" />
+                        <b>Analysis complete</b>
+                        {facts?.bugcheck && <span><small>Stop code</small>{facts.bugcheck}</span>}
+                        {facts?.culprit && <span><small>Likely cause</small>{facts.culprit}</span>}
+                        {fresh.length > 1 && <span>{fresh.length} reports ready</span>}
+                        <button className="btn btn-secondary" onClick={() => { setSummaryOpen(false); setTimeout(() => pageHeadingRef.current?.focus(), 0); }}>
+                            Analyze another file
+                        </button>
+                    </div>
+                )}
                 {error && <ErrorAlert error={error} className="mt-2" />}
 
                 <AnalysisCompletionAnnouncer isAnalyzing={isAnalyzing} analyzedCount={analyzedCount} />
 
-                {/* Show fancy progress animation during analysis */}
-                {isAnalyzing && progress && (
+                {live && (
                     <AnalysisProgress
-                        stage={progress.stage}
-                        message={progress.message}
-                        startTime={progress.startTime}
-                        percentage={progress.percentage}
+                        stage={progress?.stage ?? 'complete'}
+                        message={progress?.message}
+                        startTime={startTime.current}
+                        percentage={progress?.percentage}
                     />
                 )}
+            </div>
+            </div>
 
+            <div className="container">
                 <AnalysisResults
                     dumpFiles={analyzedFiles}
                     onRetry={handleRetry}
