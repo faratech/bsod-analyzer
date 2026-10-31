@@ -10,6 +10,7 @@ import AnalysisProgress from '../components/AnalysisProgress';
 import AnalysisCompletionAnnouncer from '../components/AnalysisCompletionAnnouncer';
 import { AnalyzeIcon, WandIcon } from '../components/Icons';
 import BsodAiChat from '../components/BsodAiChat';
+import { reactionFor } from '../utils/mascotReaction';
 import { getBsodAiStatus } from '../services/bsodAiService';
 import SEO from '../components/SEO';
 import StructuredData from '../components/StructuredData';
@@ -178,7 +179,7 @@ const Analyzer: React.FC = () => {
     }
     useEffect(() => {
         if (!finishing) return;
-        const timer = setTimeout(() => { setFinishing(false); setSummaryOpen(true); }, 1600);
+        const timer = setTimeout(() => { setFinishing(false); setSummaryOpen(true); }, 2800);
         return () => clearTimeout(timer);
     }, [finishing]);
 
@@ -342,6 +343,7 @@ const Analyzer: React.FC = () => {
                         message={progress?.message}
                         startTime={startTime.current}
                         percentage={progress?.percentage}
+                        reaction={reactionFor(fresh[0])}
                     />
                 )}
             </div>
