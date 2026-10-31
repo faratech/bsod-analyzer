@@ -84,10 +84,13 @@ export function createOpenAIFreeBudget({
   }
 
   // Admit a request and hold its estimate until release(); null when the
-  // projection would cross the threshold.
-  function tryReserve(estimatedTokens) {
+  // projection would cross the threshold. A lower-priority caller passes a
+  // `fraction` < 1: it is admitted only while total usage, everyone's included,
+  // is under that share of the threshold, so it yields to the analyses.
+  function tryReserve(estimatedTokens, { fraction = 1 } = {}) {
     const tokens = Math.max(0, Number(estimatedTokens) || 0);
-    if (projected(tokens) > limit()) return null;
+    const share = Number.isFinite(fraction) && fraction > 0 && fraction < 1 ? fraction : 1;
+    if (projected(tokens) > limit() * share) return null;
     const reservation = { tokens };
     inFlight += tokens;
     open.add(reservation);

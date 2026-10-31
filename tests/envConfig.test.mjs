@@ -76,6 +76,14 @@ test('switches: natural spellings work and unknown values keep the safe side', (
   assert.equal(typo.statsEnabled, false);
   assert.deepEqual(warnings.map(w => w.name).sort(), ['CORPUS_ENABLED', 'STATS_ENABLED']);
   assert.equal(readEnvSwitches({ STATS_ENABLED: 'On' }, quiet).statsEnabled, true);
+
+  // The BSOD AI chat is the one switch that is off by default: a new AI surface
+  // is turned on deliberately, and a typo keeps it off.
+  assert.equal(readEnvSwitches({}, quiet).bsodAiChatEnabled, false);
+  assert.equal(readEnvSwitches({ BSOD_AI_CHAT_ENABLED: 'true' }, quiet).bsodAiChatEnabled, true);
+  assert.equal(readEnvSwitches({ BSOD_AI_CHAT_ENABLED: 'On' }, quiet).bsodAiChatEnabled, true);
+  assert.equal(readEnvSwitches({ BSOD_AI_CHAT_ENABLED: 'treu' }, quiet).bsodAiChatEnabled, false);
+  assert.equal(readEnvSwitches({ BSOD_AI_CHAT_ENABLED: '0' }, quiet).bsodAiChatEnabled, false);
 });
 
 test('TRUST_PROXY_HOPS is validated once as an integer >= 1', () => {

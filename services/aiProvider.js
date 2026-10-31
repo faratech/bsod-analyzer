@@ -497,6 +497,76 @@ export async function generateOpenRouterContent(request, {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+// Reads an OpenAI-style chat-completions stream (`stream: true`,
+// `stream_options.include_usage`) and rebuilds the object a non-streaming call
+// returns, so the adapters' existing usage, tier and empty-answer handling
+// applies unchanged. `onDelta` receives each piece of content as it arrives.
+// The usage chunk (sent last, with no choices) is what quota settlement needs.
+// Lines are parsed whole, so an event split across network reads is fine, and
+// comment or `event:` lines are ignored.
+const MAX_STREAM_BYTES = 2_000_000;
+
+export async function readChatCompletionStream(response, { onDelta } = {}) {
+  const reader = response.body?.getReader?.();
+  if (!reader) throw new AIProviderError('The provider did not return a stream', { code: 'INVALID_AI_RESPONSE', status: 502 });
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let received = 0;
+  let content = '';
+  let model = null;
+  let serviceTier = null;
+  let usage = null;
+  let finishReason = null;
+  let sawDone = false;
+
+  const handleLine = line => {
+    if (!line.startsWith('data:')) return;
+    const payload = line.slice(5).trim();
+    if (!payload) return;
+    if (payload === '[DONE]') { sawDone = true; return; }
+    let chunk;
+    try { chunk = JSON.parse(payload); } catch { return; }
+    if (chunk?.error) {
+      throw new AIProviderError(String(chunk.error.message || 'The provider reported an error mid-stream').slice(0, 300), { code: 'AI_UPSTREAM_ERROR', status: 502 });
+    }
+    if (typeof chunk?.model === 'string') model = chunk.model;
+    if (typeof chunk?.service_tier === 'string') serviceTier = chunk.service_tier;
+    if (chunk?.usage && typeof chunk.usage === 'object') usage = chunk.usage;
+    const choice = chunk?.choices?.[0];
+    if (!choice) return;
+    const piece = choice.delta?.content;
+    if (typeof piece === 'string' && piece) {
+      content += piece;
+      onDelta?.(piece);
+    }
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value?.byteLength || 0;
+    if (received > MAX_STREAM_BYTES) {
+      try { await reader.cancel(); } catch { /* already closing */ }
+      throw new AIProviderError('The provider stream was too large', { code: 'INVALID_AI_RESPONSE', status: 502 });
+    }
+    buffer += decoder.decode(value, { stream: true });
+    for (let newline = buffer.indexOf('\n'); newline >= 0; newline = buffer.indexOf('\n')) {
+      handleLine(buffer.slice(0, newline).replace(/\r$/, ''));
+      buffer = buffer.slice(newline + 1);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) handleLine(buffer.replace(/\r$/, ''));
+
+  return {
+    model,
+    service_tier: serviceTier,
+    usage: usage || {},
+    choices: [{ message: { content }, finish_reason: finishReason || (sawDone ? 'stop' : null) }]
+  };
+}
+
 export const DEFAULT_OPENAI_FREE_MODEL = 'gpt-6-luna';
 export const DEFAULT_EXPERIENTIAL_BASE_URL = 'https://api.experientiallabs.ai/v1';
 export const DEFAULT_EXPERIENTIAL_MODEL = 'gpt-6-luna';
@@ -527,7 +597,10 @@ export async function generateOpenAIContent(request, {
   fetchImpl = globalThis.fetch,
   maxRetries = 1,
   signal,
-  sleepImpl = wait
+  sleepImpl = wait,
+  // Streams the answer: each piece of content is passed here as it arrives.
+  // Retries happen only before the stream starts.
+  onDelta
 } = {}) {
   if (!apiKey) {
     throw new AIProviderError('OPENAI_API_KEY is not configured', {
@@ -552,11 +625,13 @@ export async function generateOpenAIContent(request, {
   }
   messages.push({ role: 'user', content: prompt });
 
+  const streaming = typeof onDelta === 'function';
   const body = {
     model,
     messages,
-    stream: false
+    stream: streaming
   };
+  if (streaming) body.stream_options = { include_usage: true };
   // Analysis reports parse strict JSON; lighter callers (stats narrative)
   // opt out because many free providers reject structured-output requests.
   if (config.jsonObjectMode !== false) {
@@ -625,11 +700,14 @@ export async function generateOpenAIContent(request, {
 
   let data;
   try {
-    data = await response.json();
-  } catch {
-    throw new AIProviderError('OpenAI returned an invalid response', {
-      code: 'INVALID_AI_RESPONSE',
-      status: 502
+    data = streaming ? await readChatCompletionStream(response, { onDelta }) : await response.json();
+  } catch (error) {
+    if (error instanceof AIProviderError) throw error;
+    const aborted = error?.name === 'AbortError' || error?.name === 'TimeoutError';
+    throw new AIProviderError(aborted ? 'OpenAI request timed out' : 'OpenAI returned an invalid response', {
+      code: aborted ? 'AI_TIMEOUT' : 'INVALID_AI_RESPONSE',
+      status: aborted ? 504 : 502,
+      retryable: aborted
     });
   }
   if (data?.error) {
@@ -690,7 +768,11 @@ export async function generateExperientialContent(request, {
   fetchImpl = globalThis.fetch,
   maxRetries = 1,
   signal,
-  sleepImpl = wait
+  sleepImpl = wait,
+  // Streams the answer (OpenAI-style SSE, verified against the hosted API):
+  // each piece of content is passed here as it arrives. Retries happen only
+  // before the stream starts.
+  onDelta
 } = {}) {
   if (!apiKey) {
     throw new AIProviderError('EXPLABS_API_KEY is not configured', {
@@ -715,7 +797,9 @@ export async function generateExperientialContent(request, {
   }
   messages.push({ role: 'user', content: prompt });
 
-  const body = { model, messages, stream: false };
+  const streaming = typeof onDelta === 'function';
+  const body = { model, messages, stream: streaming };
+  if (streaming) body.stream_options = { include_usage: true };
   if (config.jsonObjectMode !== false) {
     body.response_format = { type: 'json_object' };
   }
@@ -839,11 +923,14 @@ export async function generateExperientialContent(request, {
 
   let data;
   try {
-    data = await response.json();
-  } catch {
-    throw fail('Experiential returned an invalid response', {
-      code: 'INVALID_AI_RESPONSE',
-      status: 502,
+    data = streaming ? await readChatCompletionStream(response, { onDelta }) : await response.json();
+  } catch (error) {
+    // The stream broke after the provider began: it ran, so keep the reservation.
+    const aborted = error?.name === 'AbortError' || error?.name === 'TimeoutError';
+    throw fail(error instanceof AIProviderError ? error.message : aborted ? 'Experiential request timed out' : 'Experiential returned an invalid response', {
+      code: error instanceof AIProviderError ? error.code : aborted ? 'AI_TIMEOUT' : 'INVALID_AI_RESPONSE',
+      status: aborted ? 504 : 502,
+      retryable: aborted,
       finalRan: true
     });
   }

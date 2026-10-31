@@ -121,3 +121,11 @@ export const CopyIcon: React.FC<IconProps> = ({ className = "w-5 h-5" }) => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
   </svg>
 );
+export const WandIcon: React.FC<IconProps> = ({ className = "w-5 h-5" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 20 L14 10" />
+    <path d="M18 2 L19.2 4.8 L22 6 L19.2 7.2 L18 10 L16.8 7.2 L14 6 L16.8 4.8Z" />
+    <path d="M6 4v3M4.5 5.5h3" />
+    <path d="M19 15v3M17.5 16.5h3" />
+  </svg>
+);

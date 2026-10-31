@@ -84,3 +84,23 @@ test('an org total read on an earlier UTC day does not count toward today', () =
   assert.equal(budget.localUsed(), 100_000);
   assert.equal(budget.projected(1_000), 101_000);
 });
+
+test('a lower-priority caller is admitted only under its share of the budget, everyone\'s usage included', () => {
+  const budget = createOpenAIFreeBudget({ dailyCap: 1000, safetyBuffer: 0 });
+  budget.setOrgUsage(0);
+  // Under 40% of the budget the chat is admitted, and the analyses are as always.
+  const chat = budget.tryReserve(100, { fraction: 0.4 });
+  assert.ok(chat);
+  budget.release(chat);
+  // Analyses have already used 390 of 1000: a 100-token chat would cross 40%, an analysis would not.
+  budget.setOrgUsage(390);
+  assert.equal(budget.tryReserve(100, { fraction: 0.4 }), null, 'the chat yields');
+  const analysis = budget.tryReserve(100);
+  assert.ok(analysis, 'an analysis is still admitted');
+  budget.release(analysis);
+  // The fraction cannot be used to ask for more than the whole budget, nor an invalid one to disable the gate.
+  for (const fraction of [5, 0, -1, NaN, undefined]) {
+    budget.setOrgUsage(950);
+    assert.equal(budget.tryReserve(100, { fraction }), null, String(fraction));
+  }
+});

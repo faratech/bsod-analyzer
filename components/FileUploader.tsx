@@ -4,6 +4,7 @@ import { validateFiles } from '../utils/fileValidation';
 import CloudflareTurnstile, { type CloudflareTurnstileHandle } from './CloudflareTurnstile';
 import { hasTurnstileHint, initializeSession, markSessionInitialized, noteNewSession, onSessionInvalid, startSessionRefresh } from '../utils/sessionManager';
 import { ALLOWED_EXTENSIONS } from '../shared/ingestPolicy.js';
+import { TURNSTILE_SITE_KEY } from '../constants';
 
 interface FileUploaderProps {
   onFilesAdded: (files: File[]) => void;
@@ -23,9 +24,6 @@ const FileUploader: React.FC<FileUploaderProps> = memo(({ onFilesAdded, currentF
   const [turnstileAttempt, setTurnstileAttempt] = useState(0);
   // Whether this attempt already reset the widget once (issue #277).
   const autoResetUsed = useRef(false);
-  
-  // Use the provided site key
-  const TURNSTILE_SITE_KEY = '0x4AAAAAAABiq2_hH-dGCkQi';
   
   // Check if user already has a valid session cookie
   useEffect(() => {

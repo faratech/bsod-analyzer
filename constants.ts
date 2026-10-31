@@ -16,3 +16,5 @@ export const PROCESSING_LIMITS = {
 export const FILE_SIZE_THRESHOLDS = {
     MINIDUMP: 5 * 1024 * 1024, // 5MB threshold for minidump vs kernel dump
 };
+// Public Cloudflare Turnstile site key (not a secret): the upload widget and the BSOD AI chat share it.
+export const TURNSTILE_SITE_KEY = '0x4AAAAAAABiq2_hH-dGCkQi';

@@ -97,6 +97,9 @@ import {
   registerForumRelatedRoute
 } from './server/forumRelated.js';
 import { requireDataUseTerms } from './server/dataUseTerms.js';
+import { registerBsodAiRoutes } from './server/bsodAiRoute.js';
+import { redactPublicReportText } from './shared/reportFacts.js';
+import { createPassCodec, createStrikeTracker } from './server/bsodAi.js';
 import { createHtmlDocuments, normalizeRoutePath, prerenderedRouteKey } from './server/htmlDocuments.js';
 import { DATA_USE_TERMS_VERSION } from './shared/dataUseTerms.js';
 import {
@@ -295,6 +298,20 @@ const EXPERIENTIAL_DAILY_INPUT_BUFFER = readPositiveInt('EXPLABS_DAILY_INPUT_BUF
 const EXPERIENTIAL_DAILY_OUTPUT_BUFFER = readPositiveInt('EXPLABS_DAILY_OUTPUT_BUFFER', 50_000);
 const EXPERIENTIAL_HOURLY_INPUT_BUFFER = readPositiveInt('EXPLABS_HOURLY_INPUT_BUFFER', 50_000);
 const EXPERIENTIAL_HOURLY_OUTPUT_BUFFER = readPositiveInt('EXPLABS_HOURLY_OUTPUT_BUFFER', 12_500);
+
+// BSOD AI chat (server/bsodAiRoute.js). Off unless BSOD_AI_CHAT_ENABLED is set.
+// The chat may use only this share of each free-provider budget (scans included),
+// so a busy hour of questions cannot starve an analysis.
+const BSOD_AI_CHAT_ENABLED = ENV_SWITCHES.bsodAiChatEnabled;
+const BSOD_AI_CHAT_BUDGET_FRACTION = Math.min(1, Math.max(0.05, Number(process.env.BSOD_AI_CHAT_BUDGET_FRACTION) || 0.4));
+const BSOD_AI_GLOBAL_DAILY_LIMIT = readPositiveInt('BSOD_AI_GLOBAL_DAILY_LIMIT', 3000);
+// A chat answer is short; waiting longer than this is worse than resting.
+const BSOD_AI_DEADLINE_MS = readPositiveInt('BSOD_AI_DEADLINE_MS', 30_000);
+const BSOD_AI_TIER_LIMITS = {
+  anon: { requests: readPositiveInt('BSOD_AI_ANON_LIMIT', 8), tokens: 60_000 },
+  forum: { requests: readPositiveInt('BSOD_AI_FORUM_LIMIT', 20), tokens: 150_000 },
+  premium: { requests: readPositiveInt('BSOD_AI_PREMIUM_LIMIT', 40), tokens: 300_000 }
+};
 // Cloud Run --max-instances. deploy-with-secret.sh and cloudbuild.yaml pass the
 // value they deploy with (the GitHub trigger's inline build does not, so the
 // default must match the service's --max-instances).
@@ -495,6 +512,11 @@ const fileHandleCodec = createFileHandleCodec({
   previousSecret: process.env.SESSION_SECRET_PREVIOUS,
   ttlMs: SESSION_MAX_AGE_MS
 });
+// BSOD AI chat: a Turnstile-backed pass bound to the session, and strikes for
+// prompt-injection / off-topic attempts (server/bsodAi.js).
+const bsodAiPassCodec = createPassCodec({ secret: ACTUAL_SESSION_SECRET, previousSecret: process.env.SESSION_SECRET_PREVIOUS });
+const bsodAiStrikes = createStrikeTracker({ maxStrikes: key => (key.startsWith('ip:') ? 12 : 4) });
+setInterval(() => bsodAiStrikes.prune(), 60 * 1000).unref?.();
 
 // Per-key counters that must hold across Cloud Run instances (issue #134): the
 // AI quota and the cost-bearing limiters. Shared through a dedicated Upstash
@@ -902,10 +924,10 @@ async function fetchOpenAIIncentiveTokensUsed() {
 // a request with the given projected token usage, else null. The projection
 // adds local spend since the last Usage API read and in-flight estimates to
 // the cached org total (issue #291).
-async function openAIFreeGate(estimatedTokens) {
+async function openAIFreeGate(estimatedTokens, fraction = 1) {
   if (!OPENAI_API_KEY || providerQuota.isExhausted('openai-free')) return null;
   await fetchOpenAIIncentiveTokensUsed();
-  return openAIFreeBudget.tryReserve(estimatedTokens);
+  return openAIFreeBudget.tryReserve(estimatedTokens, { fraction });
 }
 
 // Latch the Experiential route off until the end of the UTC hour or day.
@@ -913,17 +935,21 @@ function markExperientialExhausted(scope = 'hour') {
   providerQuota.markExhausted('experiential-luna', scope);
 }
 
-function reserveExperientialQuota(inputTokens, outputTokens) {
+// `fraction` < 1 is how a lower-priority caller yields: the limits are scaled
+// down, so it is admitted only while total usage (scans included) is below that
+// share of the budget. The scans themselves reserve at 1.
+function reserveExperientialQuota(inputTokens, outputTokens, fraction = 1) {
   if (!EXPERIENTIAL_API_KEY || EXPERIENTIAL_MODEL !== DEFAULT_EXPERIENTIAL_MODEL) {
     return null;
   }
+  const scale = limit => Math.max(1, Math.floor(limit * fraction));
   return providerQuota.reserve('experiential-luna', {
     inputCost: inputTokens,
     outputCost: outputTokens,
-    dailyInputLimit: EXPERIENTIAL_DAILY_INPUT_LIMIT - EXPERIENTIAL_DAILY_INPUT_BUFFER,
-    dailyOutputLimit: EXPERIENTIAL_DAILY_OUTPUT_LIMIT - EXPERIENTIAL_DAILY_OUTPUT_BUFFER,
-    hourlyInputLimit: EXPERIENTIAL_HOURLY_INPUT_LIMIT - EXPERIENTIAL_HOURLY_INPUT_BUFFER,
-    hourlyOutputLimit: EXPERIENTIAL_HOURLY_OUTPUT_LIMIT - EXPERIENTIAL_HOURLY_OUTPUT_BUFFER
+    dailyInputLimit: scale(EXPERIENTIAL_DAILY_INPUT_LIMIT - EXPERIENTIAL_DAILY_INPUT_BUFFER),
+    dailyOutputLimit: scale(EXPERIENTIAL_DAILY_OUTPUT_LIMIT - EXPERIENTIAL_DAILY_OUTPUT_BUFFER),
+    hourlyInputLimit: scale(EXPERIENTIAL_HOURLY_INPUT_LIMIT - EXPERIENTIAL_HOURLY_INPUT_BUFFER),
+    hourlyOutputLimit: scale(EXPERIENTIAL_HOURLY_OUTPUT_LIMIT - EXPERIENTIAL_HOURLY_OUTPUT_BUFFER)
   });
 }
 
@@ -946,6 +972,102 @@ function requestTokenEstimate(request) {
       request.contents
     )
   };
+}
+
+// BSOD AI chat (server/bsodAiRoute.js): free providers only. Experiential
+// gpt-6-luna first, then the OpenAI free-incentive route; when neither has room
+// the chat rests (BSOD_AI_NO_FREE_CAPACITY). It never falls through to the billed
+// DeepSeek or OpenRouter legs, and it yields to scans: both legs are admitted
+// only while total usage is under BSOD_AI_CHAT_BUDGET_FRACTION of the budget.
+// The two legs mirror generateAIContent's; they are kept separate so a change
+// here cannot touch the analysis path.
+//
+// With `onDelta` the answer streams (both providers speak OpenAI-style SSE):
+// pieces are passed on as they arrive, `signal` lets the caller stop the
+// provider early, and once any text has been delivered a failure ends the call
+// instead of falling through to the other provider (its answer would not
+// continue the text already on the visitor's screen).
+async function generateFreeChat(request, {
+  deadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS }),
+  signal: callerSignal,
+  onDelta
+} = {}) {
+  let delivered = false;
+  const stream = typeof onDelta === 'function'
+    ? piece => { delivered = true; onDelta(piece); }
+    : undefined;
+  const legSignal = signal => (callerSignal ? AbortSignal.any([signal, callerSignal]) : signal);
+  const estimate = requestTokenEstimate(request);
+  const experientialReservation = deadline.canStart({ nonFinal: true })
+    ? reserveExperientialQuota(estimate.experientialInputReservation, estimate.outputTokens, BSOD_AI_CHAT_BUDGET_FRACTION)
+    : null;
+  if (experientialReservation?.allowed) {
+    try {
+      const response = await deadline.runLeg(
+        DEEPSEEK_TIMEOUT_MS,
+        signal => generateExperientialContent(request, {
+          apiKey: EXPERIENTIAL_API_KEY,
+          baseUrl: EXPERIENTIAL_BASE_URL,
+          model: EXPERIENTIAL_MODEL,
+          signal: legSignal(signal),
+          onDelta: stream
+        }),
+        'Experiential request timed out',
+        { nonFinal: true }
+      );
+      const settlement = settleProviderTokenReservation(experientialReservation, {
+        inputTokens: response.usageMetadata?.promptTokenCount,
+        outputTokens: response.usageMetadata?.candidatesTokenCount,
+        unmeteredAttempts: response.unmeteredAttempts
+      });
+      providerQuota.adjust(experientialReservation, {
+        inputDelta: settlement.inputDelta,
+        outputDelta: settlement.outputDelta
+      });
+      return normalizeAIResponse(response, `experiential:${EXPERIENTIAL_MODEL}`);
+    } catch (error) {
+      const settlement = settleFailedProviderReservation(experientialReservation, error);
+      providerQuota.adjust(experientialReservation, settlement);
+      const backoff = error instanceof AIProviderError ? providerBackoffFor(error) : null;
+      if (backoff?.latch) markExperientialExhausted(backoff.latch);
+      if (backoff?.pauseMs) providerQuota.pause('experiential-luna', backoff.pauseMs);
+      log.warn('bsod_ai.experiential_error', { code: error.code, message: error.message?.slice(0, 140) });
+      if (delivered || callerSignal?.aborted) throw error;
+    }
+  }
+
+  const openAIReservation = deadline.canStart({ nonFinal: true })
+    ? await openAIFreeGate(estimate.inputTokens + estimate.outputTokens, BSOD_AI_CHAT_BUDGET_FRACTION)
+    : null;
+  if (openAIReservation) {
+    try {
+      const response = await deadline.runLeg(
+        DEEPSEEK_TIMEOUT_MS,
+        signal => generateOpenAIContent(request, {
+          apiKey: OPENAI_API_KEY,
+          baseUrl: OPENAI_BASE_URL,
+          model: OPENAI_FREE_MODEL,
+          signal: legSignal(signal),
+          onDelta: stream
+        }),
+        'OpenAI free request timed out',
+        { nonFinal: true }
+      );
+      recordOpenAIFreeAttempt(response);
+      return normalizeAIResponse(response, `openai:${OPENAI_FREE_MODEL}`);
+    } catch (error) {
+      recordOpenAIFreeAttempt(error);
+      const exhausted = error instanceof AIProviderError
+        && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
+      if (exhausted) markOpenAIExhausted();
+      log.warn('bsod_ai.openai_error', { message: error.message?.slice(0, 140) });
+      if (delivered || callerSignal?.aborted) throw error;
+    } finally {
+      openAIFreeBudget.release(openAIReservation);
+    }
+  }
+
+  throw new AIProviderError('No free AI capacity for BSOD AI chat', { code: 'BSOD_AI_NO_FREE_CAPACITY', status: 503 });
 }
 
 // `deadline` bounds the whole chain (server/aiDeadline.js, issue #255): each
@@ -1289,6 +1411,16 @@ const forumRelatedLimiter = makeLimiter({
 });
 
 const geminiConcurrency = createConcurrencyLimiter(8, 'AI_BUSY');
+
+// BSOD AI chat. Session twins of the per-address limits (a session cookie works
+// from any address), a small body, and few questions in flight at once.
+const bsodAiStatusLimiter = makeLimiter({ windowMs: 15 * 60 * 1000, max: readPositiveInt('BSOD_AI_STATUS_RATE_LIMIT_MAX', 60), name: 'bsod-ai-status' });
+const bsodAiPassLimiter = sharedLimiter({ windowMs: 60 * 60 * 1000, max: readPositiveInt('BSOD_AI_PASS_RATE_LIMIT_MAX', 20), name: 'bsod-ai-pass' });
+const bsodAiPassSessionLimiter = sharedLimiter({ windowMs: 60 * 60 * 1000, max: readPositiveInt('BSOD_AI_PASS_SESSION_RATE_LIMIT_MAX', 10), name: 'bsod-ai-pass-session', keyGenerator: sessionRateLimitKey });
+const bsodAiAskLimiter = sharedLimiter({ windowMs: 15 * 60 * 1000, max: readPositiveInt('BSOD_AI_ASK_RATE_LIMIT_MAX', 40), name: 'bsod-ai-ask' });
+const bsodAiAskSessionLimiter = sharedLimiter({ windowMs: 60 * 60 * 1000, max: readPositiveInt('BSOD_AI_ASK_SESSION_RATE_LIMIT_MAX', 40), name: 'bsod-ai-ask-session', keyGenerator: sessionRateLimitKey });
+const bsodAiConcurrency = createConcurrencyLimiter(readPositiveInt('BSOD_AI_MAX_CONCURRENT', 4), 'BSOD_AI_BUSY');
+const bsodAiJsonParser = jsonParser({ limit: '16kb' });
 const windbgUploadConcurrency = createConcurrencyLimiter(WINDBG_UPLOAD_MAX_CONCURRENT, 'WINDBG_UPLOAD_BUSY');
 const archiveConcurrency = createConcurrencyLimiter(2, 'ARCHIVE_BUSY');
 const externalAnalyzeConcurrency = createConcurrencyLimiter(EXTERNAL_ANALYZE_MAX_CONCURRENT, 'ANALYSIS_BUSY');
@@ -1755,6 +1887,35 @@ const forumRelated = createForumRelatedService({
 });
 registerForumRelatedRoute(app, { service: forumRelated, middlewares: [forumRelatedLimiter, requireSession] });
 
+// BSOD AI chat: ask a question about a crash that was just analyzed. Dormant
+// unless BSOD_AI_CHAT_ENABLED (server/bsodAiRoute.js, server/bsodAi.js).
+registerBsodAiRoutes(app, {
+  enabled: BSOD_AI_CHAT_ENABLED,
+  middlewares: {
+    status: [requireSession, bsodAiStatusLimiter],
+    pass: [requireSession, bsodAiPassLimiter, bsodAiPassSessionLimiter, bsodAiJsonParser],
+    ask: [requireSession, bsodAiAskLimiter, bsodAiAskSessionLimiter, bsodAiConcurrency, requireDataUseTerms, bsodAiJsonParser]
+  },
+  passCodec: bsodAiPassCodec,
+  strikes: bsodAiStrikes,
+  verifyTurnstile: verifyTurnstileToken,
+  hostnameAllowed: host => turnstileExpectedHostnames().includes(host),
+  allowedHosts: turnstileExpectedHostnames(),
+  quotaLedger,
+  tierLimits: tier => BSOD_AI_TIER_LIMITS[tier] || BSOD_AI_TIER_LIMITS.anon,
+  wfSsoEnabled: WF_SSO_ENABLED,
+  globalDailyLimit: BSOD_AI_GLOBAL_DAILY_LIMIT,
+  sessionOwnsHash,
+  loadEvidence: loadOwnedWinDbgEvidence,
+  generateChat: generateFreeChat,
+  createDeadline: () => createAIDeadline({ budgetMs: BSOD_AI_DEADLINE_MS }),
+  redact: redactPublicReportText,
+  rateLimitKey,
+  safeToken,
+  log,
+  production: process.env.NODE_ENV === 'production'
+});
+
 // Full WinDBG result corpus in BigQuery (server/windbgCorpus.js). Stored rows are
 // acknowledged to WinDbg-API so it can prune its raw output after retention.
 const windbgCorpus = createWinDbgCorpusRecorder({
@@ -1872,6 +2033,19 @@ function recordStats(input) {
 }
 
 
+// Hostnames a Turnstile widget may report (and, for the BSOD AI routes, the
+// Origin hosts a same-site request may carry).
+function turnstileExpectedHostnames() {
+  return [
+    ...(process.env.NODE_ENV === 'production' ? [] : ['localhost']),
+    'bsod.windowsforum.com',
+    ...(process.env.ALLOWED_TURNSTILE_HOSTNAMES || process.env.ALLOWED_HOSTNAME || '')
+      .split(',')
+      .map(host => host.trim())
+      .filter(Boolean)
+  ];
+}
+
 // Endpoint to verify Turnstile and create session
 app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (req, res) => {
   try {
@@ -1930,14 +2104,7 @@ app.post('/api/auth/verify-turnstile', authLimiter, defaultJsonParser, async (re
     }
     
     // Validate hostname matches expected domain
-    const expectedHostnames = [
-      ...(process.env.NODE_ENV === 'production' ? [] : ['localhost']),
-      'bsod.windowsforum.com',
-      ...(process.env.ALLOWED_TURNSTILE_HOSTNAMES || process.env.ALLOWED_HOSTNAME || '')
-        .split(',')
-        .map(host => host.trim())
-        .filter(Boolean)
-    ];
+    const expectedHostnames = turnstileExpectedHostnames();
     
     // Siteverify reports the hostname for every real widget; only test keys
     // omit it, so production treats a missing hostname as a mismatch.
