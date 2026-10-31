@@ -46,6 +46,22 @@ export const SYSTEM_INSTRUCTION_ANALYSIS = [
   'Use only the supplied crash evidence. Do not invent drivers, bug check codes, stack frames, or tool output.'
 ].join(' ');
 
+// Shared by both analysis prefixes (byte-stable: no per-dump values). Sources:
+// Microsoft Learn, "Bug Check 0x1C8: MANUALLY_INITIATED_POWER_BUTTON_HOLD",
+// "Forcing a System Crash with the Power Button / from the Keyboard / from the
+// Debugger", and "Bug Check 0xE2: MANUALLY_INITIATED_CRASH".
+export const FORCED_CRASH_GUIDANCE = `### USER-INITIATED CRASHES (0x1C8, 0xE2, 0xDEADDEAD, and the live-dump forms 0x11C8 and 0x21C8):
+These bug checks are not a fault in a driver or in hardware. A person (or a configured hotkey) forced them:
+- 0x1C8 MANUALLY_INITIATED_POWER_BUTTON_HOLD: the power button was held for about 7 seconds, so Windows captured a dump before the firmware's hard power-off at about 10 seconds. Parameter 1 is how long the button was held, in milliseconds.
+- 0xE2 MANUALLY_INITIATED_CRASH: the keyboard hotkey (rightmost Ctrl held while pressing Scroll Lock twice) or the debugger's .crash command.
+The dump records the forced action, NOT the problem that came first. In almost every case the system had already hung, frozen, gone to a black screen or stopped responding, and the user reached for the power button because of it. Nothing in the bug check says why. If the system had in fact already crashed earlier (for example a blue screen whose dump never finished writing), that crash was not captured either. So:
+- Say plainly that the root cause is NOT established by this dump, and that the stop code is a symptom of the forced action, not of a fault. Do not blame the power button, the keyboard, or the user, and do not treat the bug check as the cause.
+- Set culprit to "Unknown (not captured in this dump)". Do NOT name a driver or module as the culprit just because it appears in the stack: that stack is the forced-crash handler running, not the original problem.
+- If the evidence clearly shows what the stalled system was stuck on (a thread blocked on a lock, a DPC or interrupt running far too long, an I/O request that never completed, a device or driver in a wait state), report it as an unconfirmed lead, say it is a lead and not a verdict, and name it in driverWarnings only if it is in the loaded modules. If the evidence shows nothing of the kind, say that too.
+- Do not populate hardwareError for these bug checks unless the evidence itself shows a hardware error.
+- In recommendations, give ways to find the original cause: check Event Viewer for Kernel-Power (Event ID 41) and any errors just before the restart, and Reliability Monitor; note what the system was doing when it froze (idle, gaming, waking from sleep, plugging something in); look at recent driver, BIOS or firmware and Windows updates, especially graphics, storage and chipset; check temperatures, power supply and storage health; run Windows Memory Diagnostic. If it keeps happening, suggest enabling a kernel or complete memory dump so the next freeze can be captured while it is happening, and keep the dump from this one.
+`;
+
 const JSON_CONTRACT = 'Return only a JSON object. Required fields: summary string, probableCause string, culprit string, recommendations array of strings. Optional fields may include bugCheck, driverWarnings, hardwareError, parameterAnalysis, callStack, systemInfo, and rawWinDbgOutput.';
 
 // Invariant block for the local (string/hex) analysis path. Starts with
@@ -212,6 +228,7 @@ Decode ALL bug check parameters with their specific meanings:
 - 2 or 8: Execute operation
 - 10: Execute DEP violation
 
+${FORCED_CRASH_GUIDANCE}
 ${JSON_CONTRACT}`;
 
 // Invariant block for the WinDBG-interpretation path (client upload path and the
@@ -246,6 +263,8 @@ If this is a hardware-related crash (WHEA, MCE, etc.), populate the hardwareErro
 
 ### PARAMETER ANALYSIS:
 Decode the bug check parameters shown in the WinDBG output.
+
+${FORCED_CRASH_GUIDANCE}
 
 Respond with valid JSON matching this schema:
 {
