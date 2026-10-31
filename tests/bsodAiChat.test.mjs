@@ -62,18 +62,29 @@ function installDom() {
     Object.defineProperty(globalThis, key, { value: key === 'window' ? dom.window : dom.window[key], configurable: true, writable: true });
   }
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  // Reduced motion: answers appear at once instead of being typed out.
-  dom.window.matchMedia = () => ({ matches: true });
   requests.length = 0;
   globalThis.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     requests.push({ url, method: init.method, headers: init.headers, credentials: init.credentials, body });
     const reply = script[url];
     const next = typeof reply === 'function' ? reply(body) : reply;
+    // `sse`: a list of [event, data] pairs sent as a stream, one per read; `hold` waits on a promise before the next.
+    const headers = { ...(next.headers || {}), ...(next.sse ? { 'Content-Type': 'text/event-stream' } : {}) };
+    const enc = new TextEncoder();
+    const stream = next.sse && new ReadableStream({
+      async start(controller) {
+        for (const item of next.sse) {
+          if (item.hold) await item.hold;
+          else controller.enqueue(enc.encode(`event: ${item[0]}\ndata: ${JSON.stringify(item[1])}\n\n`));
+        }
+        controller.close();
+      },
+    });
     return {
       ok: next.status === undefined || next.status < 400,
       status: next.status ?? 200,
-      headers: { get: name => (next.headers || {})[name] ?? null },
+      headers: { get: name => headers[name] ?? null },
+      body: stream,
       json: async () => next.json,
     };
   };
@@ -219,4 +230,56 @@ test('the conversation is announced politely and the controls are labelled', asy
   assert.ok(container.querySelector('button[aria-label="Close BSOD AI"]'));
   assert.equal(container.querySelector('input').maxLength, 500);
   await view.unmount();
+});
+
+test('a streamed answer grows in a hidden bubble, then replaces it with one announced answer', async () => {
+  const { dom, container, view } = await open({});
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  script['/api/bsod-ai/ask'] = {
+    sse: [
+      ['delta', { text: 'bad.sys is the suspect. ' }],
+      { hold: gate },
+      ['delta', { text: 'Update it.' }],
+      ['done', { answer: 'bad.sys is the suspect. Update it.', evidence: ['bad.sys'], remaining: 6 }],
+    ],
+  };
+  await typeAndSend(dom, container, 'Which driver is it?');
+  const ask = requests.find(r => r.url === '/api/bsod-ai/ask');
+  assert.equal(ask.body.stream, true);
+  // Mid-answer: the first sentence is on screen, hidden from screen readers, and the box is busy.
+  const live = container.querySelector('.ai-msg[aria-hidden="true"]');
+  assert.match(live.textContent, /^bad\.sys is the suspect\./);
+  assert.equal(container.querySelector('[aria-label="BSOD AI is thinking"]'), null, 'the dots give way once text arrives');
+  assert.equal(container.querySelector('button[aria-label="Send question"]').disabled, true);
+  release();
+  await settle();
+  const texts = [...container.querySelectorAll('.ai-msg')].map(m => m.textContent);
+  assert.equal(container.querySelector('.ai-msg[aria-hidden="true"]'), null);
+  assert.equal(texts.length, 2);
+  assert.match(texts[1], /^bad\.sys is the suspect\. Update it\./);
+  assert.match(texts[1], /Based on: bad\.sys/);
+  assert.match(container.textContent, /6 of 8 questions left this hour/);
+  await view.unmount();
+});
+
+test('a stream that fails after some text keeps what was shown and says so; one that fails first restores the question', async () => {
+  const { dom, container, view } = await open({});
+  script['/api/bsod-ai/ask'] = {
+    sse: [['delta', { text: 'bad.sys is the suspect. ' }], ['error', { code: 'BSOD_AI_FAILED', error: 'BSOD AI stopped mid-answer. Try again.' }]],
+  };
+  await typeAndSend(dom, container, 'Which driver is it?');
+  const texts = [...container.querySelectorAll('.ai-msg')].map(m => m.textContent);
+  assert.equal(texts.length, 2);
+  assert.match(texts[1], /bad\.sys is the suspect\./);
+  assert.match(container.querySelector('.ai-note').textContent, /stopped mid-answer/);
+  assert.equal(container.querySelector('input').value, '');
+  await view.unmount();
+
+  const second = await open({});
+  script['/api/bsod-ai/ask'] = { status: 502, json: { success: false, code: 'BSOD_AI_FAILED', error: 'BSOD AI could not answer.' } };
+  await typeAndSend(second.dom, second.container, 'Which driver is it?');
+  assert.equal(second.container.querySelector('input').value, 'Which driver is it?');
+  assert.equal(second.container.querySelectorAll('.ai-msg').length, 0);
+  await second.view.unmount();
 });

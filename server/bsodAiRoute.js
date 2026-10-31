@@ -7,10 +7,18 @@
 // Everything the route touches arrives through `deps`, so tests/bsodAiRoute.test.mjs
 // drives it with fakes. The pure rules live in server/bsodAi.js. The AI call is
 // `deps.generateChat`: free providers only, never a billed fallback.
+//
+// `ask` answers in one of two ways. By default one JSON object. With
+// `stream: true` in the body it answers as Server-Sent Events once the first
+// sentence is ready: `delta` events (text that has already been scrubbed, a
+// sentence at a time), then `done` (the whole answer, the evidence, what is
+// left of the allowance) or `error`. Until then every failure is an ordinary
+// JSON response, so a refusal, a quota or a provider failure looks the same
+// either way.
 import {
-  LIMITS, REPLIES, SYSTEM_INSTRUCTION,
+  LIMITS, REPLIES, SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION_STREAM,
   normalizeQuestion, normalizeHistory, normalizeReport, screenQuestion,
-  buildCaseFile, buildChatContents, parseChatAnswer,
+  buildCaseFile, buildChatContents, parseChatAnswer, createAnswerStream,
 } from './bsodAi.js';
 
 export const PASS_COOKIE = 'bsod_ai_pass';
@@ -166,6 +174,84 @@ export function registerBsodAiRoutes(app, deps) {
       }
     };
 
+    // The streaming answer. The model's first line says whether the question is on
+    // topic (an off-topic one is stopped there, after a few tokens), then the answer
+    // is released a sentence at a time, each scrubbed first (createAnswerStream).
+    async function streamAnswer({ contents, caseFile }) {
+      const answer = createAnswerStream();
+      const controller = new AbortController();
+      let sending = false;
+      let stoppedByUs = false;
+      let clientGone = false;
+      res.once('close', () => {
+        if (!res.writableEnded) { clientGone = true; controller.abort(); }
+      });
+      const write = (event, data) => {
+        if (res.destroyed || res.writableEnded) return;
+        if (!sending) {
+          sending = true;
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('X-Accel-Buffering', 'no');
+          res.flushHeaders?.();
+        }
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+      const onDelta = piece => {
+        for (const event of answer.push(piece)) {
+          if (event.type === 'text') write('delta', { text: event.text });
+          else if (event.type === 'stop') { stoppedByUs = true; controller.abort(); }
+        }
+      };
+
+      let response = null;
+      try {
+        response = await generateChat({
+          model: MODEL,
+          contents,
+          config: { systemInstruction: SYSTEM_INSTRUCTION_STREAM, jsonObjectMode: false, maxOutputTokens: LIMITS.maxOutputTokens, temperature: 0.4 },
+        }, { deadline: createDeadline(), signal: controller.signal, onDelta });
+      } catch (error) {
+        // Stopping the provider ourselves (off topic, long enough, the visitor left) is not a failure.
+        if (!stoppedByUs && !clientGone) {
+          if (!sending) throw error;
+          log.warn('bsod_ai.stream_error', { code: error?.code, message: String(error?.message || '').slice(0, 140) });
+          write('error', { code: 'BSOD_AI_FAILED', error: 'BSOD AI stopped mid-answer. Try again.' });
+          return res.end();
+        }
+      }
+
+      const used = (response?.usageMetadata?.promptTokenCount ?? 0) + (response?.usageMetadata?.candidatesTokenCount ?? 0);
+      if (used > 0) await quotaLedger.commit(reservation, { tokenDelta: used - estimate });
+      const result = answer.finish();
+      if (result.leak) strikes.add([keys[0]], 2);
+      if (clientGone) return undefined;
+      // The last sentence has no whitespace after it, so it is only released now.
+      for (const event of result.events) if (event.type === 'text') write('delta', { text: event.text });
+      if (!result.valid) {
+        log.warn('bsod_ai.invalid_answer', { reason: 'no_topic_line', sessionId: String(req.sessionId).slice(0, 10) });
+        await refund({ tight: true });
+        return res.status(502).json({ success: false, code: 'BSOD_AI_FAILED', error: 'BSOD AI got confused. Your question was not counted. Try again.' });
+      }
+      if (!result.onTopic) {
+        strikes.add([keys[0]], 1);
+        return res.json({ success: true, refused: true, kind: 'off_topic', answer: REPLIES.off_topic, evidence: [], remaining: Math.max(0, limits.requests - reservation.requests) });
+      }
+      if (!sending && !result.answer) {
+        // Nothing usable came out: a reply that was all leak, or empty.
+        if (!result.leak) await refund({ tight: true });
+        return res.status(502).json({ success: false, code: 'BSOD_AI_FAILED', error: 'BSOD AI got confused. Your question was not counted. Try again.' });
+      }
+      log.info('bsod_ai.answered', {
+        sessionId: String(req.sessionId).slice(0, 10), tier, verified: caseFile.verified, unsafe: result.unsafe, streamed: true,
+        leg: response?.cacheModel, inputTokens: response?.usageMetadata?.promptTokenCount, outputTokens: response?.usageMetadata?.candidatesTokenCount,
+        questionHash: safeToken(q.text), ms: now() - started,
+      });
+      write('done', { answer: result.answer, evidence: result.evidence, unsafe: result.unsafe, remaining: Math.max(0, limits.requests - reservation.requests), model: MODEL });
+      return res.end();
+    }
+
     try {
       // Cheap precondition first: something to ask about (the owned dump, or a report).
       const owned = Boolean(fileHash) && sessionOwnsHash(req.sessionId, fileHash, fileHandle);
@@ -214,7 +300,9 @@ export function registerBsodAiRoutes(app, deps) {
         await refund({ uncapped: true });
         return res.status(400).json({ success: false, code: 'NO_CASE', error: 'There is no crash report to ask about yet.' });
       }
-      const contents = buildChatContents({ caseFile, history: h.turns, question: q.text });
+      const wantsStream = body.stream === true;
+      const contents = buildChatContents({ caseFile, history: h.turns, question: q.text, format: wantsStream ? 'text' : 'json' });
+      if (wantsStream) return await streamAnswer({ contents, caseFile });
 
       const response = await generateChat({
         model: MODEL,

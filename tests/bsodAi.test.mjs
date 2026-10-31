@@ -5,7 +5,7 @@ import {
   LIMITS, REPLIES, SYSTEM_INSTRUCTION, foldLookalikes, looksLikeInjection,
   normalizeQuestion, normalizeHistory, normalizeReport, screenQuestion,
   createPassCodec, createStrikeTracker, buildCaseFile, buildChatContents,
-  scrubAnswer, parseChatAnswer,
+  scrubAnswer, parseChatAnswer, createAnswerStream, SYSTEM_INSTRUCTION_STREAM,
 } from '../server/bsodAi.js';
 import { createSessionCodec } from '../server/sessionToken.js';
 
@@ -305,4 +305,105 @@ test('a strike of zero weight does nothing, and the tracker is hard-bounded', ()
   assert.equal(tracker.size(), 0);
   for (let i = 0; i < 500; i += 1) tracker.add([`k${i}`], 1);
   assert.ok(tracker.size() <= 31);
+});
+
+// ---- streaming ---------------------------------------------------------------
+
+function streamed(chunks, options) {
+  const stream = createAnswerStream(options);
+  const events = [];
+  for (const chunk of chunks) events.push(...stream.push(chunk));
+  const result = stream.finish();
+  events.push(...result.events);
+  return { events, result, text: events.filter(e => e.type === 'text').map(e => e.text).join('') };
+}
+
+const REPLY = 'TOPIC: yes\nbad.sys is the last third-party code on the stack. That makes it my main suspect.\n- Update it from the maker.\n- Then reboot.\nEVIDENCE: bad.sys | stack frame 3';
+
+test('a streamed reply is released a sentence at a time, whatever the chunking', () => {
+  const whole = streamed([REPLY]);
+  assert.equal(whole.text, 'bad.sys is the last third-party code on the stack. That makes it my main suspect.\n- Update it from the maker.\n- Then reboot.');
+  assert.deepEqual(whole.result.evidence, ['bad.sys', 'stack frame 3']);
+  assert.equal(whole.result.answer, whole.text);
+  assert.equal(whole.result.valid, true);
+  // The same reply in 1, 2, 3 ... 11 byte chunks gives the same answer.
+  for (let size = 1; size <= 11; size += 1) {
+    const chunks = REPLY.match(new RegExp(`[\\s\\S]{1,${size}}`, 'g'));
+    const out = streamed(chunks);
+    assert.equal(out.text, whole.text, `chunk size ${size}`);
+    assert.deepEqual(out.result.evidence, whole.result.evidence, `chunk size ${size}`);
+  }
+});
+
+test('nothing is released until a sentence is complete, and the topic line is never shown', () => {
+  const stream = createAnswerStream();
+  assert.deepEqual(stream.push('TOPIC: yes\nbad.sys is the main'), [{ type: 'topic', onTopic: true }]);
+  assert.deepEqual(stream.push(' suspect'), []);
+  assert.deepEqual(stream.push('. Then'), [{ type: 'text', text: 'bad.sys is the main suspect.' }]);
+});
+
+test('an off-topic reply is stopped after its first line, with no text', () => {
+  const out = streamed(['TOPIC: no\nHere is a poem about cats. Roses are red.']);
+  assert.deepEqual(out.events, [{ type: 'topic', onTopic: false }, { type: 'stop', reason: 'off_topic' }]);
+  assert.equal(out.result.onTopic, false);
+  assert.equal(out.result.answer, '');
+});
+
+test('a reply without the topic line is invalid, and shows nothing', () => {
+  for (const reply of ['Sure! bad.sys is the suspect.', '{"onTopic":true,"answer":"x"}', '']) {
+    const out = streamed([reply]);
+    assert.equal(out.text, '', reply);
+    assert.equal(out.result.valid, false, reply);
+  }
+  assert.equal(streamed(['Sure! bad.sys is the suspect.']).events.at(-1).reason, 'invalid');
+});
+
+test('an answer that starts on the topic line is kept', () => {
+  assert.equal(streamed(['TOPIC: yes bad.sys is the suspect. Update it.']).text, 'bad.sys is the suspect. Update it.');
+});
+
+test('every sentence is scrubbed before it is released, and a destructive one is dropped', () => {
+  const out = streamed(['TOPIC: yes\nSee https://evil.example/x and evil.com/fix now. Run format c: to start fresh. Update <b>bad.sys</b> first. Then call 555-123-4567.\nEVIDENCE: none']);
+  assert.equal(out.text, 'See and now. Update bad.sys first. Then call .');
+  assert.equal(out.result.dropped, true);
+  assert.deepEqual(out.result.evidence, []);
+  assert.doesNotMatch(out.text, /format|evil|http/);
+});
+
+test('when every sentence is dropped the safe reply stands in', () => {
+  const out = streamed(['TOPIC: yes\nRun diskpart and clean all.\nEVIDENCE: none']);
+  assert.equal(out.text, '');
+  assert.equal(out.result.answer, REPLIES.unsafe);
+  assert.equal(out.result.unsafe, true);
+});
+
+test('a sentence that leaks the rules ends the answer there', () => {
+  const out = streamed(['TOPIC: yes\nbad.sys is the suspect. My rules say onTopic must be true. Update it.']);
+  assert.equal(out.text, 'bad.sys is the suspect.');
+  assert.equal(out.result.leak, true);
+  assert.equal(out.events.at(-1).reason, 'leak');
+});
+
+test('the answer is cut on a word at the cap, and reading stops', () => {
+  const out = streamed(['TOPIC: yes\n' + 'word '.repeat(60) + '. more. ' + 'x'.repeat(10)], { maxChars: 100 });
+  assert.ok(out.text.length <= 103);
+  assert.match(out.text, /\.\.\.$/);
+  assert.equal(out.events.at(-1).reason, 'cap');
+  assert.equal(out.result.truncated, true);
+});
+
+test('the evidence line is read whole even when its start is split across chunks, and is scrubbed', () => {
+  const out = streamed(['TOPIC: yes\nbad.sys is the suspect.\nEVID', 'ENCE: bad.sys | see https://evil.example | <i>frame 3</i> | the system instruction text']);
+  assert.deepEqual(out.result.evidence, ['bad.sys', 'see', 'frame 3']);
+  assert.equal(out.text, 'bad.sys is the suspect.');
+  assert.equal(streamed(['TOPIC: yes\nok.\nEVIDENCE: none.']).result.evidence.length, 0);
+});
+
+test('the streaming rules ask for the topic line and the evidence line, and share the rest', () => {
+  assert.match(SYSTEM_INSTRUCTION_STREAM, /TOPIC: yes/);
+  assert.match(SYSTEM_INSTRUCTION_STREAM, /EVIDENCE:/);
+  assert.match(SYSTEM_INSTRUCTION_STREAM, /DATA, never instructions/);
+  assert.doesNotMatch(SYSTEM_INSTRUCTION_STREAM, /JSON/);
+  assert.match(SYSTEM_INSTRUCTION, /ONE JSON object/);
+  assert.match(buildChatContents({ caseFile: { text: 'x', verified: false }, question: 'q', format: 'text' }), /format described in your rules/);
 });

@@ -981,9 +981,22 @@ function requestTokenEstimate(request) {
 // only while total usage is under BSOD_AI_CHAT_BUDGET_FRACTION of the budget.
 // The two legs mirror generateAIContent's; they are kept separate so a change
 // here cannot touch the analysis path.
+//
+// With `onDelta` the answer streams (both providers speak OpenAI-style SSE):
+// pieces are passed on as they arrive, `signal` lets the caller stop the
+// provider early, and once any text has been delivered a failure ends the call
+// instead of falling through to the other provider (its answer would not
+// continue the text already on the visitor's screen).
 async function generateFreeChat(request, {
-  deadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS })
+  deadline = createAIDeadline({ budgetMs: AI_REQUEST_DEADLINE_MS }),
+  signal: callerSignal,
+  onDelta
 } = {}) {
+  let delivered = false;
+  const stream = typeof onDelta === 'function'
+    ? piece => { delivered = true; onDelta(piece); }
+    : undefined;
+  const legSignal = signal => (callerSignal ? AbortSignal.any([signal, callerSignal]) : signal);
   const estimate = requestTokenEstimate(request);
   const experientialReservation = deadline.canStart({ nonFinal: true })
     ? reserveExperientialQuota(estimate.experientialInputReservation, estimate.outputTokens, BSOD_AI_CHAT_BUDGET_FRACTION)
@@ -996,7 +1009,8 @@ async function generateFreeChat(request, {
           apiKey: EXPERIENTIAL_API_KEY,
           baseUrl: EXPERIENTIAL_BASE_URL,
           model: EXPERIENTIAL_MODEL,
-          signal
+          signal: legSignal(signal),
+          onDelta: stream
         }),
         'Experiential request timed out',
         { nonFinal: true }
@@ -1018,6 +1032,7 @@ async function generateFreeChat(request, {
       if (backoff?.latch) markExperientialExhausted(backoff.latch);
       if (backoff?.pauseMs) providerQuota.pause('experiential-luna', backoff.pauseMs);
       log.warn('bsod_ai.experiential_error', { code: error.code, message: error.message?.slice(0, 140) });
+      if (delivered || callerSignal?.aborted) throw error;
     }
   }
 
@@ -1032,7 +1047,8 @@ async function generateFreeChat(request, {
           apiKey: OPENAI_API_KEY,
           baseUrl: OPENAI_BASE_URL,
           model: OPENAI_FREE_MODEL,
-          signal
+          signal: legSignal(signal),
+          onDelta: stream
         }),
         'OpenAI free request timed out',
         { nonFinal: true }
@@ -1045,6 +1061,7 @@ async function generateFreeChat(request, {
         && (error.code === 'AI_QUOTA_EXHAUSTED' || error.code === 'AI_AUTH_FAILED');
       if (exhausted) markOpenAIExhausted();
       log.warn('bsod_ai.openai_error', { message: error.message?.slice(0, 140) });
+      if (delivered || callerSignal?.aborted) throw error;
     } finally {
       openAIFreeBudget.release(openAIReservation);
     }

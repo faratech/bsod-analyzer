@@ -236,7 +236,7 @@ export function createStrikeTracker({ windowMs = 10 * 60 * 1000, maxStrikes = 4,
 
 // ---- prompt ----------------------------------------------------------------
 
-export const SYSTEM_INSTRUCTION = `You are BSOD AI, a friendly and precise assistant inside the BSOD AI Analyzer. You help a visitor understand the Windows crash they just analyzed.
+const RULES = `You are BSOD AI, a friendly and precise assistant inside the BSOD AI Analyzer. You help a visitor understand the Windows crash they just analyzed.
 
 Rules:
 - Talk only about the crash in the case file, Windows crashes in general, drivers, and hardware causes. If the question is about anything else, set "onTopic" to false and leave "answer" empty.
@@ -244,7 +244,19 @@ Rules:
 - Answer in plain English in at most 120 words: short paragraphs or up to 4 bullets. Say what you are going on. Say when you are unsure. Never name a certain culprit or promise a hardware fix.
 - Warn before risky steps (BIOS changes, registry edits, wiping a disk). Never suggest deleting system files or formatting.
 - Never output links, HTML or code blocks. Name tools by name, for example Windows Update, Device Manager, or sfc /scannow.
-Reply with ONE JSON object and nothing else: {"onTopic": true or false, "answer": "...", "evidence": ["..."]}. "evidence" lists up to 4 short items from the case file you relied on, such as a module name, a stack frame or a bugcheck parameter.`;
+`;
+
+// The one-shot format: a JSON object, parsed whole by parseChatAnswer.
+export const SYSTEM_INSTRUCTION = `${RULES}Reply with ONE JSON object and nothing else: {"onTopic": true or false, "answer": "...", "evidence": ["..."]}. "evidence" lists up to 4 short items from the case file you relied on, such as a module name, a stack frame or a bugcheck parameter.`;
+
+// The streaming format: three parts, in order, so the answer can be released as
+// it is written (createAnswerStream). The topic comes first, so an off-topic
+// question is stopped after one line.
+export const SYSTEM_INSTRUCTION_STREAM = `${RULES}Reply in exactly this format and nothing else:
+Line 1: TOPIC: yes   (write TOPIC: no instead, and stop, when the question is not about the crash, Windows crashes, drivers or hardware)
+Then the answer in plain text: at most 120 words, short paragraphs or up to 4 lines that start with "- ".
+Last line: EVIDENCE: up to 4 short items you relied on (a module name, a stack frame, a bugcheck parameter) separated by " | ", or EVIDENCE: none
+Never write the words TOPIC or EVIDENCE anywhere else.`;
 
 const text = (value, max) => clean(value).slice(0, max);
 
@@ -284,7 +296,7 @@ export function buildCaseFile({ signalText, report, redact = value => value } = 
   return { text: parts.join('\n\n'), verified };
 }
 
-export function buildChatContents({ caseFile, history = [], question, nonce = crypto.randomBytes(6).toString('hex') }) {
+export function buildChatContents({ caseFile, history = [], question, format = 'json', nonce = crypto.randomBytes(6).toString('hex') }) {
   const turns = history
     .map(turn => `${turn.role === 'user' ? 'Visitor' : 'BSOD AI'}: ${defang(turn.text)}`)
     .join('\n');
@@ -302,7 +314,7 @@ export function buildChatContents({ caseFile, history = [], question, nonce = cr
     `<<QUESTION ${nonce}>>`,
     defang(question),
     `<<END_QUESTION ${nonce}>>`,
-    'Reply with the JSON object described in your rules.',
+    format === 'text' ? 'Reply in the format described in your rules.' : 'Reply with the JSON object described in your rules.',
   ].join('\n');
 }
 
@@ -397,6 +409,14 @@ export function scrubAnswer(raw) {
   return { text: value, dropped };
 }
 
+function scrubEvidence(items) {
+  return items
+    .filter(item => typeof item === 'string')
+    .map(item => stripUrls(clean(item).replace(/<[^>]*>/g, '').replace(/^[-*\u2022]\s*/, '')).trim().slice(0, LIMITS.evidenceItemChars))
+    .filter(item => item && !LEAK.test(item))
+    .slice(0, LIMITS.evidenceItems);
+}
+
 function extractJson(raw) {
   const value = String(raw ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const start = value.indexOf('{');
@@ -419,10 +439,155 @@ export function parseChatAnswer(raw) {
     return scrubbed.dropped ? { valid: true, onTopic: true, unsafe: true, answer: REPLIES.unsafe, evidence: [] } : { valid: false, reason: 'empty' };
   }
   if (LEAK.test(scrubbed.text)) return { valid: false, reason: 'leak' };
-  const evidence = (Array.isArray(data.evidence) ? data.evidence : [])
-    .filter(item => typeof item === 'string')
-    .map(item => stripUrls(clean(item).replace(/<[^>]*>/g, '')).slice(0, LIMITS.evidenceItemChars))
-    .filter(item => item && !LEAK.test(item))
-    .slice(0, LIMITS.evidenceItems);
+  const evidence = scrubEvidence(Array.isArray(data.evidence) ? data.evidence : []);
   return { valid: true, onTopic: true, answer: scrubbed.text, evidence };
+}
+
+// ---- streaming ---------------------------------------------------------------
+
+const EVIDENCE_PREFIX = /^\s*EVIDENCE\s*:/i;
+// The first sentence or line, with the whitespace after it.
+const UNIT = /^[\s\S]*?(?:[.!?]+["')\]]*(?=\s)|\n)\s*/;
+
+// Reads the model's streamed reply (SYSTEM_INSTRUCTION_STREAM) and releases the
+// answer a sentence at a time, each one scrubbed first, so nothing unsafe is ever
+// on its way to the browser: `push(delta)` returns events to act on:
+//   { type: 'topic', onTopic }   the first line was read
+//   { type: 'text', text }       a scrubbed piece to show
+//   { type: 'stop', reason }     stop reading (and cancel the provider): off_topic,
+//                                invalid (no topic line), leak, or cap (long enough)
+// `finish()` returns the whole result. A sentence with a destructive command is
+// dropped, one that leaks the rules ends the answer, and the evidence line is
+// scrubbed like the JSON format's.
+export function createAnswerStream({ maxChars = LIMITS.answerChars } = {}) {
+  let buffer = '';
+  let phase = 'header';
+  let topic = null;
+  let emitted = '';
+  let separator = '';
+  let evidenceRaw = '';
+  let dropped = false;
+  let leak = false;
+  let invalid = false;
+  let truncated = false;
+  let queue = [];
+
+  const stop = reason => {
+    phase = 'stopped';
+    queue.push({ type: 'stop', reason });
+  };
+
+  function readHeader(final) {
+    const newline = buffer.indexOf('\n');
+    const head = /^\s*TOPIC\s*:\s*(yes|no)\b/i.exec(buffer);
+    if (newline < 0 && !final) {
+      // Not a topic line at all: stop at once. A topic line with text already after it needs no newline.
+      const start = buffer.trimStart();
+      if (start.length >= 5 && !/^TOPIC/i.test(start)) {
+        invalid = true;
+        buffer = '';
+        return stop('invalid');
+      }
+      if (!(head && buffer.length > head[0].length)) return;
+    }
+    const line = newline < 0 ? buffer : buffer.slice(0, newline);
+    const rest = newline < 0 ? '' : buffer.slice(newline + 1);
+    const match = /^\s*TOPIC\s*:\s*(yes|no)\b/i.exec(line);
+    if (!match) {
+      invalid = true;
+      buffer = '';
+      return stop('invalid');
+    }
+    topic = match[1].toLowerCase() === 'yes';
+    queue.push({ type: 'topic', onTopic: topic });
+    const remainder = line.slice(match[0].length).trim();
+    buffer = (remainder ? `${remainder} ` : '') + rest;
+    if (topic) phase = 'answer';
+    else stop('off_topic');
+  }
+
+  function release(raw) {
+    const trailing = /\n\s*$/.test(raw) ? '\n' : (/\s$/.test(raw) ? ' ' : '');
+    const result = scrubAnswer(raw);
+    if (result.dropped) dropped = true;
+    if (!result.text) return;
+    if (LEAK.test(result.text)) {
+      leak = true;
+      return stop('leak');
+    }
+    let piece = separator + result.text;
+    if (emitted.length + piece.length > maxChars) {
+      truncated = true;
+      piece = `${piece.slice(0, Math.max(0, maxChars - emitted.length)).replace(/\s+\S*$/, '')}...`;
+      emitted += piece;
+      queue.push({ type: 'text', text: piece });
+      return stop('cap');
+    }
+    emitted += piece;
+    separator = trailing;
+    queue.push({ type: 'text', text: piece });
+  }
+
+  function readAnswer(final) {
+    while (phase === 'answer') {
+      if (EVIDENCE_PREFIX.test(buffer)) {
+        phase = 'evidence';
+        return;
+      }
+      // The start of "EVIDENCE:" may still be arriving.
+      const head = buffer.trimStart();
+      if (!final && head && head.length < 9 && 'EVIDENCE:'.startsWith(head.toUpperCase())) return;
+      const match = UNIT.exec(buffer);
+      if (!match) {
+        if (final) {
+          if (buffer.trim()) release(buffer);
+          buffer = '';
+        }
+        return;
+      }
+      buffer = buffer.slice(match[0].length);
+      release(match[0]);
+    }
+  }
+
+  function run(final) {
+    if (phase === 'header') readHeader(final);
+    if (phase === 'answer') readAnswer(final);
+    if (phase === 'evidence') {
+      evidenceRaw += buffer.replace(EVIDENCE_PREFIX, '');
+      buffer = '';
+    }
+  }
+
+  return {
+    push(delta) {
+      if (phase === 'stopped') return [];
+      buffer += String(delta);
+      run(false);
+      const events = queue;
+      queue = [];
+      return events;
+    },
+    finish() {
+      if (phase !== 'stopped') run(true);
+      const events = queue;
+      queue = [];
+      const items = /^\s*none\s*\.?\s*$/i.test(evidenceRaw) ? [] : evidenceRaw.split(/\s*\|\s*|\n/);
+      const evidence = scrubEvidence(items);
+      const unsafe = !emitted && dropped;
+      return {
+        topic,
+        onTopic: topic !== false,
+        valid: topic !== null,
+        invalid,
+        answer: unsafe ? REPLIES.unsafe : emitted,
+        evidence,
+        dropped,
+        leak,
+        truncated,
+        unsafe,
+        events,
+      };
+    },
+  };
 }

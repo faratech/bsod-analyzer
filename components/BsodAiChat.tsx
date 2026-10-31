@@ -29,8 +29,6 @@ function reportFor(file: DumpFile): BsodAiReport {
     return { title: facts.title, bugcheck: facts.bugcheck, culprit: facts.culprit, primaryCause: facts.primaryCause, windows: facts.windowsVersion, actions: facts.topActions };
 }
 
-const reduceMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-
 // Ask BSOD AI about a crash that was just analyzed. Closed by default: the wand
 // in the summary strip opens it. A Turnstile pass comes first (one challenge per
 // visit; the server remembers it for a few minutes), then questions.
@@ -39,7 +37,8 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
     const file = files[Math.min(fileIndex, files.length - 1)];
     const [phase, setPhase] = useState<'checking' | 'verify' | 'ready' | 'off'>('checking');
     const [messages, setMessages] = useState<Message[]>([]);
-    const [typing, setTyping] = useState<{ index: number; shown: number } | null>(null);
+    // The answer so far while it streams in; null when no answer is on its way.
+    const [streaming, setStreaming] = useState<string | null>(null);
     const [draft, setDraft] = useState('');
     const [busy, setBusy] = useState(false);
     const [notice, setNotice] = useState<Notice | null>(null);
@@ -50,6 +49,7 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
     const body = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
     const alive = useRef(true);
+    const streamedAny = useRef('');
     useEffect(() => () => { alive.current = false; }, []);
 
     useEffect(() => {
@@ -64,20 +64,9 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
     useEffect(() => { if (phase === 'ready') input.current?.focus(); }, [phase]);
 
     // The conversation is about one crash: another file starts a new one.
-    useEffect(() => { setMessages([]); setNotice(null); setMood(undefined); setTyping(null); }, [fileIndex]);
+    useEffect(() => { setMessages([]); setNotice(null); setMood(undefined); setStreaming(null); }, [fileIndex]);
 
-    // The answer arrives whole and is typed out in the browser for show.
-    useEffect(() => {
-        if (!typing) return;
-        const total = messages[typing.index]?.text.length ?? 0;
-        if (typing.shown >= total) { setTyping(null); return; }
-        // About a second for any length: the answer is already here, typing it out is only for show.
-        const step = Math.max(6, Math.ceil(total / 50));
-        const id = setTimeout(() => setTyping(t => (t ? { ...t, shown: Math.min(total, t.shown + step) } : t)), 20);
-        return () => clearTimeout(id);
-    }, [typing, messages]);
-
-    useEffect(() => { body.current?.scrollTo?.({ top: body.current.scrollHeight }); }, [messages, typing, busy, notice]);
+    useEffect(() => { body.current?.scrollTo?.({ top: body.current.scrollHeight }); }, [messages, streaming, busy, notice]);
 
     const onPass = useCallback(async (token: string) => {
         try {
@@ -93,7 +82,7 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
 
     const ask = useCallback(async (raw: string) => {
         const question = raw.trim();
-        if (!question || busy || typing || !file) return;
+        if (!question || busy || !file) return;
         const history = messages.map(m => ({ role: m.role, text: m.text }));
         const withQuestion: Message[] = [...messages, { role: 'user', text: question }];
         setMessages(withQuestion);
@@ -101,20 +90,28 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
         setNotice(null);
         setMood(undefined);
         setBusy(true);
+        streamedAny.current = '';
         try {
-            const result = await askBsodAi({ question, history, report: reportFor(file), fileHash: file.fileHash });
+            const result = await askBsodAi({ question, history, report: reportFor(file), fileHash: file.fileHash }, piece => {
+                streamedAny.current += piece;
+                if (alive.current) setStreaming(streamedAny.current);
+            });
             if (!alive.current) return;
             if (result.remaining !== undefined) setRemaining(result.remaining);
             setMood(result.refused ? 'shrug' : undefined);
             const next: Message[] = [...withQuestion, { role: 'assistant', text: result.answer, evidence: result.evidence }];
             setMessages(next);
-            if (!reduceMotion()) setTyping({ index: next.length - 1, shown: 0 });
         } catch (error) {
             if (!alive.current) return;
             const code = error instanceof BsodAiError ? error.code : 'BSOD_AI_FAILED';
-            // The question goes back into the box: nothing was spent unless the notice says so.
-            setMessages(messages);
-            setDraft(question);
+            // Part of an answer on screen stays as an unfinished reply; otherwise the question
+            // goes back into the box: nothing was spent unless the notice says so.
+            if (streamedAny.current) {
+                setMessages([...withQuestion, { role: 'assistant', text: streamedAny.current }]);
+            } else {
+                setMessages(messages);
+                setDraft(question);
+            }
             if (code === 'AI_PASS_REQUIRED') { setPhase('verify'); setNotice({ kind: 'info', text: 'One more quick security check, then ask again.' }); }
             else if (code === 'BSOD_AI_RESTING') { setMood('rest'); setNotice({ kind: 'info', text: 'BSOD AI is resting. It is out of free capacity right now, so your question was not counted. Your report is unaffected. Try again in a few minutes.' }); }
             else if (code === 'BSOD_AI_QUOTA') { setMood('rest'); setRemaining(0); setNotice({ kind: 'warn', text: 'That was your questions for this hour. BSOD AI is catching its breath. Try again later.' }); }
@@ -122,13 +119,13 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
             else if (code === 'BSOD_AI_BUSY') setNotice({ kind: 'info', text: 'One question at a time, please.' });
             else setNotice({ kind: 'info', text: error instanceof BsodAiError ? error.message : 'BSOD AI could not answer. Try again.' });
         } finally {
-            if (alive.current) setBusy(false);
+            if (alive.current) { setBusy(false); setStreaming(null); }
         }
-    }, [busy, typing, file, messages]);
+    }, [busy, file, messages]);
 
     if (!file || phase === 'off') return null;
     const facts = getReportFacts(file);
-    const mascot = busy ? 'think' : typing ? 'talk' : mood;
+    const mascot = busy ? (streaming ? 'talk' : 'think') : mood;
     const spent = remaining !== undefined && remaining <= 0;
 
     return (
@@ -157,19 +154,17 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
                         <p>I read your whole crash report. Ask me anything about it, in plain English.</p>
                     </div>
                 )}
-                {messages.map((m, i) => {
-                    const shown = typing?.index === i ? m.text.slice(0, typing.shown) : m.text;
-                    return (
-                        <div key={i} className={`ai-msg ${m.role === 'user' ? 'ai-me' : 'ai-gm'}`}>
-                            <span>{shown}</span>
-                            {typing?.index === i && <span className="ai-caret" aria-hidden="true" />}
-                            {m.evidence && m.evidence.length > 0 && typing?.index !== i && (
-                                <div className="ai-ev">Based on: {m.evidence.join(' · ')}</div>
-                            )}
-                        </div>
-                    );
-                })}
-                {busy && <div className="ai-msg ai-gm" aria-label="BSOD AI is thinking"><span className="ai-dots" aria-hidden="true"><i /><i /><i /></span></div>}
+                {messages.map((m, i) => (
+                    <div key={i} className={`ai-msg ${m.role === 'user' ? 'ai-me' : 'ai-gm'}`}>
+                        <span>{m.text}</span>
+                        {m.evidence && m.evidence.length > 0 && (
+                            <div className="ai-ev">Based on: {m.evidence.join(' · ')}</div>
+                        )}
+                    </div>
+                ))}
+                {busy && !streaming && <div className="ai-msg ai-gm" aria-label="BSOD AI is thinking"><span className="ai-dots" aria-hidden="true"><i /><i /><i /></span></div>}
+                {/* Hidden from screen readers while it grows, so the finished answer is announced once, whole. */}
+                {busy && streaming && <div className="ai-msg ai-gm" aria-hidden="true"><span>{streaming}</span><span className="ai-caret" /></div>}
                 {notice && <p className={`ai-note ${notice.kind}`} role="status">{notice.text}</p>}
             </div>
 
@@ -193,7 +188,7 @@ const BsodAiChat: React.FC<{ files: DumpFile[]; onClose: () => void }> = ({ file
                     <div className="ai-comp">
                         <input id="bsod-ai-input" ref={input} type="text" maxLength={MAX_QUESTION} autoComplete="off" placeholder={phase === 'ready' ? 'Ask about this crash' : 'Complete the security check first'}
                             value={draft} onChange={e => setDraft(e.target.value)} disabled={phase !== 'ready' || spent} />
-                        <button type="submit" className="ai-send" aria-label="Send question" disabled={phase !== 'ready' || spent || busy || !!typing || !draft.trim()}>
+                        <button type="submit" className="ai-send" aria-label="Send question" disabled={phase !== 'ready' || spent || busy || !draft.trim()}>
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
                         </button>
                     </div>
