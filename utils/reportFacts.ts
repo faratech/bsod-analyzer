@@ -34,6 +34,7 @@ export interface ReportFacts {
   facts: ReportFact[];
   topActions: string[];
   caveat: string;
+  forcedCrash?: string;
 }
 
 export function getReportFacts(dumpFile: DumpFile): ReportFacts | null {

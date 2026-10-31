@@ -246,6 +246,8 @@ const AnalysisReportCard: React.FC<AnalysisReportCardProps> = ({ dumpFile, onRet
                                     )}
                                 </div>
 
+                                {reportFacts.forcedCrash && <p className="report-forced" role="note">{reportFacts.forcedCrash}</p>}
+
                                 {reportFacts.facts.length > 0 && (
                                     <div className="crash-facts-grid">
                                         {reportFacts.facts.map(fact => (
